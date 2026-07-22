@@ -1,0 +1,11 @@
+{
+    "display_name": "书摘",
+    "loading_order": 1,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "author": "时鸢",
+    "version": "1.3.0",
+    "homePage": "https://github.com/Mshiyuan/book-excerpt",
+    "auto_update": true
+}
