@@ -21,6 +21,7 @@ https://github.com/Mshiyuan/book-excerpt
 - 笔记本详情页支持勾选多条划线批量加入合并
 - 划线工具条支持左右滑动，按钮增多不再挤压截断
 - 由酒馆助手脚本迁移为原生 SillyTavern 扩展：html2canvas 随仓库一起分发（`lib/` 目录），保存图片不再依赖外部 CDN；沿用原脚本相同的 localStorage 键名，从脚本版切换过来的用户笔记本数据自动延续
+- 设置面板底部新增可展开的「使用说明」，含版本号、功能简介和作者信息，不用再跳出去看文档
 
 <details>
 <summary>更早版本更新日志</summary>

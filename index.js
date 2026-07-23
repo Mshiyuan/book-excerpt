@@ -2107,6 +2107,12 @@ $(() => {
       font-size: 11.5px; line-height: 1.7; opacity: 0.75;
       color: var(--be-panel-sub);
     }
+    .be-about-author {
+      margin-top: 14px; padding-top: 10px;
+      border-top: 1px solid var(--be-panel-divider);
+      font-size: 11px; opacity: 0.55;
+      color: var(--be-panel-sub); letter-spacing: 0.04em;
+    }
     .be-tpl-custom-row {
       display: flex; align-items: center; gap: 6px;
       padding: 8px 10px; border-radius: 12px;
@@ -5214,6 +5220,7 @@ $(() => {
             <div class="be-about-h">数据</div>
             <div class="be-about-p">所有内容存在浏览器 localStorage，不上传服务器。设置 - 数据 里可以导出/导入/清空。</div>
           </div>
+          <div class="be-about-sec be-about-author">作者：时鸢</div>
         </div>
       </div>
     `;
