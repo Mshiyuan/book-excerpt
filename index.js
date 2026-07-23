@@ -2097,6 +2097,16 @@ $(() => {
     .be-tpl-group.open .be-caret { transform: rotate(90deg); }
     .be-tpl-group-body { display: none; padding-top: 6px; }
     .be-tpl-group.open .be-tpl-group-body { display: block; }
+    .be-about-sec { margin-bottom: 12px; }
+    .be-about-sec:last-child { margin-bottom: 0; }
+    .be-about-h {
+      font-size: 12px; font-weight: 600;
+      color: var(--be-panel-fg); margin-bottom: 3px;
+    }
+    .be-about-p {
+      font-size: 11.5px; line-height: 1.7; opacity: 0.75;
+      color: var(--be-panel-sub);
+    }
     .be-tpl-custom-row {
       display: flex; align-items: center; gap: 6px;
       padding: 8px 10px; border-radius: 12px;
@@ -5174,6 +5184,41 @@ $(() => {
     renderSettings();
   }
 
+  // "使用说明"折叠区：脱离酒馆助手后，说明/版本号不再依赖宿主工具的展示位，自己在面板底部带一份
+  let _aboutOpen = false;
+  function renderAboutGroup() {
+    return `
+      <div class="be-tpl-group ${_aboutOpen ? 'open' : ''}" id="be-about-group">
+        <div class="be-tpl-group-head" id="be-about-group-head">
+          <span class="be-caret"></span>
+          <span>使用说明 · v${VERSION}</span>
+        </div>
+        <div class="be-tpl-group-body">
+          <div class="be-about-sec">
+            <div class="be-about-h">划线 / 想法</div>
+            <div class="be-about-p">选中聊天里的文字，浮动栏点"划线"（可选下划线/波浪线/荧光笔样式和颜色）或"想法"。点已有划线会弹出工具栏：复制、删划线、写想法、想法列表、做书摘。</div>
+          </div>
+          <div class="be-about-sec">
+            <div class="be-about-h">划线合并</div>
+            <div class="be-about-p">设置里开启后，点已有划线的工具栏上会多一个"加入合并"；笔记本详情页也能勾选批量加入。攒够了点悬浮篮子或笔记本的"完成"，选择存为笔记本条目还是直接生成书摘卡片，也可以选是否删除原来的散乱划线，这两步都能勾选"记住"跳过下次询问。</div>
+          </div>
+          <div class="be-about-sec">
+            <div class="be-about-h">书摘卡片</div>
+            <div class="be-about-p">浮动栏"书摘"或点已有划线的工具栏都能生成卡片。模板/颜色/字体/字号在此设置面板调，也可在卡片预览页临时改。支持正文打码、保留删除线、自定义模板导入（JSON/CSS，选择器写 .be-card.be-custom）。</div>
+          </div>
+          <div class="be-about-sec">
+            <div class="be-about-h">笔记本</div>
+            <div class="be-about-p">扩展菜单"书摘笔记"进入，按角色查看所有划线/想法，支持搜索和按类型/样式/颜色筛选。</div>
+          </div>
+          <div class="be-about-sec">
+            <div class="be-about-h">数据</div>
+            <div class="be-about-p">所有内容存在浏览器 localStorage，不上传服务器。设置 - 数据 里可以导出/导入/清空。</div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
   // 渲染"自定义模板"折叠区
   let _customTplOpen = false;
   function renderCustomTemplateGroup() {
@@ -5633,6 +5678,10 @@ $(() => {
           <button class="be-btn danger" id="be-clear-all">清空</button>
         </div>
       </div>
+
+      <div class="be-sec">
+        ${renderAboutGroup()}
+      </div>
     `;
 
     // 绑定
@@ -5732,6 +5781,10 @@ $(() => {
     body.querySelector('#be-font-group-head')?.addEventListener('click', () => {
       _customFontOpen = !_customFontOpen;
       body.querySelector('#be-font-group')?.classList.toggle('open', _customFontOpen);
+    });
+    body.querySelector('#be-about-group-head')?.addEventListener('click', () => {
+      _aboutOpen = !_aboutOpen;
+      body.querySelector('#be-about-group')?.classList.toggle('open', _aboutOpen);
     });
     body.querySelectorAll('.be-font-custom-row').forEach(row => {
       row.addEventListener('click', e => {
