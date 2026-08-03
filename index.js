@@ -7,7 +7,7 @@ $(() => {
 
   const SCRIPT_ID = 'book-excerpt';
   const SCRIPT_NAME = '书摘';
-  const VERSION = '1.4.0';
+  const VERSION = '1.4.1';
   const LS_SETTINGS = `${SCRIPT_ID}:settings`;
   const LS_NOTES = `${SCRIPT_ID}:notes`;
   // 本次脚本实例的代号。酒馆助手可能在不刷新页面的情况下重建脚本 iframe（热更新/切聊天等），
@@ -1933,6 +1933,27 @@ $(() => {
     #be-panel .be-p-tabs button.active {
       background: var(--be-accent-soft);
       color: var(--be-accent);
+      font-weight: 500;
+    }
+
+    /* 设置面板二级分组 tab：比上面的主 tab 弱一级，字更小、更紧凑，一眼看出是下一层级 */
+    .be-settings-subtabs {
+      display: flex; gap: 4px;
+      margin: 2px 0 18px;
+      border-bottom: 1px solid var(--be-panel-divider);
+    }
+    .be-settings-subtabs button {
+      flex: 1; background: transparent; border: none;
+      color: var(--be-panel-sub);
+      padding: 8px 4px; font-size: 12px; cursor: pointer;
+      font-family: inherit;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+      transition: color 0.15s ease, border-color 0.15s ease;
+    }
+    .be-settings-subtabs button.active {
+      color: var(--be-accent);
+      border-bottom-color: var(--be-accent);
       font-weight: 500;
     }
 
@@ -5410,6 +5431,9 @@ $(() => {
     });
   }
 
+  // 设置面板二级分组：外观 / 划线 / 功能与数据。纯内存状态，不落盘，重开面板/切主 Tab 都保留上次选的分组
+  let settingsGroup = 'appearance';
+
   // "使用说明"折叠区：脱离酒馆助手后，说明/版本号不再依赖宿主工具的展示位，自己在面板底部带一份
   let _aboutOpen = false;
   function renderAboutGroup() {
@@ -5652,6 +5676,13 @@ $(() => {
     const isCustomColor = settings.colorPreset === 'custom';
 
     body.innerHTML = `
+      <div class="be-settings-subtabs">
+        <button data-g="appearance" class="${settingsGroup==='appearance'?'active':''}">外观</button>
+        <button data-g="highlight" class="${settingsGroup==='highlight'?'active':''}">划线</button>
+        <button data-g="feature" class="${settingsGroup==='feature'?'active':''}">功能与数据</button>
+      </div>
+
+      ${settingsGroup === 'appearance' ? `
       <div class="be-sec">
         <h4>模板（排版）</h4>
         <div class="be-tpl-grid">
@@ -5721,70 +5752,7 @@ $(() => {
       </div>
 
       <div class="be-sec">
-        <h4>划线色系（筛选/工具栏的 5 色）</h4>
-        <div class="be-palette-grid">
-          ${Object.entries(PALETTE_SCHEMES).map(([k, v]) => `
-            <div class="be-palette-card ${settings.palette===k?'active':''}" data-k="${k}">
-              <div class="be-palette-name">${v.name}</div>
-              <div class="be-palette-row">
-                ${v.colors.map(c => `<span class="be-palette-dot" style="background:${c};"></span>`).join('')}
-              </div>
-            </div>
-          `).join('')}
-        </div>
-      </div>
-
-      <div class="be-sec">
-        <h4>划线样式</h4>
-        <div class="be-row">
-          <label style="flex:1;">关闭划线功能（与其它选中文字弹工具栏的插件冲突时用）</label>
-          <label class="be-toggle">
-            <input type="checkbox" id="be-highlight-disabled" ${settings.highlightDisabled?'checked':''}>
-            <span class="be-slider"></span>
-          </label>
-        </div>
-        <div class="be-row" style="font-size:11px;opacity:0.7;">
-          <span>只影响"选中文字弹出划线小工具栏"这一步，已有的划线、笔记本、书摘卡片都不受影响</span>
-        </div>
-        <div class="be-row">
-          <div class="be-radio-group" id="be-hl-group">
-            <button class="be-radio-opt ${settings.highlightStyle==='underline'?'active':''}" data-v="underline">下划线</button>
-            <button class="be-radio-opt ${settings.highlightStyle==='wavy'?'active':''}" data-v="wavy">波浪线</button>
-            <button class="be-radio-opt ${settings.highlightStyle==='marker'?'active':''}" data-v="marker">荧光笔</button>
-          </div>
-        </div>
-        <div class="be-row">
-          <label style="flex:1;">下划线颜色</label>
-          <input type="color" id="be-color-underline" value="${escapeHtml(settings.underlineColor || '#c9a76a')}">
-          <button class="be-btn" id="be-color-underline-reset" style="padding:3px 8px;font-size:11px;">还原</button>
-        </div>
-        <div class="be-row">
-          <label style="flex:1;">荧光笔颜色</label>
-          <input type="color" id="be-color-marker" value="${escapeHtml(settings.markerColor || '#ffdc6e')}">
-          <button class="be-btn" id="be-color-marker-reset" style="padding:3px 8px;font-size:11px;">还原</button>
-        </div>
-        <div class="be-row">
-          <label style="flex:1;">想法虚线颜色（只想法没划线时）</label>
-          <input type="color" id="be-color-thought" value="${escapeHtml(settings.thoughtLineColor || '#ffdc6e')}">
-        </div>
-        <div class="be-row">
-          <label style="flex:1;">有想法的划线自动提升明度</label>
-          <label class="be-toggle">
-            <input type="checkbox" id="be-thought-boost" ${settings.thoughtBoost?'checked':''}>
-            <span class="be-slider"></span>
-          </label>
-        </div>
-        <div class="be-row">
-          <label style="flex:1;">划线穿过特殊格式时剥离原样式</label>
-          <label class="be-toggle">
-            <input type="checkbox" id="be-strip" ${settings.stripStyle?'checked':''}>
-            <span class="be-slider"></span>
-          </label>
-        </div>
-      </div>
-
-      <div class="be-sec">
-        <h4>排版</h4>
+        <h4>正文排版</h4>
         <div class="be-typo-presets">
           <span data-typo="compact">紧凑</span>
           <span data-typo="normal">默认</span>
@@ -5809,7 +5777,7 @@ $(() => {
       </div>
 
       <div class="be-sec">
-        <h4>显示</h4>
+        <h4>显示与出处</h4>
         <div class="be-row">
           <label style="flex:1;">显示头像</label>
           <label class="be-toggle">
@@ -5867,11 +5835,7 @@ $(() => {
             <span class="be-slider"></span>
           </label>
         </div>
-      </div>
-
-      <div class="be-sec">
-        <h4>出处</h4>
-        <div class="be-row" style="font-size:12px;opacity:0.8;">
+        <div class="be-row" style="font-size:12px;opacity:0.8;margin-top:8px;">
           <span style="flex:1;">用户名：${escapeHtml(settings.sourceUser || '（默认：{{user}}）')}</span>
         </div>
         <div class="be-row" style="font-size:12px;opacity:0.8;">
@@ -5884,7 +5848,78 @@ $(() => {
           <button class="be-btn" id="be-edit-source-btn">编辑出处</button>
         </div>
       </div>
+      ` : ''}
 
+      ${settingsGroup === 'highlight' ? `
+      <div class="be-sec">
+        <h4>划线总开关</h4>
+        <div class="be-row">
+          <label style="flex:1;">关闭划线功能（与其它选中文字弹工具栏的插件冲突时用）</label>
+          <label class="be-toggle">
+            <input type="checkbox" id="be-highlight-disabled" ${settings.highlightDisabled?'checked':''}>
+            <span class="be-slider"></span>
+          </label>
+        </div>
+        <div class="be-row" style="font-size:11px;opacity:0.7;">
+          <span>只影响"选中文字弹出划线小工具栏"这一步，已有的划线、笔记本、书摘卡片都不受影响</span>
+        </div>
+      </div>
+
+      <div class="be-sec">
+        <h4>划线样式与颜色</h4>
+        <div class="be-row">
+          <div class="be-radio-group" id="be-hl-group">
+            <button class="be-radio-opt ${settings.highlightStyle==='underline'?'active':''}" data-v="underline">下划线</button>
+            <button class="be-radio-opt ${settings.highlightStyle==='wavy'?'active':''}" data-v="wavy">波浪线</button>
+            <button class="be-radio-opt ${settings.highlightStyle==='marker'?'active':''}" data-v="marker">荧光笔</button>
+          </div>
+        </div>
+        <div class="be-row">
+          <label style="flex:1;">下划线颜色</label>
+          <input type="color" id="be-color-underline" value="${escapeHtml(settings.underlineColor || '#c9a76a')}">
+          <button class="be-btn" id="be-color-underline-reset" style="padding:3px 8px;font-size:11px;">还原</button>
+        </div>
+        <div class="be-row">
+          <label style="flex:1;">荧光笔颜色</label>
+          <input type="color" id="be-color-marker" value="${escapeHtml(settings.markerColor || '#ffdc6e')}">
+          <button class="be-btn" id="be-color-marker-reset" style="padding:3px 8px;font-size:11px;">还原</button>
+        </div>
+        <div class="be-row">
+          <label style="flex:1;">想法虚线颜色（只想法没划线时）</label>
+          <input type="color" id="be-color-thought" value="${escapeHtml(settings.thoughtLineColor || '#ffdc6e')}">
+        </div>
+        <div class="be-row">
+          <label style="flex:1;">有想法的划线自动提升明度</label>
+          <label class="be-toggle">
+            <input type="checkbox" id="be-thought-boost" ${settings.thoughtBoost?'checked':''}>
+            <span class="be-slider"></span>
+          </label>
+        </div>
+        <div class="be-row">
+          <label style="flex:1;">划线穿过特殊格式时剥离原样式</label>
+          <label class="be-toggle">
+            <input type="checkbox" id="be-strip" ${settings.stripStyle?'checked':''}>
+            <span class="be-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="be-sec">
+        <h4>划线色系（筛选/工具栏的 5 色）</h4>
+        <div class="be-palette-grid">
+          ${Object.entries(PALETTE_SCHEMES).map(([k, v]) => `
+            <div class="be-palette-card ${settings.palette===k?'active':''}" data-k="${k}">
+              <div class="be-palette-name">${v.name}</div>
+              <div class="be-palette-row">
+                ${v.colors.map(c => `<span class="be-palette-dot" style="background:${c};"></span>`).join('')}
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+      ` : ''}
+
+      ${settingsGroup === 'feature' ? `
       <div class="be-sec">
         <h4>划线合并</h4>
         <div class="be-row">
@@ -5933,9 +5968,25 @@ $(() => {
       <div class="be-sec">
         ${renderAboutGroup()}
       </div>
+      ` : ''}
     `;
 
     // 绑定
+    body.querySelectorAll('.be-settings-subtabs button').forEach(el => {
+      el.addEventListener('click', () => {
+        const g = el.getAttribute('data-g');
+        if (g === settingsGroup) return;
+        settingsGroup = g;
+        body.scrollTop = 0; // 切分组前先清零，避免带着上一个分组的滚动位置渲染新内容
+        renderSettings();
+        const freshBody = mainDoc.getElementById('be-p-body');
+        if (freshBody) {
+          freshBody.classList.remove('be-body-anim');
+          void freshBody.offsetWidth;
+          freshBody.classList.add('be-body-anim');
+        }
+      });
+    });
     body.querySelectorAll('.be-tpl-card').forEach(el => {
       if (el.id === 'be-tpl-import') {
         el.addEventListener('click', openImportTemplateDialog);
