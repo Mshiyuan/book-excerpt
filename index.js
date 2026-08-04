@@ -1,15 +1,26 @@
 $(() => {
-  // 作为酒馆扩展直接跑在酒馆主文档里，不再经过酒馆助手的沙箱 iframe——
-  // mainDoc/mainWin 本来就等价于 window.parent.document/window.parent，这里改指向后
-  // 下面所有 mainDoc.*/mainWin.* 调用（含 localStorage 的 key 名）行为完全不变。
   const mainDoc = document;
   const mainWin = window;
 
   const SCRIPT_ID = 'book-excerpt';
   const SCRIPT_NAME = '书摘';
-  const VERSION = '1.4.0';
+  const VERSION = '1.5.0';
   const LS_SETTINGS = `${SCRIPT_ID}:settings`;
   const LS_NOTES = `${SCRIPT_ID}:notes`;
+  const LS_CANVASES = `${SCRIPT_ID}:canvases`;
+  // 自由排版功能只在原生扩展形态下开放：Tavern Helper 脚本形态没有 lib/ 目录随包分发这回事，
+  // interact.js/Cropper.js 只能内嵌字符串或走 CDN，为这一个功能牺牲太大，所以脚本形态里这个常量
+  // 永远是 false（这行本身也绝不能出现 import.meta 这类模块语法，会导致脚本形态直接解析失败）。
+  // 扩展仓库生成 index.js 时会把这一行 patch 成 true。
+  const IS_EXTENSION = true;
+  // 自由排版依赖的两个 vendor 库本地地址，同样只能靠扩展构建 patch 注入（import.meta.url），
+  // 脚本形态下永远是空字符串——反正 IS_EXTENSION=false 时功能入口本身就不可达，这两个值不会被用到。
+  let LOCAL_INTERACT_URL = '';
+    try { LOCAL_INTERACT_URL = new URL('./lib/interact.min.js', import.meta.url).href; } catch (e) {}
+    let LOCAL_CROPPER_URL = '';
+    try { LOCAL_CROPPER_URL = new URL('./lib/cropper.min.js', import.meta.url).href; } catch (e) {}
+    let LOCAL_CROPPER_CSS_URL = '';
+    try { LOCAL_CROPPER_CSS_URL = new URL('./lib/cropper.min.css', import.meta.url).href; } catch (e) {}
   // 本次脚本实例的代号。酒馆助手可能在不刷新页面的情况下重建脚本 iframe（热更新/切聊天等），
   // 旧 iframe realm 一死，父文档里常驻 UI 绑的旧监听器就会静默失效（闭包里的 setTimeout 永远不回调）。
   // 所有常驻父文档的 UI 都打上 data-be-gen 标记：发现标记不是本实例就拆掉重建，杜绝"僵尸监听器"。
@@ -66,7 +77,11 @@ $(() => {
     mergeEnabled: true,            // 划线合并：点划线可加入合并篮子 + 悬浮篮子入口（v1.4.0 起默认开，老用户已保存的选择不受影响）
     mergeDefaultTarget: '',        // 合并完成后默认动作：'' 每次询问 / 'note' 直接存为笔记 / 'card' 直接生成书摘
     mergeDeleteOriginal: '',       // 合并后原划线怎么处理：'' 每次询问 / 'delete' 删除原划线 / 'keep' 保留原划线
-    highlightDisabled: false       // 划线总开关（关闭时不影响已有划线显示，只关掉“选中文字弹浮动栏”这一步，供与其它选中类插件冲突的用户使用）
+    highlightDisabled: false,      // 划线总开关（关闭时不影响已有划线显示，只关掉“选中文字弹浮动栏”这一步，供与其它选中类插件冲突的用户使用）
+    freeformEnabled: false,        // 自由排版总开关（默认关，只在扩展形态下才可能出现入口；仅 Tavern Helper 脚本形态下这个字段永远不会被用到）
+    // 自由排版存的版式模板，用独立字段而不是塞进 customTemplates——那个数组被卡片主题抽屉/设置里的
+    // "自定义模板"列表/导出弹窗等好几处已有 UI 直接遍历渲染，混进去会在那些地方出现不认识的条目
+    freeformTemplates: []
   };
 
   // ---------- 模板（仅排版，颜色独立）----------
@@ -345,6 +360,79 @@ $(() => {
     notes[charKey].items = notes[charKey].items.filter(x => x.id !== id);
     if (!notes[charKey].items.length) delete notes[charKey];
     saveNotes(notes);
+  }
+
+  // ---------- 自由排版：画布草稿数据（仅扩展形态用得到，跟 notes 同一套读写/防抖/失败提示模式）----------
+  let _canvasesCache = null;
+  let _canvasStorageWarned = false;
+  function loadCanvases() {
+    if (_canvasesCache) return _canvasesCache;
+    let raw = {};
+    try {
+      const stored = mainWin.localStorage.getItem(LS_CANVASES);
+      if (stored) raw = JSON.parse(stored);
+    } catch (e) {
+      console.warn('[书摘] 自由排版草稿读取失败：', e);
+      if (!_canvasStorageWarned) {
+        _canvasStorageWarned = true;
+        toast('自由排版草稿读取失败，可能是数据损坏或存储权限被禁用', 'error');
+      }
+    }
+    _canvasesCache = raw;
+    return raw;
+  }
+  function saveCanvases(all) {
+    _canvasesCache = all;
+    try {
+      mainWin.localStorage.setItem(LS_CANVASES, JSON.stringify(all));
+      return true;
+    } catch (e) {
+      console.warn('[书摘] 自由排版草稿保存失败：', e);
+      if (!_canvasStorageWarned) {
+        _canvasStorageWarned = true;
+        const msg = (e && e.name === 'QuotaExceededError')
+          ? '自由排版草稿存储已满，删掉几张不用的图片元素或旧草稿再试'
+          : '保存草稿失败，本次编辑有效，刷新后会丢失。请检查浏览器存储权限/隐私模式';
+        toast(msg, 'error');
+      }
+      return false;
+    }
+  }
+  let _canvasSaveT = 0;
+  function saveCanvasesDebounced() {
+    if (_canvasSaveT) mainWin.clearTimeout(_canvasSaveT);
+    _canvasSaveT = mainWin.setTimeout(() => { _canvasSaveT = 0; saveCanvases(_canvasesCache); }, 400);
+  }
+  function newCanvasId() { return 'fc' + Date.now() + Math.random().toString(36).slice(2, 6); }
+  function createCanvas(width, height, name) {
+    const all = loadCanvases();
+    const id = newCanvasId();
+    all[id] = {
+      id, name: name || '未命名排版', createdAt: Date.now(), updatedAt: Date.now(),
+      width, height,
+      bg: { color: '#ffffff', image: '' },
+      elements: []
+    };
+    saveCanvases(all);
+    return all[id];
+  }
+  function deleteCanvas(id) {
+    const all = loadCanvases();
+    delete all[id];
+    saveCanvases(all);
+  }
+  function renameCanvas(id, name) {
+    const all = loadCanvases();
+    if (!all[id]) return;
+    all[id].name = name || all[id].name;
+    all[id].updatedAt = Date.now();
+    saveCanvases(all);
+  }
+  function touchCanvas(id) {
+    const all = loadCanvases();
+    if (!all[id]) return;
+    all[id].updatedAt = Date.now();
+    saveCanvasesDebounced();
   }
 
   // ---------- 工具 ----------
@@ -2576,6 +2664,177 @@ $(() => {
       font-family: inherit;
     }
     .be-note-actions button:hover { opacity: 1; color: var(--be-accent); }
+
+    /* ===== 自由排版 ===== */
+    #be-fc-mask {
+      position: absolute; top: 0; left: 0;
+      width: 100%; height: 100vh; height: 100dvh;
+      background: rgba(0,0,0,0.5);
+      display: none; align-items: stretch; justify-content: stretch;
+      z-index: 2147483640;
+    }
+    #be-fc-mask.open { display: flex; }
+    #be-fc-body {
+      flex: 1; display: flex; flex-direction: column;
+      background: var(--be-panel-bg); color: var(--be-panel-fg);
+      overflow: hidden;
+    }
+    .be-fc-listhead {
+      display: flex; align-items: center; gap: 10px;
+      padding: 14px 16px; border-bottom: 1px solid var(--be-panel-divider);
+      flex: 0 0 auto;
+    }
+    .be-fc-title { flex: 1; font-size: 15px; font-weight: 600; text-align: center; }
+    .be-fc-newrow { padding: 14px 16px 0; flex: 0 0 auto; }
+    .be-fc-newrow .be-btn { width: 100%; }
+    .be-fc-grid {
+      flex: 1; overflow-y: auto; padding: 14px 16px 24px;
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 12px;
+    }
+    .be-fc-card {
+      position: relative; cursor: pointer;
+      background: var(--be-panel-row-bg); border-radius: 10px; padding: 8px;
+      transition: background 0.15s;
+    }
+    .be-fc-card:hover { background: var(--be-panel-row-bg-hover); }
+    .be-fc-thumb {
+      width: 100%; aspect-ratio: 3 / 4; border-radius: 6px;
+      display: flex; align-items: flex-end; justify-content: flex-end;
+      box-shadow: 0 0 0 1px rgba(0,0,0,0.08) inset;
+      margin-bottom: 6px;
+    }
+    .be-fc-thumb-size { font-size: 10px; opacity: 0.5; padding: 4px; color: #000; }
+    .be-fc-card-name { font-size: 12px; font-weight: 500; }
+    .be-fc-card-meta { font-size: 10px; opacity: 0.6; margin-top: 2px; }
+    .be-fc-card-del {
+      position: absolute; top: 4px; right: 4px;
+      width: 20px; height: 20px; border-radius: 50%; border: none;
+      background: rgba(0,0,0,0.55); color: #fff; font-size: 12px; line-height: 20px;
+      cursor: pointer; opacity: 0; transition: opacity 0.15s;
+    }
+    .be-fc-card:hover .be-fc-card-del { opacity: 1; }
+
+    .be-fc-toolbar {
+      flex: 0 0 auto; display: flex; gap: 8px; padding: 10px 16px;
+      border-bottom: 1px solid var(--be-panel-divider); flex-wrap: wrap;
+    }
+    .be-fc-canvas-wrap {
+      flex: 1; overflow: auto; padding: 24px;
+      display: flex; align-items: flex-start; justify-content: center;
+      background: repeating-conic-gradient(#8884 0% 25%, transparent 0% 50%) 0 0/20px 20px;
+    }
+    .be-fc-canvas {
+      position: relative; flex: 0 0 auto;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.25);
+      touch-action: none;
+      /* 故意不在这裁 overflow：拖缩放/旋转手柄有一部分悬浮在元素框外，靠近画布边缘的元素若被裁掉
+         手柄会抓不到。导出时另外在沙箱克隆节点上单独裁（fcExportCanvas 里加 overflow:hidden），
+         两边各取所需，不用二选一。 */
+    }
+    .be-fc-el {
+      position: absolute; box-sizing: border-box;
+      touch-action: none;
+    }
+    .be-fc-el.locked { touch-action: auto; }
+    .be-fc-el.selected { outline: 1.5px dashed var(--be-accent); }
+    .be-fc-text-body {
+      width: 100%; height: 100%; box-sizing: border-box;
+      outline: none; overflow: hidden; word-break: break-word;
+      cursor: default; pointer-events: none;  /* 未编辑时事件穿透给外层 .be-fc-el 拖拽用 */
+    }
+    .be-fc-text-body[contenteditable="true"] {
+      pointer-events: auto; cursor: text;
+      box-shadow: 0 0 0 1.5px var(--be-accent) inset;
+    }
+    .be-fc-el-img {
+      width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none;
+    }
+    .be-fc-handle {
+      position: absolute; width: 12px; height: 12px; border-radius: 50%;
+      background: #fff; box-shadow: 0 0 0 1.5px var(--be-accent);
+      display: none; z-index: 2;
+    }
+    .be-fc-el.selected .be-fc-handle { display: block; }
+    .be-fc-handle-nw { left: -6px; top: -6px; cursor: nwse-resize; }
+    .be-fc-handle-ne { right: -6px; top: -6px; cursor: nesw-resize; }
+    .be-fc-handle-sw { left: -6px; bottom: -6px; cursor: nesw-resize; }
+    .be-fc-handle-se { right: -6px; bottom: -6px; cursor: nwse-resize; }
+    .be-fc-handle-rotate {
+      left: 50%; top: -28px; margin-left: -6px; cursor: grab;
+      background: var(--be-accent); box-shadow: none;
+    }
+    .be-fc-el.locked .be-fc-handle { display: none; }
+
+    .be-fc-proppanel {
+      flex: 0 0 auto; padding: 8px 16px; border-bottom: 1px solid var(--be-panel-divider);
+      max-height: 40vh; overflow-y: auto;
+    }
+    .be-fc-prop-row {
+      display: flex; align-items: center; gap: 6px; margin-bottom: 6px; flex-wrap: wrap;
+      font-size: 12px;
+    }
+    .be-fc-prop-row label { opacity: 0.8; flex: 0 0 auto; }
+    .be-fc-prop-row select {
+      background: var(--be-panel-input-bg); border: 1px solid var(--be-panel-input-border);
+      color: inherit; border-radius: 6px; font-size: 12px; padding: 3px 4px; max-width: 110px;
+    }
+    .be-fc-prop-row input[type="number"] {
+      background: var(--be-panel-input-bg); border: 1px solid var(--be-panel-input-border);
+      color: inherit; border-radius: 6px; font-size: 12px; padding: 3px 4px;
+    }
+    .be-fc-prop-btn {
+      background: var(--be-panel-row-bg); border: none; color: var(--be-panel-fg);
+      border-radius: 6px; padding: 4px 9px; font-size: 12px; cursor: pointer; font-family: inherit;
+    }
+    .be-fc-prop-btn.active { background: var(--be-accent-soft); color: var(--be-accent); }
+    .be-fc-prop-sep { width: 1px; height: 16px; background: var(--be-panel-divider); margin: 0 2px; }
+    .be-fc-prop-sep-row { height: 1px; background: var(--be-panel-divider); margin: 6px 0; }
+    .be-fc-toolbar-sep { width: 1px; align-self: stretch; background: var(--be-panel-divider); margin: 0 2px; }
+    #be-fc-export-scale {
+      background: var(--be-panel-row-bg); border: 1px solid var(--be-panel-divider); color: var(--be-panel-fg);
+      border-radius: 6px; padding: 5px 6px; font-size: 12px; font-family: inherit;
+    }
+    .be-fc-crop-area { width: 100%; height: 380px; overflow: hidden; margin: 8px 0; background: #000; }
+    .be-fc-crop-area > img { display: block; max-width: 100%; }
+    .be-fc-tpl-list { display: flex; flex-direction: column; gap: 6px; max-height: 160px; overflow-y: auto; }
+    .be-fc-tpl-item {
+      display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+      background: var(--be-panel-row-bg); border: 1px solid var(--be-panel-divider); color: var(--be-panel-fg);
+      border-radius: 8px; padding: 8px 10px; font-family: inherit; cursor: pointer; text-align: left;
+    }
+    .be-fc-tpl-item:hover { background: var(--be-accent-soft); }
+    .be-fc-tpl-item-name { font-size: 13px; }
+    .be-fc-tpl-item-meta { font-size: 11px; opacity: 0.6; }
+    .be-fc-multibar {
+      align-items: center; gap: 8px; flex-wrap: wrap;
+      padding: 6px 10px; background: var(--be-panel-row-bg); border-radius: 8px; margin: 0 0 8px;
+      font-size: 12px;
+    }
+    .be-fc-multibar-align { display: flex; gap: 4px; flex-wrap: wrap; }
+    .be-fc-align-btn {
+      background: var(--be-panel-row-bg); border: 1px solid var(--be-panel-divider);
+      color: var(--be-panel-fg); border-radius: 6px; padding: 3px 8px; font-size: 12px; cursor: pointer;
+    }
+    .be-fc-layers {
+      max-height: 220px; overflow-y: auto; margin: 0 0 8px;
+      border: 1px solid var(--be-panel-divider); border-radius: 8px;
+    }
+    .be-fc-layer-row {
+      display: flex; align-items: center; gap: 8px; padding: 6px 10px; cursor: pointer;
+      border-bottom: 1px solid var(--be-panel-divider);
+    }
+    .be-fc-layer-row:last-child { border-bottom: none; }
+    .be-fc-layer-row.selected { background: var(--be-accent-soft); }
+    .be-fc-layer-row.dragover { outline: 2px dashed var(--be-accent); outline-offset: -2px; }
+    .be-fc-layer-icon { font-size: 14px; }
+    .be-fc-layer-name { flex: 1; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .be-fc-layer-thumb { width: 28px; height: 28px; object-fit: cover; border-radius: 4px; flex: none; }
+    .be-fc-layer-lock { background: none; border: none; cursor: pointer; font-size: 13px; opacity: 0.6; padding: 2px 4px; }
+    .be-fc-layer-lock.active { opacity: 1; }
+    .be-fc-selbox {
+      position: absolute; border: 1px dashed var(--be-accent); background: var(--be-accent-soft);
+      opacity: 0.5; pointer-events: none; z-index: 500;
+    }
   `;
   }
 
@@ -4842,7 +5101,7 @@ $(() => {
     'https://cdn.bootcdn.net/ajax/libs/html2canvas/1.4.1/html2canvas.min.js',
     'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js',
     'https://unpkg.com/html2canvas@1.4.1/dist/html2canvas.min.js'
-  ].filter(Boolean);
+  ];
   const SCRIPT_LOAD_TIMEOUT_MS = 6000;
   let _h2cPromise = null;
 
@@ -4901,6 +5160,31 @@ $(() => {
     _h2cPromise = loadOneOf(H2C_LIB_URLS, 'html2canvas')
       .catch(err => { _h2cPromise = null; throw err; });
     return _h2cPromise;
+  }
+
+  let _interactPromise = null;
+  function loadInteract() {
+    if (mainWin.interact) return Promise.resolve(mainWin.interact);
+    if (_interactPromise) return _interactPromise;
+    _interactPromise = loadOneOf([LOCAL_INTERACT_URL].filter(Boolean), 'interact')
+      .catch(err => { _interactPromise = null; throw err; });
+    return _interactPromise;
+  }
+  let _cropperPromise = null;
+  function loadCropperAssets() {
+    if (mainWin.Cropper) return Promise.resolve(mainWin.Cropper);
+    if (_cropperPromise) return _cropperPromise;
+    _cropperPromise = (async () => {
+      if (LOCAL_CROPPER_CSS_URL && !mainDoc.getElementById('be-cropper-css')) {
+        const link = mainDoc.createElement('link');
+        link.id = 'be-cropper-css';
+        link.rel = 'stylesheet';
+        link.href = LOCAL_CROPPER_CSS_URL;
+        mainDoc.head.appendChild(link);
+      }
+      return loadOneOf([LOCAL_CROPPER_URL].filter(Boolean), 'Cropper');
+    })().catch(err => { _cropperPromise = null; throw err; });
+    return _cropperPromise;
   }
 
   // 给 Promise 套一个超时，避免库本身卡住（toPng/h2c 偶发卡死）
@@ -6007,6 +6291,22 @@ $(() => {
         </div>
       </div>
 
+      ${IS_EXTENSION ? `
+      <div class="be-sec">
+        <h4>自由排版</h4>
+        <div class="be-row">
+          <label style="flex:1;">开启自由排版（实验功能）</label>
+          <label class="be-toggle">
+            <input type="checkbox" id="be-freeform-enabled" ${settings.freeformEnabled?'checked':''}>
+            <span class="be-slider"></span>
+          </label>
+        </div>
+        <div class="be-row" style="font-size:11px;opacity:0.7;">
+          <span>开启后扩展菜单会多一个"自由排版"入口：自己摆文字/图片做排版，不受现成模板限制。关闭后入口消失，不影响已存的草稿</span>
+        </div>
+      </div>
+      ` : ''}
+
       <div class="be-sec">
         ${renderAboutGroup()}
       </div>
@@ -6208,6 +6508,11 @@ $(() => {
         saveSettings(settings);
         body.querySelectorAll('#be-savemode-group .be-radio-opt').forEach(b => b.classList.toggle('active', b === btn));
       });
+    });
+    body.querySelector('#be-freeform-enabled')?.addEventListener('change', e => {
+      settings.freeformEnabled = e.target.checked;
+      saveSettings(settings);
+      injectMenuEntry(); // 开关状态变了，菜单入口要跟着增/减
     });
     body.querySelector('#be-avatar-upload')?.addEventListener('click', () => {
       const inp = mainDoc.createElement('input');
@@ -6746,21 +7051,1930 @@ $(() => {
     input.click();
   }
 
+  // ---------- 自由排版 ----------
+  // 尺寸预设：常见分享比例，最后一项是自定义
+  const FC_SIZE_PRESETS = [
+    { key: '3-4', name: '竖版 3:4', w: 900, h: 1200 },
+    { key: '1-1', name: '正方形 1:1', w: 1000, h: 1000 },
+    { key: '2-3', name: '海报 2:3', w: 900, h: 1350 },
+    { key: 'custom', name: '自定义', w: 0, h: 0 }
+  ];
+
+  let fcView = 'list';        // 'list' | 'editor'
+  let fcCurrentId = null;
+
+  function ensureFcMask() {
+    let mask = mainDoc.getElementById('be-fc-mask');
+    if (mask && !isStaleGen(mask)) return mask;
+    if (mask) { try { mask.remove(); } catch (e) {} }
+    mask = stampGen(mainDoc.createElement('div'));
+    mask.id = 'be-fc-mask';
+    mask.innerHTML = `<div id="be-fc-body"></div>`;
+    mainDoc.body.appendChild(mask);
+    return mask;
+  }
+
+  function openFreeformList() {
+    const mask = ensureFcMask();
+    if (mask.parentNode !== mainDoc.body || mask.nextSibling) mainDoc.body.appendChild(mask);
+    detectAndApplyTheme();
+    fcView = 'list';
+    fcCurrentId = null;
+    mask.classList.add('open');
+    renderFreeform();
+  }
+  function closeFreeform() {
+    mainDoc.getElementById('be-fc-mask')?.classList.remove('open');
+  }
+
+  function renderFreeform() {
+    const mask = mainDoc.getElementById('be-fc-mask');
+    const body = mask?.querySelector('#be-fc-body');
+    if (!body) return;
+    if (fcView === 'editor' && fcCurrentId) renderFreeformEditorView(body);
+    else renderFreeformListView(body);
+  }
+
+  function renderFreeformListView(body) {
+    const all = loadCanvases();
+    const list = Object.values(all).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    body.innerHTML = `
+      <div class="be-fc-listhead">
+        <span class="be-fc-title">自由排版</span>
+        <button class="be-btn" id="be-fc-close">×</button>
+      </div>
+      <div class="be-fc-newrow">
+        <button class="be-btn primary" id="be-fc-new">+ 新建画布</button>
+      </div>
+      ${list.length ? `
+      <div class="be-fc-grid">
+        ${list.map(c => `
+          <div class="be-fc-card" data-id="${c.id}">
+            <div class="be-fc-thumb" style="background:${escapeHtml(c.bg?.color || '#f0ebe0')};">
+              <span class="be-fc-thumb-size">${c.width}×${c.height}</span>
+            </div>
+            <div class="be-fc-card-name">${escapeHtml(c.name || '未命名排版')}</div>
+            <div class="be-fc-card-meta">${formatDateTime(c.updatedAt)} · ${(c.elements||[]).length} 个元素</div>
+            <button class="be-fc-card-del" data-id="${c.id}" title="删除">×</button>
+          </div>
+        `).join('')}
+      </div>
+      ` : `<div class="be-empty">还没有自由排版草稿<br><span style="font-size:11px;">点上面"+ 新建画布"开始</span></div>`}
+    `;
+    body.querySelector('#be-fc-close').addEventListener('click', closeFreeform);
+    body.querySelector('#be-fc-new').addEventListener('click', openNewCanvasDialog);
+    body.querySelectorAll('.be-fc-card').forEach(card => {
+      card.addEventListener('click', e => {
+        if (e.target.closest('.be-fc-card-del')) return;
+        openFreeformEditor(card.getAttribute('data-id'));
+      });
+    });
+    body.querySelectorAll('.be-fc-card-del').forEach(btn => {
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        const id = btn.getAttribute('data-id');
+        if (!mainWin.confirm('删除这份自由排版草稿？此操作不可恢复。')) return;
+        deleteCanvas(id);
+        renderFreeform();
+        toast('已删除', 'success');
+      });
+    });
+  }
+
+  function openNewCanvasDialog() {
+    const MASK_ID = 'be-fc-new-mask';
+    let mask = mainDoc.getElementById(MASK_ID);
+    if (!mask) {
+      mask = mainDoc.createElement('div');
+      mask.id = MASK_ID;
+      mask.className = 'be-import-tpl-mask';
+      mask.innerHTML = `
+        <div class="be-import-tpl-box">
+          <div class="be-src-title">新建自由排版</div>
+          <div class="be-src-field">
+            <label>名称</label>
+            <input type="text" id="be-fc-new-name" placeholder="未命名排版">
+          </div>
+          <div class="be-src-field">
+            <label>画布尺寸</label>
+            <div class="be-radio-group" id="be-fc-size-group">
+              ${FC_SIZE_PRESETS.map(p => `<button type="button" class="be-radio-opt" data-k="${p.key}">${p.name}</button>`).join('')}
+            </div>
+          </div>
+          <div class="be-src-field" id="be-fc-custom-size-field" style="display:none;">
+            <label>自定义宽 × 高（像素）</label>
+            <div class="be-row" style="gap:8px;">
+              <input type="number" id="be-fc-custom-w" min="200" max="3000" value="900" style="width:90px;">
+              <span>×</span>
+              <input type="number" id="be-fc-custom-h" min="200" max="3000" value="1200" style="width:90px;">
+            </div>
+          </div>
+          <div class="be-src-field" id="be-fc-tpl-field" style="display:none;">
+            <label>或直接从已存的版式模板新建</label>
+            <div class="be-fc-tpl-list" id="be-fc-tpl-list"></div>
+          </div>
+          <div class="be-src-actions">
+            <button class="be-btn" id="be-fc-new-cancel">取消</button>
+            <button class="be-btn primary" id="be-fc-new-confirm">创建空白画布</button>
+          </div>
+        </div>
+      `;
+      mainDoc.body.appendChild(mask);
+      mask.addEventListener('click', e => { if (e.target === mask) mask.classList.remove('open'); });
+    } else if (mask.parentNode !== mainDoc.body || mask.nextSibling) {
+      mainDoc.body.appendChild(mask);
+    }
+    detectAndApplyTheme();
+    mask.querySelector('#be-fc-new-name').value = '';
+    let chosenPreset = FC_SIZE_PRESETS[0];
+    mask.querySelectorAll('#be-fc-size-group .be-radio-opt').forEach((b, i) => b.classList.toggle('active', i === 0));
+    mask.querySelector('#be-fc-custom-size-field').style.display = 'none';
+    mask.classList.add('open');
+
+    const tplList = mask.querySelector('#be-fc-tpl-list');
+    const tplField = mask.querySelector('#be-fc-tpl-field');
+    const templates = Array.isArray(settings.freeformTemplates) ? settings.freeformTemplates : [];
+    if (templates.length) {
+      tplField.style.display = '';
+      tplList.innerHTML = templates.map(t => `
+        <button type="button" class="be-fc-tpl-item" data-tid="${t.id}">
+          <span class="be-fc-tpl-item-name">${escapeHtml(t.name)}</span>
+          <span class="be-fc-tpl-item-meta">${t.width}×${t.height} · ${t.elements.length} 个元素</span>
+        </button>
+      `).join('');
+      tplList.querySelectorAll('.be-fc-tpl-item').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const tpl = templates.find(t => t.id === btn.getAttribute('data-tid'));
+          if (!tpl) return;
+          const canvas = fcCreateCanvasFromTemplate(tpl);
+          mask.classList.remove('open');
+          openFreeformEditor(canvas.id);
+        });
+      });
+    } else {
+      tplField.style.display = 'none';
+      tplList.innerHTML = '';
+    }
+
+    const close = () => mask.classList.remove('open');
+    const reNew = (sel, fn) => {
+      const el = mask.querySelector(sel);
+      const clone = el.cloneNode(true);
+      el.parentNode.replaceChild(clone, el);
+      clone.addEventListener('click', fn);
+      return clone;
+    };
+    mask.querySelectorAll('#be-fc-size-group .be-radio-opt').forEach(btn => {
+      btn.addEventListener('click', () => {
+        chosenPreset = FC_SIZE_PRESETS.find(p => p.key === btn.getAttribute('data-k')) || FC_SIZE_PRESETS[0];
+        mask.querySelectorAll('#be-fc-size-group .be-radio-opt').forEach(b => b.classList.toggle('active', b === btn));
+        mask.querySelector('#be-fc-custom-size-field').style.display = chosenPreset.key === 'custom' ? '' : 'none';
+      });
+    });
+    reNew('#be-fc-new-cancel', close);
+    reNew('#be-fc-new-confirm', () => {
+      const name = mask.querySelector('#be-fc-new-name').value.trim() || '未命名排版';
+      let w = chosenPreset.w, h = chosenPreset.h;
+      if (chosenPreset.key === 'custom') {
+        w = Math.max(200, Math.min(3000, Number(mask.querySelector('#be-fc-custom-w').value) || 900));
+        h = Math.max(200, Math.min(3000, Number(mask.querySelector('#be-fc-custom-h').value) || 1200));
+      }
+      const canvas = createCanvas(w, h, name);
+      close();
+      openFreeformEditor(canvas.id);
+    });
+  }
+
+  // 从存好的版式模板新建一份真正可编辑的画布：id 全部重新生成（不能沿用模板里的 id，
+  // 不然同一个模板新建两次会撞 id），图片元素在存模板时就已经被清成空占位框，这里原样落地即可。
+  function fcCreateCanvasFromTemplate(tpl) {
+    const all = loadCanvases();
+    const id = newCanvasId();
+    const elements = (tpl.elements || []).map(srcEl => ({ ...srcEl, id: fcNewElId() }));
+    all[id] = {
+      id, name: tpl.name || '未命名排版', createdAt: Date.now(), updatedAt: Date.now(),
+      width: tpl.width, height: tpl.height,
+      bg: tpl.bg ? { ...tpl.bg } : { color: '#ffffff', image: '' },
+      elements
+    };
+    saveCanvases(all);
+    return all[id];
+  }
+
+  // 存为模板：图片元素只留版式（位置/宽高/旋转），不带真实图片数据，变成空占位框等用户重新填图；
+  // 文字元素留全部样式，但把具体文字内容换成占位提示，模板复用的是"排版"，不是这一次写的具体内容。
+  function fcBuildTemplateElementsFromCanvas(canvas) {
+    return canvas.elements.map(el => {
+      if (el.type === 'image') {
+        return { id: el.id, type: 'image', x: el.x, y: el.y, w: el.w, h: el.h, rotate: el.rotate || 0, z: el.z || 0 };
+      }
+      return {
+        id: el.id, type: 'text', x: el.x, y: el.y, w: el.w, h: el.h, rotate: el.rotate || 0, z: el.z || 0,
+        html: '双击编辑文字',
+        fontSize: el.fontSize, fontFamily: el.fontFamily, lineHeight: el.lineHeight, letterSpacing: el.letterSpacing,
+        align: el.align, color: el.color, highlightBg: el.highlightBg, opacity: el.opacity, locked: false,
+        paragraphPreset: el.paragraphPreset, textStroke: el.textStroke ? { ...el.textStroke } : null,
+        writingMode: el.writingMode || 'horizontal-tb'
+      };
+    });
+  }
+
+  function openSaveTemplateDialog() {
+    const canvas = fcGetCanvas();
+    if (!canvas) return;
+    if (!canvas.elements.length) { toast('画布还是空的，先加点内容再存模板', 'info'); return; }
+    const MASK_ID = 'be-fc-savetpl-mask';
+    let mask = mainDoc.getElementById(MASK_ID);
+    if (!mask) {
+      mask = mainDoc.createElement('div');
+      mask.id = MASK_ID;
+      mask.className = 'be-import-tpl-mask';
+      mask.innerHTML = `
+        <div class="be-import-tpl-box">
+          <div class="be-src-title">存为版式模板</div>
+          <div class="be-src-field">
+            <label>模板名称</label>
+            <input type="text" id="be-fc-savetpl-name" placeholder="未命名模板">
+          </div>
+          <div class="be-fc-prop-row" style="font-size:11px;opacity:0.7;">
+            <span>图片会变成空占位框（不保存真实图片数据），文字保留样式但清空具体内容——存的是版式，不是这一次的正文</span>
+          </div>
+          <div class="be-src-actions">
+            <button class="be-btn" id="be-fc-savetpl-cancel">取消</button>
+            <button class="be-btn primary" id="be-fc-savetpl-confirm">保存</button>
+          </div>
+        </div>
+      `;
+      mainDoc.body.appendChild(mask);
+      mask.addEventListener('click', e => { if (e.target === mask) mask.classList.remove('open'); });
+    } else if (mask.parentNode !== mainDoc.body || mask.nextSibling) {
+      mainDoc.body.appendChild(mask);
+    }
+    detectAndApplyTheme();
+    mask.querySelector('#be-fc-savetpl-name').value = canvas.name || '';
+    mask.classList.add('open');
+
+    const reNew = (sel, fn) => {
+      const el = mask.querySelector(sel);
+      const clone = el.cloneNode(true);
+      el.parentNode.replaceChild(clone, el);
+      clone.addEventListener('click', fn);
+    };
+    reNew('#be-fc-savetpl-cancel', () => mask.classList.remove('open'));
+    reNew('#be-fc-savetpl-confirm', () => {
+      const name = mask.querySelector('#be-fc-savetpl-name').value.trim() || '未命名模板';
+      const tpl = {
+        id: 'ft' + Date.now() + Math.random().toString(36).slice(2, 6),
+        name, createdAt: Date.now(),
+        width: canvas.width, height: canvas.height,
+        bg: canvas.bg ? { ...canvas.bg } : { color: '#ffffff', image: '' },
+        elements: fcBuildTemplateElementsFromCanvas(canvas)
+      };
+      const list = Array.isArray(settings.freeformTemplates) ? settings.freeformTemplates : [];
+      list.push(tpl);
+      settings.freeformTemplates = list;
+      saveSettings(settings);
+      mask.classList.remove('open');
+      toast('已存为版式模板', 'success');
+    });
+  }
+
+  function openFreeformEditor(id) {
+    fcCurrentId = id;
+    fcView = 'editor';
+    fcUndoStack = [];
+    fcRedoStack = [];
+    fcPanelUndoDirty = false;
+    touchCanvas(id);
+    renderFreeform();
+  }
+
+  // ---- 编辑器状态（模块级，跟着当前打开的画布走）----
+  let fcSelected = null;      // 当前单选元素 id（跟 fcMultiSelected 互斥：多选时这个是 null）
+  let fcMultiSelected = [];   // 多选元素 id 列表，长度 >1 才算真正处于多选态
+  let fcEditingId = null;     // 正在编辑文字内容的元素 id（双击进入，失焦提交退出；编辑期间该元素不可拖）
+  let fcInteractBound = false; // interact.js 手势只需要绑定一次（selector 委托，元素重建后自动生效）
+  let fcRotating = null;      // 旋转手势临时状态
+  let fcBoxSelect = null;     // 框选拖拽临时状态 { startX, startY, curX, curY, moved, shiftKey }（画布本地坐标）
+  let fcLayerDragId = null;   // 图层面板拖拽排序临时状态
+  let fcUndoStack = [];       // 撤销栈：每项是当时 canvas.elements 的深拷贝快照，上限 FC_UNDO_LIMIT
+  let fcRedoStack = [];       // 重做栈：发生新动作（fcPushUndo 被调用）时清空
+  const FC_UNDO_LIMIT = 50;
+
+  function fcGetCanvas() { return loadCanvases()[fcCurrentId] || null; }
+  function fcCanvasEl() { return mainDoc.getElementById('be-fc-canvas'); }
+  function fcFindElement(id) {
+    const c = fcGetCanvas();
+    return c ? c.elements.find(e => e.id === id) : null;
+  }
+  function fcNewElId() { return 'e' + Date.now() + Math.random().toString(36).slice(2, 6); }
+  function fcMaxZ() {
+    const c = fcGetCanvas();
+    if (!c || !c.elements.length) return 0;
+    return Math.max(...c.elements.map(e => e.z || 0));
+  }
+  function fcCommitElement() {
+    // 一次手势（拖拽/缩放/旋转）结束时调用：写回 updatedAt + 防抖落盘
+    const c = fcGetCanvas();
+    if (!c) return;
+    c.updatedAt = Date.now();
+    saveCanvasesDebounced();
+  }
+
+  // 在即将发生的改动应用之前调用，把改动前的 elements 深拷贝压进撤销栈。数据模型都是纯 JSON
+  // （图片是已经压缩好的 dataURL 字符串），JSON.parse(JSON.stringify(...)) 深拷贝足够快也足够安全。
+  function fcPushUndo() {
+    const canvas = fcGetCanvas();
+    if (!canvas) return;
+    fcUndoStack.push(JSON.parse(JSON.stringify(canvas.elements)));
+    if (fcUndoStack.length > FC_UNDO_LIMIT) fcUndoStack.shift();
+    fcRedoStack = [];
+    fcSyncUndoButtons();
+  }
+  function fcUndo() {
+    const canvas = fcGetCanvas();
+    if (!canvas || !fcUndoStack.length) return;
+    fcRedoStack.push(JSON.parse(JSON.stringify(canvas.elements)));
+    if (fcRedoStack.length > FC_UNDO_LIMIT) fcRedoStack.shift();
+    canvas.elements = fcUndoStack.pop();
+    fcSelected = null;
+    fcMultiSelected = [];
+    fcCommitElement();
+    renderFcElements();
+    renderFcPropPanel();
+    fcSyncUndoButtons();
+  }
+  function fcRedo() {
+    const canvas = fcGetCanvas();
+    if (!canvas || !fcRedoStack.length) return;
+    fcUndoStack.push(JSON.parse(JSON.stringify(canvas.elements)));
+    if (fcUndoStack.length > FC_UNDO_LIMIT) fcUndoStack.shift();
+    canvas.elements = fcRedoStack.pop();
+    fcSelected = null;
+    fcMultiSelected = [];
+    fcCommitElement();
+    renderFcElements();
+    renderFcPropPanel();
+    fcSyncUndoButtons();
+  }
+  function fcSyncUndoButtons() {
+    const undoBtn = mainDoc.getElementById('be-fc-undo');
+    const redoBtn = mainDoc.getElementById('be-fc-redo');
+    if (undoBtn) undoBtn.disabled = fcUndoStack.length === 0;
+    if (redoBtn) redoBtn.disabled = fcRedoStack.length === 0;
+  }
+
+  function renderFreeformEditorView(body) {
+    const canvas = fcGetCanvas();
+    if (!canvas) { fcView = 'list'; renderFreeformListView(body); return; }
+    fcSelected = null;
+    body.innerHTML = `
+      <div class="be-fc-listhead">
+        <button class="be-btn" id="be-fc-back">‹ 返回</button>
+        <span class="be-fc-title">${escapeHtml(canvas.name)}</span>
+        <button class="be-btn" id="be-fc-close">×</button>
+      </div>
+      <div class="be-fc-toolbar">
+        <button class="be-btn" id="be-fc-undo" disabled title="撤销 (Ctrl+Z)">↩ 撤销</button>
+        <button class="be-btn" id="be-fc-redo" disabled title="重做 (Ctrl+Shift+Z)">↪ 重做</button>
+        <button class="be-btn" id="be-fc-add-text">+ 文字</button>
+        <button class="be-btn" id="be-fc-add-image">+ 图片</button>
+        <button class="be-btn" id="be-fc-split-image">裂图</button>
+        <button class="be-btn" id="be-fc-layers-toggle">图层</button>
+        <button class="be-btn danger" id="be-fc-del-selected" disabled>删除</button>
+        <span class="be-fc-toolbar-sep"></span>
+        <button class="be-btn" id="be-fc-save-template">存为模板</button>
+        <select id="be-fc-export-scale" title="导出倍率">
+          <option value="1">1x</option>
+          <option value="2" selected>2x</option>
+          <option value="3">3x</option>
+        </select>
+        <button class="be-btn primary" id="be-fc-export">导出图片</button>
+      </div>
+      <div class="be-fc-layers" id="be-fc-layers" style="display:none;"></div>
+      <div class="be-fc-multibar" id="be-fc-multibar" style="display:none;">
+        <span id="be-fc-multibar-count"></span>
+        <div class="be-fc-multibar-align">
+          <button type="button" class="be-fc-align-btn" data-align="left">左对齐</button>
+          <button type="button" class="be-fc-align-btn" data-align="hcenter">水平居中</button>
+          <button type="button" class="be-fc-align-btn" data-align="right">右对齐</button>
+          <button type="button" class="be-fc-align-btn" data-align="top">顶对齐</button>
+          <button type="button" class="be-fc-align-btn" data-align="vcenter">垂直居中</button>
+          <button type="button" class="be-fc-align-btn" data-align="bottom">底对齐</button>
+        </div>
+      </div>
+      <div class="be-fc-proppanel" id="be-fc-proppanel" style="display:none;"></div>
+      <div class="be-fc-canvas-wrap">
+        <div class="be-fc-canvas" id="be-fc-canvas" style="width:${canvas.width}px;height:${canvas.height}px;background:${escapeHtml(canvas.bg?.color || '#ffffff')};"></div>
+      </div>
+    `;
+    body.querySelector('#be-fc-back').addEventListener('click', () => { fcView = 'list'; renderFreeform(); });
+    body.querySelector('#be-fc-close').addEventListener('click', closeFreeform);
+    body.querySelector('#be-fc-undo').addEventListener('click', fcUndo);
+    body.querySelector('#be-fc-redo').addEventListener('click', fcRedo);
+    body.querySelector('#be-fc-export').addEventListener('click', fcExportCanvas);
+    body.querySelector('#be-fc-save-template').addEventListener('click', openSaveTemplateDialog);
+    body.querySelector('#be-fc-add-text').addEventListener('click', fcAddTextElement);
+    body.querySelector('#be-fc-add-image').addEventListener('click', fcAddImageElement);
+    body.querySelector('#be-fc-split-image').addEventListener('click', fcOpenSplitDialog);
+    body.querySelector('#be-fc-del-selected').addEventListener('click', fcDeleteSelected);
+    body.querySelector('#be-fc-layers-toggle').addEventListener('click', () => {
+      const panel = mainDoc.getElementById('be-fc-layers');
+      if (!panel) return;
+      const showing = panel.style.display !== 'none';
+      panel.style.display = showing ? 'none' : '';
+      if (!showing) renderFcLayersPanel();
+    });
+    body.querySelectorAll('.be-fc-align-btn').forEach(btn => {
+      btn.addEventListener('click', () => fcAlignSelected(btn.getAttribute('data-align')));
+    });
+
+    renderFcElements();
+    fcInitInteract();
+    fcSyncUndoButtons();
+
+    const canvasEl = fcCanvasEl();
+    canvasEl.addEventListener('pointerdown', fcCanvasPointerDown);
+    canvasEl.addEventListener('dblclick', fcCanvasDblClick);
+    canvasEl.addEventListener('focusout', fcCanvasFocusOut);
+    mainDoc.addEventListener('pointermove', fcCanvasPointerMove);
+    mainDoc.addEventListener('pointerup', fcCanvasPointerUp);
+    mainDoc.addEventListener('keydown', fcHandleUndoRedoKey);
+  }
+
+  // 编辑文字时 Ctrl+Z 应该走浏览器原生 contenteditable 的文字撤销，不能被画布级撤销抢走，
+  // 所以 fcEditingId 有值（正在编辑文字）时直接放行不拦截
+  function fcHandleUndoRedoKey(e) {
+    if (fcView !== 'editor' || fcEditingId) return;
+    if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'z') return;
+    e.preventDefault();
+    if (e.shiftKey) fcRedo(); else fcUndo();
+  }
+
+  // 双击文字进入编辑（这期间该元素不可拖，靠 .be-fc-text-body[contenteditable=true] 的 pointer-events
+  // 切换 + interact.js draggable 的 ignoreFrom 配合实现，不用手动打断拖拽手势）
+  function fcCanvasDblClick(e) {
+    // 未编辑态下 .be-fc-text-body 是 pointer-events:none，点击命中的其实是外层 .be-fc-el 包裹层，
+    // 所以要从包裹层往下找文字子元素，不能用 closest() 往上找（文字层是子级，不是祖先）
+    const wrap = e.target.closest('.be-fc-el');
+    if (!wrap) return;
+    const textEl = wrap.querySelector('.be-fc-text-body');
+    if (!textEl) return;
+    const id = wrap.getAttribute('data-id');
+    const el = fcFindElement(id);
+    if (!el || el.locked) return;
+    fcPushUndo(); // 进入编辑前存一份快照：整个打字会话当一次撤销，不逐字记录
+    fcEditingId = id;
+    textEl.setAttribute('contenteditable', 'true');
+    textEl.focus();
+  }
+  function fcCanvasFocusOut(e) {
+    const textEl = e.target.closest && e.target.closest('.be-fc-text-body');
+    if (!textEl || textEl.getAttribute('contenteditable') !== 'true') return;
+    const wrap = textEl.closest('.be-fc-el');
+    const id = wrap?.getAttribute('data-id');
+    const el = fcFindElement(id);
+    if (el) el.html = fcSanitizeHtml(textEl.innerHTML);
+    textEl.setAttribute('contenteditable', 'false');
+    fcEditingId = null;
+    fcCommitElement();
+  }
+  // 富文本白名单净化：只留 b/i/u/s/span[style 里只允许 color/font-family]/p/br，防止贴入乱七八糟的标签
+  function fcSanitizeHtml(html) {
+    try {
+      const tmp = mainDoc.createElement('div');
+      tmp.innerHTML = html;
+      const ALLOWED_TAGS = new Set(['B', 'I', 'U', 'S', 'SPAN', 'P', 'BR', 'STRONG', 'EM', 'STRIKE', 'UL', 'OL', 'LI', 'DIV', 'FONT']);
+      const walk = (node) => {
+        Array.from(node.childNodes).forEach(child => {
+          if (child.nodeType === 1) {
+            if (!ALLOWED_TAGS.has(child.tagName)) {
+              // 不认识的标签：保留子内容，剥掉标签本身
+              while (child.firstChild) node.insertBefore(child.firstChild, child);
+              node.removeChild(child);
+              return;
+            }
+            // 只保留 style 里的 color / font-family，丢掉别的（防止贴进来的富文本带一堆布局属性）
+            const style = child.getAttribute('style') || '';
+            const kept = [];
+            const colorM = style.match(/color\s*:\s*[^;]+/i);
+            const fontM = style.match(/font-family\s*:\s*[^;]+/i);
+            if (colorM) kept.push(colorM[0]);
+            if (fontM) kept.push(fontM[0]);
+            // execCommand('foreColor') 在个别引擎下会退化成 <font color="..">（老式属性写法，不是 style），转成 style 保留下来
+            const colorAttr = child.getAttribute('color');
+            if (colorAttr && !colorM) kept.push(`color:${colorAttr}`);
+            if (kept.length) child.setAttribute('style', kept.join(';'));
+            else child.removeAttribute('style');
+            ['class', 'id', 'onclick', 'onerror', 'color', 'face', 'size'].forEach(a => child.removeAttribute(a));
+            walk(child);
+          }
+        });
+      };
+      walk(tmp);
+      return tmp.innerHTML;
+    } catch (e) { return escapeHtml(html); }
+  }
+
+  // ---- 属性面板：选中文字元素时出现，逐字样式（加粗/斜体/下划线/删除线/颜色）靠浏览器原生
+  // execCommand 对当前选区包裹，段落级属性（字号/字体/行距/字距/对齐/高亮底色/描边）直接改数据。----
+  function renderFcPropPanel() {
+    const panel = mainDoc.getElementById('be-fc-proppanel');
+    if (!panel) return;
+    fcBindPanelUndoDelegation(panel);
+    if (fcMultiSelected.length > 1) { panel.innerHTML = ''; panel.style.display = 'none'; return; } // 多选态只显示批量工具条，不显示单元素属性面板
+    const el = fcSelected ? fcFindElement(fcSelected) : null;
+    if (!el) { panel.innerHTML = ''; panel.style.display = 'none'; return; }
+    panel.style.display = '';
+    if (el.type === 'text') {
+      panel.innerHTML = fcTextPropPanelHtml(el);
+      bindFcTextPropPanel(panel, el);
+    } else {
+      panel.innerHTML = fcImagePropPanelHtml(el);
+      bindFcImagePropPanel(panel, el);
+    }
+    bindFcCommonProp(panel, el);
+  }
+
+  // 属性面板里的滑块/数字框/颜色选择器这类"连续输入"控件（拖一下会连续触发一串 input 事件），
+  // 撤销栈不能每个 input 事件都存一份快照（会瞬间灌爆 50 条上限，还导致撤销一次只退一丁点）。
+  // 用捕获阶段监听（比控件自己的 input 监听器先跑一步）在一次"编辑会话"的第一个 input 事件时存一份
+  // 快照，同个会话后续的 input 都跳过，直到 change 事件（松手/失焦/选择器关闭）标志会话结束。
+  // 用 panel 容器一次性代理绑定（dataset 打标防止每次重渲染重复绑定），不用逐个控件手动加。
+  let fcPanelUndoDirty = false;
+  function fcBindPanelUndoDelegation(panel) {
+    if (panel.dataset.undoBound) return;
+    panel.dataset.undoBound = '1';
+    panel.addEventListener('input', () => {
+      if (!fcPanelUndoDirty) { fcPushUndo(); fcPanelUndoDirty = true; }
+    }, true);
+    panel.addEventListener('change', () => { fcPanelUndoDirty = false; }, true);
+  }
+
+  function fcTextPropPanelHtml(el) {
+    const fontOptions = [
+      `<option value="">跟随默认</option>`,
+      ...Object.values(FONTS).map(v => `<option value="${escapeHtml(v.css)}" ${el.fontFamily===v.css?'selected':''}>${escapeHtml(v.name)}</option>`),
+      ...(settings.customFonts||[]).map(f => `<option value="${escapeHtml(f.fontFamily||'')}" ${el.fontFamily===f.fontFamily?'selected':''}>${escapeHtml(f.name||'自定义')}</option>`)
+    ].join('');
+    const presets = [['','正文'],['quote','引用'],['h1','标题1'],['h2','标题2'],['ul','无序列表'],['ol','有序列表']];
+    return `
+      <div class="be-fc-prop-row">
+        <button type="button" class="be-fc-prop-btn" data-fmt="bold" title="加粗"><b>B</b></button>
+        <button type="button" class="be-fc-prop-btn" data-fmt="italic" title="斜体"><i>I</i></button>
+        <button type="button" class="be-fc-prop-btn" data-fmt="underline" title="下划线"><u>U</u></button>
+        <button type="button" class="be-fc-prop-btn" data-fmt="strikeThrough" title="删除线"><s>S</s></button>
+        <span class="be-fc-prop-sep"></span>
+        <button type="button" class="be-fc-prop-btn ${el.align==='left'?'active':''}" data-align="left">左</button>
+        <button type="button" class="be-fc-prop-btn ${el.align==='center'?'active':''}" data-align="center">中</button>
+        <button type="button" class="be-fc-prop-btn ${el.align==='right'?'active':''}" data-align="right">右</button>
+        <span class="be-fc-prop-sep"></span>
+        <button type="button" class="be-fc-prop-btn ${el.writingMode==='vertical-rl'?'active':''}" id="be-fc-writing-toggle" title="竖排文字">竖排</button>
+      </div>
+      <div class="be-fc-prop-row" style="font-size:10px;opacity:0.6;">
+        <span>加粗/斜体/下划线/删除线/文字色：双击文字进入编辑、选中要改的那几个字，再点上面按钮——逐字生效，不是整个框一个样</span>
+      </div>
+      <div class="be-fc-prop-row">
+        <label>颜色</label><input type="color" id="be-fc-color" value="${el.color||'#222222'}" title="选区颜色 / 默认字色">
+        <button type="button" class="be-btn" id="be-fc-eyedropper" style="padding:3px 8px;font-size:11px;" title="从屏幕任意位置取色">🎨吸管</button>
+        <label>字号</label><input type="number" id="be-fc-fontsize" min="8" max="120" value="${el.fontSize||18}" style="width:56px;">
+        <label>字体</label><select id="be-fc-fontfamily">${fontOptions}</select>
+      </div>
+      <div class="be-fc-prop-row">
+        <label>高亮底色</label><input type="color" id="be-fc-hlbg" value="${el.highlightBg&&el.highlightBg!=='transparent'?el.highlightBg:'#fff3a0'}">
+        <button type="button" class="be-btn" id="be-fc-hlbg-clear" style="padding:3px 8px;font-size:11px;">清除高亮</button>
+      </div>
+      <div class="be-fc-prop-row">
+        <label>行高</label><input type="range" id="be-fc-lh" min="1" max="2.6" step="0.05" value="${el.lineHeight||1.6}">
+        <label>字距</label><input type="range" id="be-fc-ls" min="0" max="0.3" step="0.01" value="${el.letterSpacing||0}">
+      </div>
+      <div class="be-fc-prop-row">
+        <label>段落</label>
+        <div class="be-radio-group" id="be-fc-preset-group">
+          ${presets.map(([k,name]) => `<button type="button" class="be-radio-opt ${el.paragraphPreset===k?'active':''}" data-p="${k}">${name}</button>`).join('')}
+        </div>
+      </div>
+      <div class="be-fc-prop-row">
+        <label class="be-toggle"><input type="checkbox" id="be-fc-stroke-on" ${el.textStroke?'checked':''}><span class="be-slider"></span></label>
+        <label>描边</label>
+        <input type="color" id="be-fc-stroke-color" value="${el.textStroke?el.textStroke.color:'#000000'}" ${el.textStroke?'':'disabled'}>
+        <input type="number" id="be-fc-stroke-width" min="0.5" max="6" step="0.5" value="${el.textStroke?el.textStroke.width:1}" style="width:50px;" ${el.textStroke?'':'disabled'}>
+      </div>
+      ${fcCommonPropRowHtml(el)}
+    `;
+  }
+
+  function fcRefreshSelectedNode() {
+    // 段落级属性改完，不用整画布重建（会丢正在编辑的焦点），只更新当前这一个节点的行内样式
+    const el = fcFindElement(fcSelected);
+    if (!el) return;
+    const node = mainDoc.getElementById('fc-el-' + el.id);
+    const textEl = node?.querySelector('.be-fc-text-body');
+    if (!textEl) return;
+    textEl.style.fontSize = (el.fontSize||18) + 'px';
+    textEl.style.fontFamily = el.fontFamily ? el.fontFamily.replace(/"/g,"'") : 'inherit';
+    textEl.style.lineHeight = el.lineHeight || 1.6;
+    textEl.style.letterSpacing = (el.letterSpacing||0) + 'em';
+    textEl.style.textAlign = el.align || 'left';
+    textEl.style.color = el.color || '#222222';
+    textEl.style.background = el.highlightBg || 'transparent';
+    textEl.style.webkitTextStroke = el.textStroke ? `${el.textStroke.width||1}px ${el.textStroke.color||'#000'}` : '';
+    textEl.style.fontWeight = (el.paragraphPreset === 'h1' || el.paragraphPreset === 'h2') ? '700' : '';
+    textEl.style.writingMode = el.writingMode === 'vertical-rl' ? 'vertical-rl' : 'horizontal-tb';
+  }
+
+  function bindFcTextPropPanel(panel, el) {
+    // 点面板上的按钮（非 input/select）时不能让 contenteditable 失焦——失焦会清掉当前选区/退出编辑态，
+    // 格式化按钮就再也找不到要作用于哪段文字了。inputs/select 保留原生焦点行为，不然颜色/下拉选不了。
+    panel.querySelectorAll('button').forEach(btn => {
+      btn.addEventListener('mousedown', e => e.preventDefault());
+    });
+    const ensureEditing = () => {
+      if (fcEditingId !== el.id) {
+        toast('先双击文字进入编辑，选中要改的文字再点格式按钮', 'info');
+        return false;
+      }
+      return true;
+    };
+    panel.querySelectorAll('[data-fmt]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        if (!ensureEditing()) return;
+        fcPushUndo();
+        try { mainDoc.execCommand('styleWithCSS', false, true); } catch (e) {}
+        try { mainDoc.execCommand(btn.getAttribute('data-fmt')); } catch (e) {}
+      });
+    });
+    panel.querySelector('#be-fc-color')?.addEventListener('input', e => {
+      const cur = fcFindElement(fcSelected);
+      if (!cur) return;
+      if (fcEditingId === el.id) {
+        try {
+          mainDoc.execCommand('styleWithCSS', false, true);
+          const sel = mainWin.getSelection();
+          if (sel && !sel.isCollapsed) { mainDoc.execCommand('foreColor', false, e.target.value); return; }
+        } catch (err) {}
+      }
+      cur.color = e.target.value;
+      fcRefreshSelectedNode();
+      fcCommitElement();
+    });
+    panel.querySelectorAll('[data-align]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const cur = fcFindElement(fcSelected);
+        if (!cur) return;
+        fcPushUndo();
+        cur.align = btn.getAttribute('data-align');
+        panel.querySelectorAll('[data-align]').forEach(b => b.classList.toggle('active', b === btn));
+        fcRefreshSelectedNode();
+        fcCommitElement();
+      });
+    });
+    panel.querySelector('#be-fc-writing-toggle')?.addEventListener('click', () => {
+      const cur = fcFindElement(fcSelected);
+      if (!cur) return;
+      fcPushUndo();
+      cur.writingMode = cur.writingMode === 'vertical-rl' ? 'horizontal-tb' : 'vertical-rl';
+      renderFcPropPanel();
+      fcRefreshSelectedNode();
+      fcCommitElement();
+    });
+    panel.querySelector('#be-fc-eyedropper')?.addEventListener('click', () => fcPickColorForText(el));
+    panel.querySelector('#be-fc-fontsize')?.addEventListener('input', e => {
+      const cur = fcFindElement(fcSelected);
+      if (!cur) return;
+      cur.fontSize = Math.max(8, Math.min(120, Number(e.target.value) || 18));
+      fcRefreshSelectedNode();
+      fcCommitElement();
+    });
+    panel.querySelector('#be-fc-fontfamily')?.addEventListener('change', e => {
+      const cur = fcFindElement(fcSelected);
+      if (!cur) return;
+      cur.fontFamily = e.target.value;
+      fcRefreshSelectedNode();
+      fcCommitElement();
+    });
+    panel.querySelector('#be-fc-hlbg')?.addEventListener('input', e => {
+      const cur = fcFindElement(fcSelected);
+      if (!cur) return;
+      cur.highlightBg = e.target.value;
+      fcRefreshSelectedNode();
+      fcCommitElement();
+    });
+    panel.querySelector('#be-fc-hlbg-clear')?.addEventListener('click', () => {
+      const cur = fcFindElement(fcSelected);
+      if (!cur) return;
+      fcPushUndo();
+      cur.highlightBg = '';
+      fcRefreshSelectedNode();
+      fcCommitElement();
+    });
+    panel.querySelector('#be-fc-lh')?.addEventListener('input', e => {
+      const cur = fcFindElement(fcSelected);
+      if (!cur) return;
+      cur.lineHeight = Number(e.target.value);
+      fcRefreshSelectedNode();
+      fcCommitElement();
+    });
+    panel.querySelector('#be-fc-ls')?.addEventListener('input', e => {
+      const cur = fcFindElement(fcSelected);
+      if (!cur) return;
+      cur.letterSpacing = Number(e.target.value);
+      fcRefreshSelectedNode();
+      fcCommitElement();
+    });
+    panel.querySelectorAll('#be-fc-preset-group .be-radio-opt').forEach(btn => {
+      btn.addEventListener('click', () => fcApplyParagraphPreset(btn.getAttribute('data-p')));
+    });
+    panel.querySelector('#be-fc-stroke-on')?.addEventListener('change', e => {
+      const cur = fcFindElement(fcSelected);
+      if (!cur) return;
+      cur.textStroke = e.target.checked ? { color: '#000000', width: 1 } : null;
+      renderFcPropPanel();
+      fcRefreshSelectedNode();
+      fcCommitElement();
+    });
+    panel.querySelector('#be-fc-stroke-color')?.addEventListener('input', e => {
+      const cur = fcFindElement(fcSelected);
+      if (!cur || !cur.textStroke) return;
+      cur.textStroke.color = e.target.value;
+      fcRefreshSelectedNode();
+      fcCommitElement();
+    });
+    panel.querySelector('#be-fc-stroke-width')?.addEventListener('input', e => {
+      const cur = fcFindElement(fcSelected);
+      if (!cur || !cur.textStroke) return;
+      cur.textStroke.width = Number(e.target.value) || 1;
+      fcRefreshSelectedNode();
+      fcCommitElement();
+    });
+  }
+
+  // 段落预设：引用块用真实引号文本节点（不是 CSS 伪元素）；列表用真实 ul/ol/li 但符号手写成字面字符
+  // （不依赖浏览器原生 ::marker 渲染，跟伪元素同理，html2canvas 支持不可靠）；标题只是字号/字重预设。
+  function fcApplyParagraphPreset(preset) {
+    const el = fcFindElement(fcSelected);
+    if (!el || el.type !== 'text') return;
+    fcPushUndo();
+    const node = mainDoc.getElementById('fc-el-' + el.id);
+    const textEl = node?.querySelector('.be-fc-text-body');
+    const currentHtml = textEl ? textEl.innerHTML : (el.html || '');
+    el.paragraphPreset = preset;
+    if (preset === 'h1') el.fontSize = Math.max(el.fontSize || 18, 32);
+    else if (preset === 'h2') el.fontSize = Math.max(el.fontSize || 18, 24);
+    if (preset === 'quote') {
+      el.html = `“${currentHtml}”`;
+    } else if (preset === 'ul' || preset === 'ol') {
+      const plain = (textEl ? textEl.innerText : currentHtml.replace(/<[^>]+>/g, '')) || '';
+      let lines = plain.split('\n').map(l => l.trim()).filter(Boolean);
+      if (!lines.length) lines = [''];
+      const tag = preset === 'ul' ? 'ul' : 'ol';
+      el.html = `<${tag} style="list-style:none;margin:0;padding:0;">` +
+        lines.map((line, i) => `<li>${preset === 'ul' ? '• ' : (i + 1) + '. '}${escapeHtml(line)}</li>`).join('') +
+        `</${tag}>`;
+    }
+    fcCommitElement();
+    renderFcElements();
+    renderFcPropPanel();
+  }
+
+  const FC_IMG_FILTERS = [
+    ['', '原图'],
+    ['grayscale(1)', '黑白'],
+    ['sepia(0.6) contrast(1.05)', '复古'],
+    ['contrast(1.3) saturate(1.2)', '高对比']
+  ];
+  const FC_IMG_MASKS = [['', '无'], ['circle', '圆形'], ['rounded', '圆角']];
+
+  function fcImagePropPanelHtml(el) {
+    return `
+      <div class="be-fc-prop-row">
+        <button type="button" class="be-btn" id="be-fc-img-recrop" style="padding:4px 10px;font-size:12px;">重新裁剪</button>
+        <button type="button" class="be-btn" id="be-fc-img-reset" style="padding:4px 10px;font-size:12px;">重置为原图</button>
+      </div>
+      <div class="be-fc-prop-row">
+        <label>边框</label>
+        <input type="number" id="be-fc-img-border-w" min="0" max="20" value="${el.border?el.border.width:0}" style="width:50px;">
+        <input type="color" id="be-fc-img-border-c" value="${el.border?el.border.color:'#ffffff'}">
+      </div>
+      <div class="be-fc-prop-row">
+        <label>滤镜</label>
+        <div class="be-radio-group" id="be-fc-img-filter-group">
+          ${FC_IMG_FILTERS.map(([v,name]) => `<button type="button" class="be-radio-opt ${((el.filter||'')===v)?'active':''}" data-f="${escapeHtml(v)}">${name}</button>`).join('')}
+        </div>
+      </div>
+      <div class="be-fc-prop-row">
+        <label>遮罩</label>
+        <div class="be-radio-group" id="be-fc-img-mask-group">
+          ${FC_IMG_MASKS.map(([v,name]) => `<button type="button" class="be-radio-opt ${((el.maskShape||'')===v)?'active':''}" data-m="${escapeHtml(v)}">${name}</button>`).join('')}
+        </div>
+      </div>
+      <div class="be-fc-prop-row" style="font-size:10px;opacity:0.6;">
+        <span>滤镜/遮罩会直接把效果画进图片本身（不是实时 CSS 特效），预览和导出永远长一个样</span>
+      </div>
+      ${fcCommonPropRowHtml(el)}
+    `;
+  }
+
+  // ---- 两类元素共用的控件：复制/粘贴样式（格式刷）、锁定、透明度。拼进各自面板模板末尾，
+  // 由 renderFcPropPanel 在类型专属的 bind 函数跑完后统一绑定一次。----
+  let fcStyleClipboard = null; // { type: 'text'|'image', style: {...} }，只能同类型粘贴
+  function fcCommonPropRowHtml(el) {
+    const canPaste = fcStyleClipboard && fcStyleClipboard.type === el.type;
+    return `
+      <div class="be-fc-prop-sep-row"></div>
+      <div class="be-fc-prop-row">
+        <button type="button" class="be-btn" id="be-fc-copy-style" style="padding:3px 8px;font-size:11px;" title="复制这个元素的样式（不含内容）">复制样式</button>
+        <button type="button" class="be-btn" id="be-fc-paste-style" style="padding:3px 8px;font-size:11px;" ${canPaste ? '' : 'disabled'} title="把复制的样式应用到当前选中元素">粘贴样式</button>
+        <button type="button" class="be-btn ${el.locked?'active':''}" id="be-fc-lock-toggle" style="padding:3px 8px;font-size:11px;">${el.locked ? '🔒 已锁定' : '🔓 锁定'}</button>
+      </div>
+      <div class="be-fc-prop-row">
+        <label>透明度</label>
+        <input type="range" id="be-fc-opacity" min="0.1" max="1" step="0.05" value="${el.opacity==null?1:el.opacity}">
+      </div>
+    `;
+  }
+  function bindFcCommonProp(panel, el) {
+    panel.querySelector('#be-fc-copy-style')?.addEventListener('click', () => fcCopyStyle(el));
+    panel.querySelector('#be-fc-paste-style')?.addEventListener('click', () => fcPasteStyle(el));
+    panel.querySelector('#be-fc-lock-toggle')?.addEventListener('click', () => {
+      fcPushUndo();
+      el.locked = !el.locked;
+      fcCommitElement();
+      renderFcElements();
+      renderFcPropPanel();
+    });
+    panel.querySelector('#be-fc-opacity')?.addEventListener('input', e => {
+      el.opacity = Number(e.target.value);
+      const node = mainDoc.getElementById('fc-el-' + el.id);
+      if (node) node.style.opacity = el.opacity;
+      fcCommitElement();
+    });
+  }
+  function fcCopyStyle(el) {
+    if (el.type === 'text') {
+      fcStyleClipboard = {
+        type: 'text',
+        style: {
+          fontSize: el.fontSize, fontFamily: el.fontFamily, color: el.color, align: el.align,
+          lineHeight: el.lineHeight, letterSpacing: el.letterSpacing, highlightBg: el.highlightBg,
+          textStroke: el.textStroke ? { ...el.textStroke } : null,
+          writingMode: el.writingMode || 'horizontal-tb'
+        }
+      };
+    } else {
+      fcStyleClipboard = {
+        type: 'image',
+        style: { border: el.border ? { ...el.border } : null, filter: el.filter || '', maskShape: el.maskShape || '' }
+      };
+    }
+    toast('已复制样式', 'success');
+    renderFcPropPanel();
+  }
+  function fcPasteStyle(el) {
+    if (!fcStyleClipboard || fcStyleClipboard.type !== el.type) return;
+    fcPushUndo();
+    if (el.type === 'text') {
+      Object.assign(el, fcStyleClipboard.style);
+      el.textStroke = fcStyleClipboard.style.textStroke ? { ...fcStyleClipboard.style.textStroke } : null;
+      fcCommitElement();
+      renderFcElements();
+      renderFcPropPanel();
+    } else {
+      el.border = fcStyleClipboard.style.border ? { ...fcStyleClipboard.style.border } : null;
+      el.filter = fcStyleClipboard.style.filter;
+      el.maskShape = fcStyleClipboard.style.maskShape;
+      fcBakeImageEffects(el); // 滤镜/遮罩要重新烧录到目标图片自己的像素上，fcBakeImageEffects 内部已经会 commit+重渲染
+    }
+    toast('已应用样式', 'success');
+  }
+
+  // ---- 吸管取色：优先用系统级 EyeDropper（能吸屏幕任意位置），不支持的浏览器降级成
+  // "点一下画布上的某个位置采样那一点颜色"（对着画布截一张位图，点击换算成位图坐标读像素）----
+  async function fcPickColorForText(el) {
+    // 记住目标元素 id，别在回调里现读 fcSelected——取色降级路径要点一下画布，
+    // 那一下点击会先经过 fcCanvasPointerDown/Up 的"点空白处取消选中"逻辑（pointerup 比 click 先触发），
+    // 等我们的取色回调跑起来时 fcSelected 早就被清空了，踩过这个坑。
+    const targetId = el.id;
+    const applyColor = (cur, hex) => {
+      fcPushUndo();
+      cur.color = hex;
+      fcSelected = targetId; // 取色期间选中态可能被上面说的那套逻辑清空，这里找补回来，面板才能正确刷新回这个元素
+      fcSyncSelectionUI();
+      fcRefreshSelectedNode();
+      fcCommitElement();
+      renderFcPropPanel();
+    };
+    if (mainWin.EyeDropper) {
+      try {
+        const ed = new mainWin.EyeDropper();
+        const result = await ed.open();
+        const cur = fcFindElement(targetId);
+        if (!cur || !result || !result.sRGBHex) return;
+        applyColor(cur, result.sRGBHex);
+      } catch (e) { /* 用户按 Esc 取消，静默即可 */ }
+      return;
+    }
+    toast('当前浏览器不支持系统取色器，改成点一下画布上想要的颜色来取色', 'info');
+    fcArmCanvasColorSample(hex => {
+      const cur = fcFindElement(targetId);
+      if (!cur) return;
+      applyColor(cur, hex);
+    });
+  }
+  function fcArmCanvasColorSample(callback) {
+    const canvasEl = fcCanvasEl();
+    if (!canvasEl) return;
+    loadH2C().then(h2c => h2c(canvasEl, { backgroundColor: null, scale: 1, useCORS: true, allowTaint: true, logging: false }))
+      .then(bitmap => {
+        const handler = (e) => {
+          canvasEl.removeEventListener('click', handler, true);
+          const rect = canvasEl.getBoundingClientRect();
+          const bx = Math.min(bitmap.width - 1, Math.max(0, Math.round((e.clientX - rect.left) / rect.width * bitmap.width)));
+          const by = Math.min(bitmap.height - 1, Math.max(0, Math.round((e.clientY - rect.top) / rect.height * bitmap.height)));
+          try {
+            const data = bitmap.getContext('2d').getImageData(bx, by, 1, 1).data;
+            const hex = '#' + [data[0], data[1], data[2]].map(v => v.toString(16).padStart(2, '0')).join('');
+            callback(hex);
+          } catch (err) { toast('取色采样失败', 'error'); }
+        };
+        canvasEl.addEventListener('click', handler, true);
+      })
+      .catch(() => toast('取色采样失败', 'error'));
+  }
+
+  function fcRefreshSelectedImageNode() {
+    const el = fcFindElement(fcSelected);
+    if (!el) return;
+    const node = mainDoc.getElementById('fc-el-' + el.id);
+    const imgNode = node?.querySelector('.be-fc-el-img');
+    if (!imgNode) return;
+    imgNode.style.border = el.border ? `${el.border.width}px solid ${el.border.color}` : 'none';
+    imgNode.style.boxSizing = 'border-box';
+  }
+
+  function bindFcImagePropPanel(panel, el) {
+    panel.querySelectorAll('button').forEach(btn => btn.addEventListener('mousedown', e => e.preventDefault()));
+    panel.querySelector('#be-fc-img-recrop')?.addEventListener('click', () => {
+      const cur = fcFindElement(fcSelected);
+      if (!cur) return;
+      const img = new Image();
+      img.onload = () => openFcCropDialog(img, { mode: 'recrop', elId: cur.id });
+      img.onerror = () => toast('原图加载失败，无法重新裁剪', 'error');
+      img.src = cur.originalSrc;
+    });
+    panel.querySelector('#be-fc-img-reset')?.addEventListener('click', () => {
+      const cur = fcFindElement(fcSelected);
+      if (!cur) return;
+      fcPushUndo();
+      cur.src = cur.originalSrc;
+      cur.filter = '';
+      cur.maskShape = '';
+      fcCommitElement();
+      renderFcElements();
+      renderFcPropPanel();
+    });
+    panel.querySelector('#be-fc-img-border-w')?.addEventListener('input', e => {
+      const cur = fcFindElement(fcSelected);
+      if (!cur) return;
+      const width = Math.max(0, Math.min(20, Number(e.target.value) || 0));
+      if (width <= 0) cur.border = null;
+      else cur.border = { width, color: (cur.border && cur.border.color) || '#ffffff' };
+      fcRefreshSelectedImageNode();
+      fcCommitElement();
+    });
+    panel.querySelector('#be-fc-img-border-c')?.addEventListener('input', e => {
+      const cur = fcFindElement(fcSelected);
+      if (!cur) return;
+      if (!cur.border) cur.border = { width: 4, color: e.target.value };
+      else cur.border.color = e.target.value;
+      fcRefreshSelectedImageNode();
+      fcCommitElement();
+    });
+    panel.querySelectorAll('#be-fc-img-filter-group .be-radio-opt').forEach(btn => {
+      btn.addEventListener('click', () => fcApplyImageFilter(btn.getAttribute('data-f')));
+    });
+    panel.querySelectorAll('#be-fc-img-mask-group .be-radio-opt').forEach(btn => {
+      btn.addEventListener('click', () => fcApplyImageMask(btn.getAttribute('data-m')));
+    });
+  }
+
+  function fcApplyImageFilter(filterCss) {
+    const el = fcFindElement(fcSelected);
+    if (!el || el.type !== 'image') return;
+    fcPushUndo();
+    el.filter = filterCss;
+    fcBakeImageEffects(el);
+  }
+  function fcApplyImageMask(maskShape) {
+    const el = fcFindElement(fcSelected);
+    if (!el || el.type !== 'image') return;
+    fcPushUndo();
+    el.maskShape = maskShape;
+    fcBakeImageEffects(el);
+  }
+  function fcRoundedRectPath(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+  // 滤镜/遮罩不做成实时 CSS 效果，而是在"应用"这一步用离屏 canvas 把效果真正画成新位图替换 src——
+  // html2canvas 对 CSS filter/mask-image 支持不可靠（project_html2canvas_export_limits 的教训），
+  // 烧录成静态图之后预览和导出看到的是同一张图，不存在"预览好看导出走样"的问题。
+  function fcBakeImageEffects(el) {
+    const img = new Image();
+    img.onerror = () => toast('图片效果处理失败', 'error');
+    img.onload = () => {
+      try {
+        const off = mainDoc.createElement('canvas');
+        off.width = img.naturalWidth || 1;
+        off.height = img.naturalHeight || 1;
+        const ctx = off.getContext('2d');
+        const hasMask = !!el.maskShape;
+        if (el.maskShape === 'circle') {
+          ctx.save();
+          ctx.beginPath();
+          const r = Math.min(off.width, off.height) / 2;
+          ctx.arc(off.width / 2, off.height / 2, r, 0, Math.PI * 2);
+          ctx.closePath();
+          ctx.clip();
+        } else if (el.maskShape === 'rounded') {
+          ctx.save();
+          const rad = Math.min(off.width, off.height) * 0.12;
+          fcRoundedRectPath(ctx, 0, 0, off.width, off.height, rad);
+          ctx.clip();
+        }
+        if (el.filter) ctx.filter = el.filter;
+        ctx.drawImage(img, 0, 0);
+        if (hasMask) ctx.restore();
+        el.src = fcCanvasToCompressedUrl(off, { png: hasMask });
+        fcCommitElement();
+        renderFcElements();
+        renderFcPropPanel();
+      } catch (e) {
+        toast('图片效果处理失败：' + (e?.message || e), 'error');
+      }
+    };
+    img.src = el.originalSrc;
+  }
+
+  function fcElementHtml(el) {
+    const common = `id="fc-el-${el.id}" class="be-fc-el be-fc-el-${el.type} ${el.id===fcSelected?'selected':''} ${el.locked?'locked':''}" data-id="${el.id}"
+      style="left:${el.x}px;top:${el.y}px;width:${el.w}px;height:${el.h}px;transform:rotate(${el.rotate||0}deg);z-index:${el.z||0};opacity:${el.opacity==null?1:el.opacity};"`;
+    const handles = `
+      <div class="be-fc-handle be-fc-handle-nw" data-h="nw"></div>
+      <div class="be-fc-handle be-fc-handle-ne" data-h="ne"></div>
+      <div class="be-fc-handle be-fc-handle-sw" data-h="sw"></div>
+      <div class="be-fc-handle be-fc-handle-se" data-h="se"></div>
+      <div class="be-fc-handle be-fc-handle-rotate" data-h="rotate"></div>
+    `;
+    if (el.type === 'text') {
+      const editable = el.id === fcEditingId;
+      const strokeCss = el.textStroke ? `-webkit-text-stroke:${el.textStroke.width||1}px ${el.textStroke.color||'#000'};` : '';
+      const weightCss = el.paragraphPreset === 'h1' || el.paragraphPreset === 'h2' ? 'font-weight:700;' : '';
+      const writingCss = el.writingMode === 'vertical-rl' ? 'writing-mode:vertical-rl;' : '';
+      return `<div ${common}>
+        <div class="be-fc-text-body" contenteditable="${editable ? 'true' : 'false'}" style="font-size:${el.fontSize||18}px;font-family:${el.fontFamily?el.fontFamily.replace(/"/g,"'"):'inherit'};line-height:${el.lineHeight||1.6};letter-spacing:${el.letterSpacing||0}em;text-align:${el.align||'left'};color:${el.color||'#222222'};background:${el.highlightBg||'transparent'};${strokeCss}${weightCss}${writingCss}">${el.html || '双击编辑文字'}</div>
+        ${handles}
+      </div>`;
+    }
+    if (el.type === 'image') {
+      const borderCss = el.border ? `border:${el.border.width}px solid ${el.border.color};box-sizing:border-box;` : '';
+      return `<div ${common}>
+        <img class="be-fc-el-img" src="${el.src||''}" draggable="false" alt="" style="${borderCss}">
+        ${handles}
+      </div>`;
+    }
+    return '';
+  }
+
+  function renderFcElements() {
+    const canvas = fcGetCanvas();
+    const canvasEl = fcCanvasEl();
+    if (!canvas || !canvasEl) return;
+    canvasEl.innerHTML = canvas.elements.slice().sort((a, b) => (a.z||0) - (b.z||0)).map(fcElementHtml).join('');
+    fcSyncSelectionUI();
+  }
+
+  // 单选/多选状态变化后要同步的三处 UI：画布元素的 .selected 高亮、删除按钮可用性、多选工具条显隐、图层面板
+  function fcSyncSelectionUI() {
+    const canvasEl = fcCanvasEl();
+    const selSet = fcMultiSelected.length > 1 ? new Set(fcMultiSelected) : new Set(fcSelected ? [fcSelected] : []);
+    if (canvasEl) {
+      canvasEl.querySelectorAll('.be-fc-el').forEach(n => n.classList.toggle('selected', selSet.has(n.getAttribute('data-id'))));
+    }
+    const delBtn = mainDoc.getElementById('be-fc-del-selected');
+    if (delBtn) delBtn.disabled = selSet.size === 0;
+    const multibar = mainDoc.getElementById('be-fc-multibar');
+    if (multibar) {
+      const active = fcMultiSelected.length > 1;
+      multibar.style.display = active ? 'flex' : 'none';
+      if (active) {
+        const countEl = mainDoc.getElementById('be-fc-multibar-count');
+        if (countEl) countEl.textContent = `已选中 ${fcMultiSelected.length} 个`;
+      }
+    }
+    renderFcLayersPanel();
+  }
+
+  // shift+点选：累加/移除到多选集合；集合缩到 <=1 个元素时自动退回单选态
+  function fcToggleMultiSelect(id) {
+    const idx = fcMultiSelected.indexOf(id);
+    if (idx >= 0) {
+      fcMultiSelected.splice(idx, 1);
+    } else {
+      if (fcMultiSelected.length === 0 && fcSelected && fcSelected !== id) fcMultiSelected.push(fcSelected);
+      fcMultiSelected.push(id);
+    }
+    if (fcMultiSelected.length <= 1) {
+      fcSelected = fcMultiSelected[0] || null;
+      fcMultiSelected = [];
+    } else {
+      fcSelected = null;
+    }
+    fcSyncSelectionUI();
+    renderFcPropPanel();
+  }
+
+  // 对齐基准是选中集合自身的包围盒（不是画布），跟用户描述的"批量对齐"一致
+  function fcAlignSelected(mode) {
+    if (fcMultiSelected.length < 2) return;
+    const els = fcMultiSelected.map(fcFindElement).filter(Boolean);
+    if (els.length < 2) return;
+    fcPushUndo();
+    const minX = Math.min(...els.map(e => e.x));
+    const maxX = Math.max(...els.map(e => e.x + e.w));
+    const minY = Math.min(...els.map(e => e.y));
+    const maxY = Math.max(...els.map(e => e.y + e.h));
+    els.forEach(e => {
+      if (e.locked) return;
+      if (mode === 'left') e.x = minX;
+      else if (mode === 'right') e.x = maxX - e.w;
+      else if (mode === 'hcenter') e.x = Math.round(minX + (maxX - minX - e.w) / 2);
+      else if (mode === 'top') e.y = minY;
+      else if (mode === 'bottom') e.y = maxY - e.h;
+      else if (mode === 'vcenter') e.y = Math.round(minY + (maxY - minY - e.h) / 2);
+      const node = mainDoc.getElementById('fc-el-' + e.id);
+      if (node) { node.style.left = e.x + 'px'; node.style.top = e.y + 'px'; }
+    });
+    fcCommitElement();
+  }
+
+  // ---- 图层面板：按 z 倒序（顶层在前）列出元素，点击选中，拖拽行调整层级，独立的锁定开关 ----
+  function renderFcLayersPanel() {
+    const panel = mainDoc.getElementById('be-fc-layers');
+    if (!panel) return;
+    const canvas = fcGetCanvas();
+    if (!canvas) { panel.innerHTML = ''; return; }
+    const sorted = canvas.elements.slice().sort((a, b) => (b.z || 0) - (a.z || 0));
+    const selSet = fcMultiSelected.length > 1 ? new Set(fcMultiSelected) : new Set(fcSelected ? [fcSelected] : []);
+    panel.innerHTML = sorted.length ? sorted.map(el => {
+      const icon = el.type === 'text' ? '📝' : '🖼️';
+      let preview;
+      if (el.type === 'text') {
+        const tmp = mainDoc.createElement('div');
+        tmp.innerHTML = el.html || '';
+        const text = (tmp.textContent || '').trim() || '(空文字)';
+        preview = `<span class="be-fc-layer-name">${escapeHtml(text.slice(0, 12))}</span>`;
+      } else {
+        preview = `<img class="be-fc-layer-thumb" src="${el.src || ''}" alt="">`;
+      }
+      return `
+        <div class="be-fc-layer-row ${selSet.has(el.id) ? 'selected' : ''}" draggable="true" data-id="${el.id}">
+          <span class="be-fc-layer-icon">${icon}</span>
+          ${preview}
+          <button type="button" class="be-fc-layer-lock ${el.locked ? 'active' : ''}" data-id="${el.id}" title="锁定/解锁">${el.locked ? '🔒' : '🔓'}</button>
+        </div>
+      `;
+    }).join('') : `<div class="be-empty" style="padding:12px;font-size:12px;">还没有元素</div>`;
+
+    panel.querySelectorAll('.be-fc-layer-row').forEach(row => {
+      row.addEventListener('click', e => {
+        if (e.target.closest('.be-fc-layer-lock')) return;
+        fcSelect(row.getAttribute('data-id'));
+      });
+      row.addEventListener('dragstart', () => { fcLayerDragId = row.getAttribute('data-id'); });
+      row.addEventListener('dragover', e => { e.preventDefault(); row.classList.add('dragover'); });
+      row.addEventListener('dragleave', () => row.classList.remove('dragover'));
+      row.addEventListener('drop', e => {
+        e.preventDefault();
+        row.classList.remove('dragover');
+        const targetId = row.getAttribute('data-id');
+        if (!fcLayerDragId || fcLayerDragId === targetId) return;
+        fcReorderLayer(fcLayerDragId, targetId, e);
+        fcLayerDragId = null;
+      });
+    });
+    panel.querySelectorAll('.be-fc-layer-lock').forEach(btn => {
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        const el = fcFindElement(btn.getAttribute('data-id'));
+        if (!el) return;
+        fcPushUndo();
+        el.locked = !el.locked;
+        fcCommitElement();
+        renderFcElements();
+      });
+    });
+  }
+
+  function fcReorderLayer(dragId, targetId, e) {
+    const canvas = fcGetCanvas();
+    if (!canvas) return;
+    const sorted = canvas.elements.slice().sort((a, b) => (b.z || 0) - (a.z || 0)); // 显示顺序：顶层在前
+    const fromIdx = sorted.findIndex(el => el.id === dragId);
+    if (fromIdx < 0) return;
+    fcPushUndo();
+    const [moved] = sorted.splice(fromIdx, 1);
+    const rowEl = mainDoc.querySelector(`.be-fc-layer-row[data-id="${targetId}"]`);
+    let insertBefore = true;
+    if (rowEl && e) {
+      const rect = rowEl.getBoundingClientRect();
+      insertBefore = (e.clientY - rect.top) < rect.height / 2;
+    }
+    const toIdx = sorted.findIndex(el => el.id === targetId);
+    if (toIdx < 0) return;
+    sorted.splice(insertBefore ? toIdx : toIdx + 1, 0, moved);
+    // 按显示顺序重新分配 z：列表最后一项（最底层）z=1，第一项（最顶层）z 最大
+    sorted.forEach((el, idx) => { el.z = sorted.length - idx; });
+    fcCommitElement();
+    renderFcElements();
+  }
+
+  function fcAddTextElement() {
+    const canvas = fcGetCanvas();
+    if (!canvas) return;
+    fcPushUndo();
+    const el = {
+      id: fcNewElId(), type: 'text', x: Math.round(canvas.width/2 - 100), y: Math.round(canvas.height/2 - 30),
+      w: 200, h: 60, rotate: 0, z: fcMaxZ() + 1,
+      html: '双击编辑文字', fontSize: 18, fontFamily: '', lineHeight: 1.6, letterSpacing: 0, align: 'left',
+      color: '#222222', highlightBg: '', opacity: 1, locked: false,
+      paragraphPreset: '', textStroke: null,  // textStroke: null 或 { color, width }
+      writingMode: 'horizontal-tb'
+    };
+    canvas.elements.push(el);
+    fcSelected = el.id;
+    fcCommitElement();
+    renderFcElements();
+    renderFcPropPanel();
+  }
+
+  function fcDeleteSelected() {
+    const canvas = fcGetCanvas();
+    if (!canvas) return;
+    const ids = fcMultiSelected.length > 1 ? fcMultiSelected.slice() : (fcSelected ? [fcSelected] : []);
+    if (!ids.length) return;
+    fcPushUndo();
+    canvas.elements = canvas.elements.filter(e => !ids.includes(e.id));
+    fcSelected = null;
+    fcMultiSelected = [];
+    fcCommitElement();
+    renderFcElements();
+    renderFcPropPanel();
+  }
+
+  // ---------- 图片：上传/裁剪/裂图/效果 ----------
+  function fcFileToImage(file) {
+    return new Promise((resolve, reject) => {
+      if (!file || !/^image\//.test(file.type)) { reject(new Error('请选择图片文件')); return; }
+      const fr = new FileReader();
+      fr.onerror = () => reject(new Error('读取文件失败'));
+      fr.onload = () => {
+        const img = new Image();
+        img.onerror = () => reject(new Error('图片解码失败'));
+        img.onload = () => resolve(img);
+        img.src = fr.result;
+      };
+      fr.readAsDataURL(file);
+    });
+  }
+
+  function fcCanvasToCompressedUrl(canvas, opts = {}) {
+    return opts.png ? canvas.toDataURL('image/png') : canvas.toDataURL('image/jpeg', 0.85);
+  }
+
+  function fcAddImageElement() {
+    const inp = mainDoc.createElement('input');
+    inp.type = 'file';
+    inp.accept = 'image/*';
+    inp.addEventListener('change', async ev => {
+      const f = ev.target.files && ev.target.files[0];
+      if (!f) return;
+      try {
+        const img = await fcFileToImage(f);
+        openFcCropDialog(img, { mode: 'new' });
+      } catch (e) {
+        toast('图片读取失败：' + (e?.message || e), 'error');
+      }
+    });
+    inp.click();
+  }
+
+  let _fcCropper = null;
+  function openFcCropDialog(img, opts) {
+    loadCropperAssets().then(CropperLib => {
+      const MASK_ID = 'be-fc-crop-mask';
+      let mask = mainDoc.getElementById(MASK_ID);
+      if (!mask) {
+        mask = mainDoc.createElement('div');
+        mask.id = MASK_ID;
+        mask.className = 'be-import-tpl-mask';
+        mask.innerHTML = `
+          <div class="be-import-tpl-box">
+            <div class="be-src-title">裁剪图片</div>
+            <div class="be-fc-crop-area"><img id="be-fc-crop-img" alt=""></div>
+            <div class="be-src-field">
+              <label>比例</label>
+              <div class="be-radio-group" id="be-fc-crop-aspect-group">
+                <button type="button" class="be-radio-opt active" data-a="0">自由</button>
+                <button type="button" class="be-radio-opt" data-a="1">1:1</button>
+                <button type="button" class="be-radio-opt" data-a="${4 / 3}">4:3</button>
+                <button type="button" class="be-radio-opt" data-a="${16 / 9}">16:9</button>
+              </div>
+            </div>
+            <div class="be-src-actions">
+              <button class="be-btn" id="be-fc-crop-cancel">取消</button>
+              <button class="be-btn primary" id="be-fc-crop-confirm">确定</button>
+            </div>
+          </div>
+        `;
+        mainDoc.body.appendChild(mask);
+        mask.addEventListener('click', e => { if (e.target === mask) fcCloseCropDialog(); });
+      } else if (mask.parentNode !== mainDoc.body || mask.nextSibling) {
+        mainDoc.body.appendChild(mask);
+      }
+      detectAndApplyTheme();
+      mask.classList.add('open');
+
+      const imgEl = mask.querySelector('#be-fc-crop-img');
+      const initCropper = () => {
+        if (_fcCropper) { _fcCropper.destroy(); _fcCropper = null; }
+        _fcCropper = new CropperLib(imgEl, { viewMode: 1, autoCropArea: 0.9, background: false });
+      };
+      imgEl.onload = initCropper;
+      imgEl.src = img.src;
+
+      const reNew = (sel, fn) => {
+        const el = mask.querySelector(sel);
+        const clone = el.cloneNode(true);
+        el.parentNode.replaceChild(clone, el);
+        clone.addEventListener('click', fn);
+        return clone;
+      };
+      const oldGroup = mask.querySelector('#be-fc-crop-aspect-group');
+      const group = oldGroup.cloneNode(true);
+      oldGroup.parentNode.replaceChild(group, oldGroup);
+      group.querySelectorAll('.be-radio-opt').forEach((b, i) => b.classList.toggle('active', i === 0));
+      group.querySelectorAll('.be-radio-opt').forEach(btn => {
+        btn.addEventListener('click', () => {
+          group.querySelectorAll('.be-radio-opt').forEach(b => b.classList.toggle('active', b === btn));
+          const a = Number(btn.getAttribute('data-a'));
+          if (_fcCropper) _fcCropper.setAspectRatio(a || NaN);
+        });
+      });
+      reNew('#be-fc-crop-cancel', fcCloseCropDialog);
+      reNew('#be-fc-crop-confirm', () => {
+        if (!_fcCropper) return;
+        try {
+          const outCanvas = _fcCropper.getCroppedCanvas({ maxWidth: 1600, maxHeight: 1600 });
+          if (!outCanvas) { toast('裁剪失败', 'error'); return; }
+          const aspect = outCanvas.width / outCanvas.height;
+          const dataUrl = fcCanvasToCompressedUrl(outCanvas, {});
+          fcCloseCropDialog();
+          fcCommitCroppedImage(dataUrl, aspect, opts);
+        } catch (e) {
+          toast('裁剪失败：' + (e?.message || e), 'error');
+        }
+      });
+    }).catch(e => toast('裁剪组件加载失败：' + (e?.message || e), 'error'));
+  }
+
+  function fcCloseCropDialog() {
+    const mask = mainDoc.getElementById('be-fc-crop-mask');
+    if (mask) mask.classList.remove('open');
+    if (_fcCropper) { _fcCropper.destroy(); _fcCropper = null; }
+  }
+
+  function fcCommitCroppedImage(dataUrl, aspect, opts) {
+    const canvas = fcGetCanvas();
+    if (!canvas) return;
+    fcPushUndo();
+    if (opts && opts.mode === 'recrop' && opts.elId) {
+      const el = fcFindElement(opts.elId);
+      if (!el) return;
+      el.originalSrc = dataUrl;
+      el.src = dataUrl;
+      el.filter = '';
+      el.maskShape = '';
+      fcSelected = el.id;
+    } else {
+      const w = 240;
+      const h = Math.round(w / (aspect || 1));
+      const el = {
+        id: fcNewElId(), type: 'image',
+        x: Math.round(canvas.width / 2 - w / 2), y: Math.round(canvas.height / 2 - h / 2),
+        w, h, rotate: 0, z: fcMaxZ() + 1,
+        originalSrc: dataUrl, src: dataUrl, filter: '', maskShape: '', border: null, opacity: 1, locked: false
+      };
+      canvas.elements.push(el);
+      fcSelected = el.id;
+    }
+    fcCommitElement();
+    renderFcElements();
+    renderFcPropPanel();
+  }
+
+  function fcOpenSplitDialog() {
+    const inp = mainDoc.createElement('input');
+    inp.type = 'file';
+    inp.accept = 'image/*';
+    inp.addEventListener('change', async ev => {
+      const f = ev.target.files && ev.target.files[0];
+      if (!f) return;
+      try {
+        const img = await fcFileToImage(f);
+        openFcSplitConfigDialog(img);
+      } catch (e) {
+        toast('图片读取失败：' + (e?.message || e), 'error');
+      }
+    });
+    inp.click();
+  }
+
+  function openFcSplitConfigDialog(img) {
+    const MASK_ID = 'be-fc-split-mask';
+    let mask = mainDoc.getElementById(MASK_ID);
+    if (!mask) {
+      mask = mainDoc.createElement('div');
+      mask.id = MASK_ID;
+      mask.className = 'be-import-tpl-mask';
+      mask.innerHTML = `
+        <div class="be-import-tpl-box">
+          <div class="be-src-title">裂图（自动切分成多张图片元素）</div>
+          <div class="be-src-field">
+            <label>切分方式</label>
+            <div class="be-radio-group" id="be-fc-split-mode-group">
+              <button type="button" class="be-radio-opt active" data-m="cols">纵向等份</button>
+              <button type="button" class="be-radio-opt" data-m="rows">横向等份</button>
+              <button type="button" class="be-radio-opt" data-m="grid">网格</button>
+            </div>
+          </div>
+          <div class="be-src-field">
+            <label id="be-fc-split-n-label">份数</label>
+            <input type="number" id="be-fc-split-n" min="2" max="6" value="2" style="width:70px;">
+          </div>
+          <div class="be-src-actions">
+            <button class="be-btn" id="be-fc-split-cancel">取消</button>
+            <button class="be-btn primary" id="be-fc-split-confirm">生成</button>
+          </div>
+        </div>
+      `;
+      mainDoc.body.appendChild(mask);
+      mask.addEventListener('click', e => { if (e.target === mask) mask.classList.remove('open'); });
+    } else if (mask.parentNode !== mainDoc.body || mask.nextSibling) {
+      mainDoc.body.appendChild(mask);
+    }
+    detectAndApplyTheme();
+    mask.classList.add('open');
+    mask.querySelector('#be-fc-split-n').value = '2';
+    mask.querySelector('#be-fc-split-n-label').textContent = '份数';
+
+    let chosenMode = 'cols';
+    const reNew = (sel, fn) => {
+      const el = mask.querySelector(sel);
+      const clone = el.cloneNode(true);
+      el.parentNode.replaceChild(clone, el);
+      clone.addEventListener('click', fn);
+      return clone;
+    };
+    const oldGroup = mask.querySelector('#be-fc-split-mode-group');
+    const group = oldGroup.cloneNode(true);
+    oldGroup.parentNode.replaceChild(group, oldGroup);
+    group.querySelectorAll('.be-radio-opt').forEach((b, i) => b.classList.toggle('active', i === 0));
+    group.querySelectorAll('.be-radio-opt').forEach(btn => {
+      btn.addEventListener('click', () => {
+        chosenMode = btn.getAttribute('data-m');
+        group.querySelectorAll('.be-radio-opt').forEach(b => b.classList.toggle('active', b === btn));
+        mask.querySelector('#be-fc-split-n-label').textContent = chosenMode === 'grid' ? '每边份数（N×N）' : '份数';
+      });
+    });
+    reNew('#be-fc-split-cancel', () => mask.classList.remove('open'));
+    reNew('#be-fc-split-confirm', () => {
+      const n = Math.max(2, Math.min(6, Number(mask.querySelector('#be-fc-split-n').value) || 2));
+      mask.classList.remove('open');
+      fcExecuteSplit(img, chosenMode, n);
+    });
+  }
+
+  function fcExecuteSplit(img, mode, n) {
+    const canvas = fcGetCanvas();
+    if (!canvas) return;
+    const w0 = img.naturalWidth, h0 = img.naturalHeight;
+    if (!w0 || !h0) { toast('图片尺寸无效', 'error'); return; }
+    fcPushUndo();
+    let cols = 1, rows = 1;
+    if (mode === 'cols') { cols = n; rows = 1; }
+    else if (mode === 'rows') { cols = 1; rows = n; }
+    else { cols = n; rows = n; }
+    const tileW0 = w0 / cols, tileH0 = h0 / rows;
+    const totalW = 360;
+    const tileW = totalW / cols;
+    const tileH = tileW * (tileH0 / tileW0);
+    const totalH = tileH * rows;
+    const startX = Math.round(canvas.width / 2 - totalW / 2);
+    const startY = Math.round(canvas.height / 2 - totalH / 2);
+    let created = 0, lastEl = null, z = fcMaxZ();
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const off = mainDoc.createElement('canvas');
+        off.width = Math.max(1, Math.round(tileW0));
+        off.height = Math.max(1, Math.round(tileH0));
+        const ctx = off.getContext('2d');
+        ctx.drawImage(img, c * tileW0, r * tileH0, tileW0, tileH0, 0, 0, off.width, off.height);
+        const dataUrl = fcCanvasToCompressedUrl(off, {});
+        z += 1;
+        const el = {
+          id: fcNewElId(), type: 'image',
+          x: Math.round(startX + c * tileW), y: Math.round(startY + r * tileH),
+          w: Math.round(tileW), h: Math.round(tileH), rotate: 0, z,
+          originalSrc: dataUrl, src: dataUrl, filter: '', maskShape: '', border: null, opacity: 1, locked: false
+        };
+        canvas.elements.push(el);
+        lastEl = el;
+        created += 1;
+      }
+    }
+    if (lastEl) fcSelected = lastEl.id;
+    fcCommitElement();
+    renderFcElements();
+    renderFcPropPanel();
+    toast(`已生成 ${created} 张切片`, 'success');
+  }
+
+  function fcSelect(id) {
+    fcSelected = id;
+    fcMultiSelected = [];
+    fcSyncSelectionUI();
+    renderFcPropPanel();
+  }
+
+  function fcCanvasPointerDown(e) {
+    const handle = e.target.closest('.be-fc-handle-rotate');
+    if (handle) {
+      const wrap = handle.closest('.be-fc-el');
+      const id = wrap?.getAttribute('data-id');
+      const el = fcFindElement(id);
+      if (!el || el.locked) return;
+      fcPushUndo();
+      const rect = wrap.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
+      fcRotating = { id, cx, cy, startAngle: el.rotate || 0, startPointerAngle: Math.atan2(e.clientY - cy, e.clientX - cx) };
+      e.preventDefault();
+      return;
+    }
+    const t = e.target.closest('.be-fc-el');
+    if (t && !e.target.closest('.be-fc-handle')) {
+      const id = t.getAttribute('data-id');
+      if (e.shiftKey) {
+        fcToggleMultiSelect(id);
+      } else if (!(fcMultiSelected.length > 1 && fcMultiSelected.includes(id))) {
+        // 点的不是已有多选集合里的成员才收回成单选；点已选中的组内成员保留整组选中，方便直接拖走整组
+        fcSelect(id);
+      }
+    } else if (e.target === fcCanvasEl()) {
+      const canvasEl = fcCanvasEl();
+      const rect = canvasEl.getBoundingClientRect();
+      const x = e.clientX - rect.left, y = e.clientY - rect.top;
+      fcBoxSelect = { startX: x, startY: y, curX: x, curY: y, moved: false, shiftKey: e.shiftKey };
+    }
+  }
+  function fcCanvasPointerMove(e) {
+    if (fcRotating) {
+      const ang = Math.atan2(e.clientY - fcRotating.cy, e.clientX - fcRotating.cx);
+      const deltaDeg = (ang - fcRotating.startPointerAngle) * 180 / Math.PI;
+      const el = fcFindElement(fcRotating.id);
+      if (!el) return;
+      el.rotate = Math.round(fcRotating.startAngle + deltaDeg);
+      const node = mainDoc.getElementById('fc-el-' + el.id);
+      if (node) node.style.transform = `rotate(${el.rotate}deg)`;
+      return;
+    }
+    if (fcBoxSelect) {
+      const canvasEl = fcCanvasEl();
+      if (!canvasEl) return;
+      const rect = canvasEl.getBoundingClientRect();
+      fcBoxSelect.curX = e.clientX - rect.left;
+      fcBoxSelect.curY = e.clientY - rect.top;
+      if (!fcBoxSelect.moved && (Math.abs(fcBoxSelect.curX - fcBoxSelect.startX) > 3 || Math.abs(fcBoxSelect.curY - fcBoxSelect.startY) > 3)) {
+        fcBoxSelect.moved = true;
+      }
+      fcRenderSelBox();
+    }
+  }
+  function fcCanvasPointerUp() {
+    if (fcRotating) {
+      fcRotating = null;
+      fcCommitElement();
+      return;
+    }
+    if (fcBoxSelect) {
+      if (fcBoxSelect.moved) {
+        const canvas = fcGetCanvas();
+        const x1 = Math.min(fcBoxSelect.startX, fcBoxSelect.curX), x2 = Math.max(fcBoxSelect.startX, fcBoxSelect.curX);
+        const y1 = Math.min(fcBoxSelect.startY, fcBoxSelect.curY), y2 = Math.max(fcBoxSelect.startY, fcBoxSelect.curY);
+        const hitIds = (canvas ? canvas.elements : [])
+          .filter(el => el.x < x2 && el.x + el.w > x1 && el.y < y2 && el.y + el.h > y1)
+          .map(el => el.id);
+        if (fcBoxSelect.shiftKey) {
+          if (fcSelected && !fcMultiSelected.includes(fcSelected)) fcMultiSelected.push(fcSelected);
+          hitIds.forEach(id => { if (!fcMultiSelected.includes(id)) fcMultiSelected.push(id); });
+        } else {
+          fcMultiSelected = hitIds.slice();
+        }
+        if (fcMultiSelected.length <= 1) {
+          fcSelected = fcMultiSelected[0] || null;
+          fcMultiSelected = [];
+        } else {
+          fcSelected = null;
+        }
+        fcSyncSelectionUI();
+        renderFcPropPanel();
+      } else {
+        fcSelect(null); // 没有真正拖动 = 点击空白处，保留原来的"点空白取消选中"行为
+      }
+      fcBoxSelect = null;
+      fcRenderSelBox();
+    }
+  }
+  // 框选拖拽中的可视矩形反馈；fcBoxSelect 为空或还没真正拖动时清掉残留的框
+  function fcRenderSelBox() {
+    const canvasEl = fcCanvasEl();
+    if (!canvasEl) return;
+    if (!fcBoxSelect || !fcBoxSelect.moved) {
+      const old = mainDoc.getElementById('be-fc-selbox');
+      if (old) old.remove();
+      return;
+    }
+    let box = mainDoc.getElementById('be-fc-selbox');
+    if (!box) {
+      box = mainDoc.createElement('div');
+      box.id = 'be-fc-selbox';
+      box.className = 'be-fc-selbox';
+      canvasEl.appendChild(box);
+    }
+    const x1 = Math.min(fcBoxSelect.startX, fcBoxSelect.curX), x2 = Math.max(fcBoxSelect.startX, fcBoxSelect.curX);
+    const y1 = Math.min(fcBoxSelect.startY, fcBoxSelect.curY), y2 = Math.max(fcBoxSelect.startY, fcBoxSelect.curY);
+    box.style.left = x1 + 'px'; box.style.top = y1 + 'px';
+    box.style.width = (x2 - x1) + 'px'; box.style.height = (y2 - y1) + 'px';
+  }
+
+  // 轻量吸附：拖拽中心贴近画布中心线 / 其它元素中心时吸附，range 内没有候选时返回 null（不吸附）
+  function fcSnapTargetFn(x, y, interaction) {
+    const canvas = fcGetCanvas();
+    const canvasEl = fcCanvasEl();
+    if (!canvas || !canvasEl) return null;
+    const range = 8;
+    const rect = canvasEl.getBoundingClientRect();
+    const ccx = rect.left + rect.width / 2, ccy = rect.top + rect.height / 2;
+    let sx = null, sy = null;
+    if (Math.abs(x - ccx) < range) sx = ccx;
+    if (Math.abs(y - ccy) < range) sy = ccy;
+    const draggedId = interaction?.element?.getAttribute('data-id');
+    canvas.elements.forEach(el => {
+      if (el.id === draggedId) return;
+      const node = mainDoc.getElementById('fc-el-' + el.id);
+      if (!node) return;
+      const r = node.getBoundingClientRect();
+      const ecx = r.left + r.width / 2, ecy = r.top + r.height / 2;
+      if (sx === null && Math.abs(x - ecx) < range) sx = ecx;
+      if (sy === null && Math.abs(y - ecy) < range) sy = ecy;
+    });
+    if (sx === null && sy === null) return null;
+    return { x: sx === null ? x : sx, y: sy === null ? y : sy };
+  }
+
+  async function fcInitInteract() {
+    if (fcInteractBound) return;
+    let interactLib;
+    try { interactLib = await loadInteract(); } catch (e) { console.warn('[书摘] interact.js 加载失败：', e); return; }
+    if (!interactLib || fcInteractBound) return;
+    fcInteractBound = true;
+    const canvasEl = fcCanvasEl();
+    interactLib('.be-fc-el', { context: canvasEl })
+      .draggable({
+        listeners: {
+          start(event) {
+            const target = event.target.closest('.be-fc-el');
+            const id = target?.getAttribute('data-id');
+            const el = id && fcFindElement(id);
+            if (!el || el.locked) return;
+            fcPushUndo(); // 手势开始时存一次快照，不在 move 里高频存
+          },
+          move(event) {
+            const target = event.target.closest('.be-fc-el');
+            if (!target) return;
+            const id = target.getAttribute('data-id');
+            const el = fcFindElement(id);
+            if (!el || el.locked) return;
+            // 拖的是多选集合里的成员时，同一份位移增量施加给集合内每个未锁定元素（"批量移动"）
+            const group = (fcMultiSelected.length > 1 && fcMultiSelected.includes(id)) ? fcMultiSelected : [id];
+            group.forEach(gid => {
+              const gEl = fcFindElement(gid);
+              if (!gEl || gEl.locked) return;
+              gEl.x += event.dx;
+              gEl.y += event.dy;
+              const node = gid === id ? target : mainDoc.getElementById('fc-el-' + gid);
+              if (node) { node.style.left = gEl.x + 'px'; node.style.top = gEl.y + 'px'; }
+            });
+          },
+          end() { fcCommitElement(); }
+        },
+        modifiers: [
+          interactLib.modifiers.snap({
+            targets: [fcSnapTargetFn],
+            relativePoints: [{ x: 0.5, y: 0.5 }],
+            offset: 'self'
+          })
+        ],
+        ignoreFrom: '.be-fc-handle, .be-fc-text-body'
+      })
+      .resizable({
+        edges: { left: true, right: true, top: true, bottom: true },
+        ignoreFrom: '.be-fc-text-body[contenteditable="true"]',
+        listeners: {
+          start(event) {
+            const target = event.target.closest('.be-fc-el');
+            const id = target?.getAttribute('data-id');
+            const el = id && fcFindElement(id);
+            if (!el || el.locked) return;
+            fcPushUndo();
+          },
+          move(event) {
+            const target = event.target.closest('.be-fc-el');
+            if (!target) return;
+            const id = target.getAttribute('data-id');
+            const el = fcFindElement(id);
+            if (!el || el.locked) return;
+            el.w = Math.round(event.rect.width);
+            el.h = Math.round(event.rect.height);
+            el.x += event.deltaRect.left;
+            el.y += event.deltaRect.top;
+            target.style.width = el.w + 'px';
+            target.style.height = el.h + 'px';
+            target.style.left = el.x + 'px';
+            target.style.top = el.y + 'px';
+          },
+          end() { fcCommitElement(); }
+        },
+        modifiers: [
+          interactLib.modifiers.restrictSize({ min: { width: 24, height: 24 } })
+        ]
+      });
+  }
+
+  // ---------- 导出 ----------
+  // 沙箱思路跟卡片导出的 renderInSandbox 一致（隐藏 iframe + 把书摘自己的样式表/字体复制进去 + html2canvas
+  // 截图），但自由画布是固定尺寸的独立"画布"而不是一段跟随内容撑高的卡片，所以另起一个专用实现而不是
+  // 直接调用 renderInSandbox（那个函数里头像 clone / 诗笺竖排量宽度这些逻辑跟自由画布毫无关系）。
+  // 字体：内置字体是 <link id="be-font-*"> 引入的外部样式表，自定义上传字体是 #be-custom-font-style
+  // 里的 @import 规则——两者都要复制进沙箱 iframe 自己的文档，不然 @font-face 只在主文档生效，
+  // iframe 是独立的样式作用域，看不到主文档 import 过的字体。
+  async function fcRenderInSandbox(canvasEl, canvasData, scale, h2c) {
+    const iframe = mainDoc.createElement('iframe');
+    iframe.setAttribute('aria-hidden', 'true');
+    const w = canvasData.width, h = canvasData.height;
+    iframe.style.cssText = `position:fixed;left:-99999px;top:0;width:${w + 4}px;height:${h + 4}px;border:0;visibility:hidden;`;
+    mainDoc.body.appendChild(iframe);
+    try {
+      const idoc = iframe.contentDocument;
+      const fontLinks = Array.from(mainDoc.querySelectorAll('link[id^="be-font-"]'))
+        .map(l => `<link rel="stylesheet" href="${l.href}">`).join('');
+      const styleText = (mainDoc.getElementById('be-style')?.textContent || '') + '\n' +
+                        (mainDoc.getElementById('be-custom-font-style')?.textContent || '');
+      idoc.open();
+      idoc.write(`<!DOCTYPE html><html><head>
+        <meta charset="utf-8">
+        ${fontLinks}
+        <style>html,body{margin:0;padding:0;background:transparent;}</style>
+        <style>${styleText}</style>
+      </head><body></body></html>`);
+      idoc.close();
+      await new Promise(r => setTimeout(r, 16));
+      const clone = canvasEl.cloneNode(true);
+      // 清掉只在编辑态才有意义的东西：缩放/旋转手柄、选中框、框选残留矩形、还处于编辑态的 contenteditable
+      clone.querySelectorAll('.be-fc-handle').forEach(n => n.remove());
+      clone.querySelectorAll('.be-fc-el').forEach(n => n.classList.remove('selected'));
+      const selbox = clone.querySelector('.be-fc-selbox');
+      if (selbox) selbox.remove();
+      clone.querySelectorAll('[contenteditable]').forEach(n => n.setAttribute('contenteditable', 'false'));
+      clone.style.width = w + 'px';
+      clone.style.height = h + 'px';
+      clone.style.boxShadow = 'none';
+      clone.style.overflow = 'hidden'; // 编辑器里为了手柄可抓故意没裁，导出这裁到画布边界
+      idoc.body.appendChild(clone);
+      await new Promise(r => setTimeout(r, 16));
+      try {
+        await Promise.race([
+          (idoc.fonts && idoc.fonts.ready) || Promise.resolve(),
+          new Promise(r => setTimeout(r, 1800))
+        ]);
+      } catch (e) {}
+      await new Promise(r => setTimeout(r, 32));
+      const canvas = await h2c(clone, {
+        backgroundColor: canvasData.bg?.color || '#ffffff',
+        scale,
+        useCORS: true,
+        allowTaint: true,
+        imageTimeout: 0,
+        logging: false,
+        windowWidth: w,
+        windowHeight: h
+      });
+      return canvas;
+    } finally {
+      try { iframe.remove(); } catch (e) {}
+    }
+  }
+
+  async function fcExportCanvas() {
+    const canvasData = fcGetCanvas();
+    const canvasEl = fcCanvasEl();
+    if (!canvasData || !canvasEl) return;
+    // 导出前失焦，避免把光标/输入法候选框截进图里
+    const editing = canvasEl.querySelector('.be-fc-text-body[contenteditable="true"]');
+    if (editing) { try { editing.blur(); } catch (e) {} }
+    const btn = mainDoc.getElementById('be-fc-export');
+    const oldText = btn ? btn.textContent : '';
+    if (btn) { btn.textContent = '生成中…'; btn.disabled = true; }
+    await new Promise(r => setTimeout(r, 32));
+    try {
+      const scaleSel = mainDoc.getElementById('be-fc-export-scale');
+      const scale = Math.max(1, Math.min(3, Number(scaleSel?.value) || 2));
+      const h2c = await withTimeout(loadH2C(), 8000, '加载截图库');
+      const rendered = await withTimeout(fcRenderInSandbox(canvasEl, canvasData, scale, h2c), 20000, '生成图片');
+      const ts = new Date();
+      const fname = `书摘_排版_${ts.getFullYear()}${String(ts.getMonth()+1).padStart(2,'0')}${String(ts.getDate()).padStart(2,'0')}_${String(ts.getHours()).padStart(2,'0')}${String(ts.getMinutes()).padStart(2,'0')}.png`;
+      if (settings.saveMode === 'popup') {
+        const dataUrl = rendered.toDataURL('image/png');
+        try { rendered.width = rendered.height = 0; } catch (e) {}
+        showImagePopup(dataUrl);
+      } else {
+        const img = await canvasToImage(rendered, 'image/png');
+        let ok = false;
+        try { ok = triggerDownload(img, fname); } catch (e) { ok = false; }
+        if (ok) {
+          try { rendered.width = rendered.height = 0; } catch (e) {}
+          toast('已导出图片', 'success');
+        } else {
+          const dataUrl = (typeof img === 'string') ? img : rendered.toDataURL('image/png');
+          try { rendered.width = rendered.height = 0; } catch (e) {}
+          showImagePopup(dataUrl);
+          toast('下载未能触发，已自动切换为弹图，请长按保存', 'info');
+        }
+      }
+    } catch (e) {
+      console.error('[书摘] 自由排版导出失败:', e);
+      toast('导出失败：' + fmtErr(e), 'error');
+    } finally {
+      if (btn) { btn.textContent = oldText; btn.disabled = false; }
+    }
+  }
+
   // ---------- 菜单入口 ----------
   function injectMenuEntry() {
     const tryInject = () => {
       const menu = mainDoc.getElementById('extensionsMenu');
       if (!menu) return false;
       const old = mainDoc.getElementById('be-menu-entry');
-      if (old && !isStaleGen(old)) return true;
-      if (old) { try { old.remove(); } catch (e) {} }   // 旧脚本实例残留：监听器已死，重建
-      const div = stampGen(mainDoc.createElement('div'));
-      div.id = 'be-menu-entry';
-      div.className = 'list-group-item flex-container flexGap5 interactable';
-      div.tabIndex = 0;
-      div.innerHTML = `<div class="fa-fw fa-solid fa-bookmark extensionsMenuExtensionButton"></div><span>书摘笔记</span>`;
-      div.addEventListener('click', () => openPanel('notes'));
-      menu.appendChild(div);
+      if (!old || isStaleGen(old)) {
+        if (old) { try { old.remove(); } catch (e) {} }   // 旧脚本实例残留：监听器已死，重建
+        const div = stampGen(mainDoc.createElement('div'));
+        div.id = 'be-menu-entry';
+        div.className = 'list-group-item flex-container flexGap5 interactable';
+        div.tabIndex = 0;
+        div.innerHTML = `<div class="fa-fw fa-solid fa-bookmark extensionsMenuExtensionButton"></div><span>书摘笔记</span>`;
+        div.addEventListener('click', () => openPanel('notes'));
+        menu.appendChild(div);
+      }
+      // 自由排版入口：仅扩展形态 + 设置里开着才出现，关掉就撤掉，不留痕迹
+      const wantFreeform = IS_EXTENSION && settings.freeformEnabled;
+      const oldFc = mainDoc.getElementById('be-menu-entry-freeform');
+      if (!wantFreeform) {
+        if (oldFc) { try { oldFc.remove(); } catch (e) {} }
+      } else if (!oldFc || isStaleGen(oldFc)) {
+        if (oldFc) { try { oldFc.remove(); } catch (e) {} }
+        const divFc = stampGen(mainDoc.createElement('div'));
+        divFc.id = 'be-menu-entry-freeform';
+        divFc.className = 'list-group-item flex-container flexGap5 interactable';
+        divFc.tabIndex = 0;
+        divFc.innerHTML = `<div class="fa-fw fa-solid fa-object-group extensionsMenuExtensionButton"></div><span>自由排版</span>`;
+        divFc.addEventListener('click', () => openFreeformList());
+        menu.appendChild(divFc);
+      }
       return true;
     };
     if (!tryInject()) {
@@ -6771,7 +8985,8 @@ $(() => {
 
   $(window).on('pagehide', () => {
     ['be-float-bar', 'be-mask', 'be-thought-mask', 'be-source-mask', 'be-panel', 'be-style', 'be-menu-entry',
-     'be-hl-bar', 'be-viewer-mask', 'be-imgpop', 'be-merge-badge', 'be-merge-sheet', 'be-merge-target-mask'].forEach(id => {
+     'be-hl-bar', 'be-viewer-mask', 'be-imgpop', 'be-merge-badge', 'be-merge-sheet', 'be-merge-target-mask',
+     'be-menu-entry-freeform', 'be-fc-mask'].forEach(id => {
       mainDoc.getElementById(id)?.remove();
     });
   });
