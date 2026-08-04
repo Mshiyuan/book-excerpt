@@ -7,7 +7,7 @@ $(() => {
 
   const SCRIPT_ID = 'book-excerpt';
   const SCRIPT_NAME = '书摘';
-  const VERSION = '1.3.0';
+  const VERSION = '1.4.0';
   const LS_SETTINGS = `${SCRIPT_ID}:settings`;
   const LS_NOTES = `${SCRIPT_ID}:notes`;
   // 本次脚本实例的代号。酒馆助手可能在不刷新页面的情况下重建脚本 iframe（热更新/切聊天等），
@@ -21,14 +21,15 @@ $(() => {
   const DEFAULT_SETTINGS = {
     template: 'classic',           // 排版：classic / inkwhite / note / jinshu / calendar
     colorPreset: 'paper-warm',     // 颜色配色（固定搭配 id 或 'custom'）
-    customBg: '#f5f1e8',           // 自定义背景色
-    customFgEnabled: false,        // 自定义字色开关
-    customFg: '#222222',           // 自定义字色
+    customBg: '#f5f1e8',           // 自定义背景色（旧版单份自定义配色，仅作迁移源，见 customColors）
+    customFgEnabled: false,        // 自定义字色开关（同上，仅作迁移源）
+    customFg: '#222222',           // 自定义字色（同上，仅作迁移源）
+    customColors: [],              // 用户保存的自定义配色列表 [{id, name, bg, fg, fgEnabled}]
     palette: 'macaron',            // 划线色系：morandi/macaron/mondrian/memphis/matisse
     avatarType: 'user',            // 头像类型：user / char / custom
     customAvatar: '',              // 自定义头像 dataURL（avatarType==='custom' 时使用）
     font: 'follow_theme',
-    quoteFontSize: 19,             // 正文字号 px（14~22）
+    quoteFontSize: 19,             // 正文字号 px（11~22）
     quoteLineHeight: 2.05,         // 正文行距（1.5~2.3）
     quoteLetterSpacing: 0.04,      // 正文字间距 em（0~0.15）
     cardWidth: 440,                // 书摘整体宽度 px（针对竖屏排版，300~440）
@@ -62,9 +63,10 @@ $(() => {
     lastColor: '',                 // 上次实际用的划线颜色（空=用 style 对应的默认色）
     saveMode: 'download',          // 保存图片方式：download 下载文件 / popup 弹图长按保存（部分内嵌浏览器不支持下载时用）
     keepDelLine: false,            // 书摘卡片是否保留原文的删除线（del/s 划掉效果）
-    mergeEnabled: false,           // 划线合并：点划线可加入合并篮子 + 悬浮篮子入口（默认关，不影响现有用户界面）
+    mergeEnabled: true,            // 划线合并：点划线可加入合并篮子 + 悬浮篮子入口（v1.4.0 起默认开，老用户已保存的选择不受影响）
     mergeDefaultTarget: '',        // 合并完成后默认动作：'' 每次询问 / 'note' 直接存为笔记 / 'card' 直接生成书摘
-    mergeDeleteOriginal: ''        // 合并后原划线怎么处理：'' 每次询问 / 'delete' 删除原划线 / 'keep' 保留原划线
+    mergeDeleteOriginal: '',       // 合并后原划线怎么处理：'' 每次询问 / 'delete' 删除原划线 / 'keep' 保留原划线
+    highlightDisabled: false       // 划线总开关（关闭时不影响已有划线显示，只关掉“选中文字弹浮动栏”这一步，供与其它选中类插件冲突的用户使用）
   };
 
   // ---------- 模板（仅排版，颜色独立）----------
@@ -149,20 +151,25 @@ $(() => {
   //  · 选了某个固定预设 → 直接用预设的 bg+fg 搭配
   //  · 选了自定义颜色 → bg 用 customBg；
   //    若开启了"自定义字色"，fg=customFg；否则按 bg 明度自动选黑/奶白
-  function resolveColors() {
-    const useCustom = settings.colorPreset === 'custom';
-    if (!useCustom) {
-      const p = COLOR_PRESETS.find(x => x.id === settings.colorPreset)
-             || COLOR_PRESETS.find(x => x.id === 'paper-warm');
-      return { ...p };
-    }
-    const bg = settings.customBg || '#f5f1e8';
+  function resolveCustomColor(bg, fgEnabled, fgVal) {
+    bg = bg || '#f5f1e8';
     const lum = parseLuminance(bg);
     const autoFg = (lum != null && lum > 0.55) ? '#1a1a1a' : '#f0e6c6';
-    const fg = settings.customFgEnabled ? (settings.customFg || autoFg) : autoFg;
-    const subLum = parseLuminance(fg);
+    const fg = fgEnabled ? (fgVal || autoFg) : autoFg;
     const sub = mixColor(fg, bg, 0.55); // 子色：fg 和 bg 的混合
     return { bg, fg, sub, avatarBg: mixColor(fg, bg, 0.85) };
+  }
+  function resolveColors() {
+    if (settings.colorPreset === 'custom') {
+      return resolveCustomColor(settings.customBg, settings.customFgEnabled, settings.customFg);
+    }
+    if (typeof settings.colorPreset === 'string' && settings.colorPreset.indexOf('saved-') === 0) {
+      const item = (settings.customColors || []).find(x => x.id === settings.colorPreset.slice(6));
+      if (item) return resolveCustomColor(item.bg, item.fgEnabled, item.fg);
+    }
+    const p = COLOR_PRESETS.find(x => x.id === settings.colorPreset)
+           || COLOR_PRESETS.find(x => x.id === 'paper-warm');
+    return { ...p };
   }
 
   // 在 fg 和 bg 之间混合（t=0 是 fg，t=1 是 bg）
@@ -1262,10 +1269,10 @@ $(() => {
     .be-note-card.be-merge-pickable { cursor: pointer; }
     .be-merge-check {
       flex: 0 0 auto;
-      width: 20px; height: 20px; border-radius: 50%;
+      min-width: 20px; height: 20px; padding: 0 3px; border-radius: 10px;
       border: 1px solid var(--be-thought-border);
       display: flex; align-items: center; justify-content: center;
-      font-size: 12px; margin-right: 4px; align-self: center;
+      font-size: 11px; font-weight: 600; margin-right: 4px; align-self: center;
     }
     .be-note-card.be-merge-picked .be-merge-check {
       background: var(--be-accent, #c9a76a);
@@ -1929,6 +1936,27 @@ $(() => {
       font-weight: 500;
     }
 
+    /* 设置面板二级分组 tab：比上面的主 tab 弱一级，字更小、更紧凑，一眼看出是下一层级 */
+    .be-settings-subtabs {
+      display: flex; gap: 4px;
+      margin: 2px 0 18px;
+      border-bottom: 1px solid var(--be-panel-divider);
+    }
+    .be-settings-subtabs button {
+      flex: 1; background: transparent; border: none;
+      color: var(--be-panel-sub);
+      padding: 8px 4px; font-size: 12px; cursor: pointer;
+      font-family: inherit;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+      transition: color 0.15s ease, border-color 0.15s ease;
+    }
+    .be-settings-subtabs button.active {
+      color: var(--be-accent);
+      border-bottom-color: var(--be-accent);
+      font-weight: 500;
+    }
+
     #be-panel .be-p-body {
       padding: 2px 18px 24px;
       overflow-y: auto; flex: 1; color: var(--be-panel-fg);
@@ -2208,6 +2236,17 @@ $(() => {
     .be-color-dot.rainbow.active {
       outline: 2px solid var(--be-accent);
       outline-offset: 2px;
+    }
+    .be-color-dot-wrap {
+      position: relative; width: 100%; aspect-ratio: 1 / 1; max-width: 52px; justify-self: center;
+    }
+    .be-color-dot-wrap .be-color-dot { position: absolute; inset: 0; max-width: none; }
+    .be-color-del {
+      position: absolute; top: -4px; right: -4px; z-index: 1;
+      width: 16px; height: 16px; border-radius: 50%;
+      background: rgba(0,0,0,0.6); color: #fff;
+      font-size: 11px; line-height: 16px; text-align: center;
+      cursor: pointer; user-select: none;
     }
 
     #be-panel select, #be-panel input[type=text] {
@@ -2618,6 +2657,7 @@ $(() => {
   let lastText = '';
   let lastRichText = '';   // 与 lastText 同源、但用 \u0001…\u0002 标记出原文删除线段（仅书摘卡片渲染用；为空表示选区内没有删除线）
   let lastRange = null;
+  let lastRangeFrame = null;   // lastRange 若来自状态栏 iframe，记这个 iframe 元素；mainDoc 选区时为 null
   let selDebounce = null;
   // 划线合并篮子：{ key, text, rich, source: 'sel'|'note', noteId? } 的内存数组，不落盘。
   // iframe 被酒馆助手重建（热更新/切聊天）会随实例一起清空，属于可接受的边界情况。
@@ -2686,6 +2726,7 @@ $(() => {
   }
 
   function checkSelection() {
+    if (settings.highlightDisabled) { hideBar(); return; }
     const sel = mainWin.getSelection();
     if (!sel || sel.rangeCount === 0 || sel.isCollapsed) { hideBar(); return; }
     let range;
@@ -2699,6 +2740,7 @@ $(() => {
     lastText = text;
     lastRichText = picked.rich;
     lastRange = range.cloneRange();
+    lastRangeFrame = null;
     const rects = range.getClientRects();
     const rect = rects.length ? rects[rects.length - 1] : range.getBoundingClientRect();
     showBar(rect);
@@ -2846,7 +2888,7 @@ $(() => {
   function applyStyleAndColor(noteId, newStyle, newColor) {
     const note = findNoteById(noteId);
     if (!note) return;
-    const spans = mainDoc.querySelectorAll(`.be-highlight[data-be-id="${noteId}"]`);
+    const spans = queryAllHighlightSpans(`.be-highlight[data-be-id="${noteId}"]`);
     spans.forEach(span => {
       // 切换 style-class
       span.classList.remove('style-underline', 'style-wavy', 'style-marker');
@@ -2861,7 +2903,7 @@ $(() => {
   }
 
   function unwrapHighlightSpans(id) {
-    const spans = mainDoc.querySelectorAll(`.be-highlight[data-be-id="${id}"]`);
+    const spans = queryAllHighlightSpans(`.be-highlight[data-be-id="${id}"]`);
     const parents = new Set();
     spans.forEach(span => {
       const parent = span.parentNode;
@@ -2877,7 +2919,7 @@ $(() => {
   // 解耦：即使笔记记录已丢失（localStorage 写失败导致），只要 DOM 里还有 span，也要能清掉。
   function deleteHighlightById(id) {
     const note = findNoteById(id);
-    const spans = mainDoc.querySelectorAll(`.be-highlight[data-be-id="${id}"]`);
+    const spans = queryAllHighlightSpans(`.be-highlight[data-be-id="${id}"]`);
     if (!note && !spans.length) return;
     if (note) removeNote(note.charKey, id);
     unwrapHighlightSpans(id);
@@ -2953,6 +2995,10 @@ $(() => {
   }
   function isInMergeBasket(noteId) {
     return mergeBasket.some(x => x.noteId === noteId);
+  }
+  function mergeBasketOrder(noteId) {
+    const idx = mergeBasket.findIndex(x => x.noteId === noteId);
+    return idx === -1 ? 0 : idx + 1;
   }
 
   function ensureMergeBadge() {
@@ -3175,11 +3221,106 @@ $(() => {
     hideBar();
   }, true);
 
+  // ---------- 状态栏 iframe 划线（best-effort）----------
+  // 部分正则/自定义 HTML 渲染的状态栏用 iframe/srcdoc 做样式隔离，iframe 有自己独立的 document/Selection，
+  // 挂在 mainDoc 上的选区监听完全看不到里面的选区变化——这里尽力去发现同源 iframe，把选区监听/划线包裹
+  // 扩展进去；跨域 iframe 天然读不到内容，直接跳过，不报错不阻塞其它功能。
+  // 已知限制：iframe 通常随消息重新渲染整个替换（比如正则重跑），已经划的线大概率跟着旧 iframe 一起消失，
+  // 不像消息正文那样有 restoreHighlights 做内容匹配复原——这里只保证"当次能选中、能划线、当次会话内可见"。
+  const trackedFrames = new Set(); // 普通 Set（不是 WeakSet）：删除/改样式划线时要能遍历已跟踪的 iframe 文档
+  const frameDocMap = new WeakMap(); // document -> 对应的 iframe 元素，供“点击已有划线”时反查坐标换算
+  function queryAllHighlightSpans(selector) {
+    // 已划线的 span 可能分布在 mainDoc，也可能在某个状态栏 iframe 自己的文档里，
+    // 删除/改样式这类操作要能一并找到，不然会出现"笔记记录删了、iframe 里视觉上还留着"的不一致
+    let out = Array.from(mainDoc.querySelectorAll(selector));
+    trackedFrames.forEach(iframeEl => {
+      const d = frameSelDoc(iframeEl);
+      if (!d) return;
+      try { out = out.concat(Array.from(d.querySelectorAll(selector))); } catch (e) {}
+    });
+    return out;
+  }
+
+  function frameSelDoc(iframeEl) {
+    try { return iframeEl.contentDocument || null; } catch (e) { return null; }
+  }
+  function frameSelWin(iframeEl) {
+    try { return iframeEl.contentWindow || null; } catch (e) { return null; }
+  }
+  function isInsideChatFrame(iframeEl) {
+    // iframe 自己的文档里不会有 .mes_text/.mes 这些 class，要回到主文档看这个 iframe 元素本身挂在哪
+    try { return !!iframeEl.closest('.mes_text, .mes_block, .mes'); } catch (e) { return false; }
+  }
+  function translateFrameRect(rect, iframeEl) {
+    let off;
+    try { off = iframeEl.getBoundingClientRect(); } catch (e) { off = { left: 0, top: 0 }; }
+    return {
+      left: rect.left + off.left, right: rect.right + off.left,
+      top: rect.top + off.top, bottom: rect.bottom + off.top
+    };
+  }
+  function checkSelectionInFrame(iframeEl) {
+    if (settings.highlightDisabled) return;
+    if (!isInsideChatFrame(iframeEl)) return;
+    const win = frameSelWin(iframeEl);
+    if (!win) return;
+    let sel;
+    try { sel = win.getSelection(); } catch (e) { return; }
+    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) { hideBar(); return; }
+    let range;
+    try { range = sel.getRangeAt(0); } catch (e) { return; }
+    const picked = getRangeText(range);
+    const text = picked.text;
+    if (!text || text.length < 1) { hideBar(); return; }
+    lastText = text;
+    lastRichText = picked.rich;
+    lastRange = range.cloneRange();
+    lastRangeFrame = iframeEl;
+    const rects = range.getClientRects();
+    const rect = rects.length ? rects[rects.length - 1] : range.getBoundingClientRect();
+    showBar(translateFrameRect(rect, iframeEl));
+  }
+  let frameSelDebounce = null;
+  function scheduleFrameCheck(iframeEl, delay = 80) {
+    if (frameSelDebounce) clearTimeout(frameSelDebounce);
+    frameSelDebounce = setTimeout(() => checkSelectionInFrame(iframeEl), delay);
+  }
+  function trackIframeForSelection(iframeEl) {
+    if (!iframeEl || trackedFrames.has(iframeEl)) return;
+    const bind = () => {
+      const doc = frameSelDoc(iframeEl);
+      if (!doc) return; // 跨域/未就绪，跳过
+      trackedFrames.add(iframeEl);
+      frameDocMap.set(doc, iframeEl);
+      try {
+        doc.addEventListener('selectionchange', () => scheduleFrameCheck(iframeEl, 120));
+        doc.addEventListener('mouseup', () => scheduleFrameCheck(iframeEl, 30));
+        doc.addEventListener('touchend', () => scheduleFrameCheck(iframeEl, 120));
+      } catch (e) {}
+    };
+    const doc0 = frameSelDoc(iframeEl);
+    if (!doc0 || doc0.readyState === 'loading') {
+      iframeEl.addEventListener('load', bind, { once: true });
+    } else {
+      bind();
+    }
+  }
+  function scanForStatusBarFrames(root) {
+    try {
+      (root || mainDoc).querySelectorAll('.mes_text iframe').forEach(trackIframeForSelection);
+    } catch (e) {}
+  }
+
   // ---------- 划线 ----------
   function createHighlight(text, range, opts = {}) {
     if (!range) return null;
     const ctx = getContext();
-    const msgEl = (range.startContainer.nodeType === 1 ? range.startContainer : range.startContainer.parentElement)?.closest('.mes');
+    // 选区若来自状态栏 iframe，range 所在文档里没有 .mes 祖先（iframe 自己的 document 不认识这个 class），
+    // 要回到 iframe 元素本身在主文档里的位置去找
+    let msgEl = (range.startContainer.nodeType === 1 ? range.startContainer : range.startContainer.parentElement)?.closest('.mes');
+    if (!msgEl && lastRangeFrame) {
+      try { msgEl = lastRangeFrame.closest('.mes'); } catch (e) {}
+    }
     const msgId = msgEl?.getAttribute('mesid') || '';
     const thoughtOnly = !!opts.thoughtOnly;
     // 优先沿用上次实际使用的样式/颜色，没用过则回退到设置里的默认
@@ -3207,6 +3348,9 @@ $(() => {
   }
 
   function wrapRange(range, id, style = 'underline', strip = true, hasThought = false, thoughtOnly = false, color = '') {
+    // 选区所在的实际 document——正常情况下就是 mainDoc；若来自状态栏 iframe 则是那个 iframe 自己的 document，
+    // 包裹用的 <span>/TreeWalker 都要用这个 document 创建，不能永远假设是 mainDoc
+    const doc = (range.startContainer && range.startContainer.ownerDocument) || mainDoc;
     const className = `be-highlight style-${style}${strip ? ' strip-style' : ''}${hasThought ? ' has-thought' : ''}${thoughtOnly ? ' thought-only' : ''}`;
     const attachHandlers = (span) => {
       span.className = className;
@@ -3222,7 +3366,7 @@ $(() => {
 
     // 单容器：可直接 surround（同一段落内）
     try {
-      const span = attachHandlers(mainDoc.createElement('span'));
+      const span = attachHandlers(doc.createElement('span'));
       range.surroundContents(span);
       return [span];
     } catch (e) {}
@@ -3237,7 +3381,7 @@ $(() => {
     // 收集 range 内所有非空 text node
     const textNodes = [];
     const root = range.commonAncestorContainer;
-    const walker = mainDoc.createTreeWalker(
+    const walker = doc.createTreeWalker(
       root.nodeType === 1 ? root : root.parentNode,
       NodeFilter.SHOW_TEXT,
       {
@@ -3274,7 +3418,7 @@ $(() => {
       if (to < target.nodeValue.length) {
         target.splitText(to);
       }
-      const span = attachHandlers(mainDoc.createElement('span'));
+      const span = attachHandlers(doc.createElement('span'));
       target.parentNode.insertBefore(span, target);
       span.appendChild(target);
       spans.push(span);
@@ -3322,6 +3466,7 @@ $(() => {
   function restoreHighlights() {
     try { restoreHighlightsInner(); }
     catch (e) { console.warn('[BookExcerpt] restoreHighlights failed:', e); }
+    scanForStatusBarFrames(); // 同一批触发时机顺带扫一遍新出现的状态栏 iframe（消息渲染/切聊天/DOM 变化）
   }
   function restoreHighlightsInner() {
     const ctx = getContext();
@@ -3513,7 +3658,11 @@ $(() => {
     renderHlBar(bar, noteId);
     // 定位（贴近 anchorEl 下方；不够则上方）
     const anchor = anchorEl || mainDoc.querySelector(`.be-highlight[data-be-id="${noteId}"]`);
-    const rect = anchor ? anchor.getBoundingClientRect() : { left: 100, top: 100, right: 200, bottom: 120 };
+    // 划线 span 若在状态栏 iframe 里，getBoundingClientRect 是相对 iframe 自身视口的，要换算成 mainDoc 坐标
+    const anchorFrame = anchor && anchor.ownerDocument !== mainDoc ? frameDocMap.get(anchor.ownerDocument) : null;
+    const rect = anchor
+      ? (anchorFrame ? translateFrameRect(anchor.getBoundingClientRect(), anchorFrame) : anchor.getBoundingClientRect())
+      : { left: 100, top: 100, right: 200, bottom: 120 };
     bar.classList.add('show');
     bar.classList.remove('arrow-bottom');
     bar.style.left = '-9999px'; bar.style.top = '-9999px';
@@ -4109,6 +4258,10 @@ $(() => {
             <div class="be-drawer-chip be-color-chip ${settings.colorPreset===p.id?'active':''}" data-k="${p.id}"
                  style="background:${p.bg};color:${p.fg};">A</div>
           `).join('')}
+          ${(settings.customColors||[]).map(c => `
+            <div class="be-drawer-chip be-color-chip ${settings.colorPreset===('saved-'+c.id)?'active':''}" data-k="saved-${c.id}"
+                 style="background:${c.bg};color:${c.fg};" title="${escapeHtml(c.name||'自定义配色')}">A</div>
+          `).join('')}
           <div class="be-drawer-chip be-color-chip rainbow ${settings.colorPreset==='custom'?'active':''}" data-k="custom" title="自定义">●</div>
         </div>
       </div>
@@ -4169,7 +4322,7 @@ $(() => {
         <h4>字号 · 行距 · 字距 · 宽度</h4>
         <div class="be-drawer-typo">
           <span class="be-dt-ico" style="font-size:12px;">A</span>
-          <input type="range" id="be-ts-qsize" min="14" max="22" step="1" value="${size}">
+          <input type="range" id="be-ts-qsize" min="11" max="22" step="1" value="${size}">
           <span class="be-dt-ico" style="font-size:18px;">A</span>
           <span class="be-dt-val" id="be-ts-qsize-val">${size}px</span>
         </div>
@@ -4478,17 +4631,12 @@ $(() => {
     let inner = '';
     if (isCustomTpl) {
       // 自定义模板：提供通用 HTML 结构，用户 CSS 自行控制布局/隐藏
+      // 头像统一走「头像类型」设置（与内置模板一致），.be-char-avatar 只保留占位、不再固定塞角色头像
       const cnDate = toChineseDate(new Date());
-      const userAvStyle = ctx.userAvatar
-        ? `background-image:url('${ctx.userAvatar}');background-color:${c.avatarBg};`
-        : `background:${c.avatarBg};`;
-      const charAvStyle = ctx.charAvatar
-        ? `background-image:url('${ctx.charAvatar}');background-color:${c.avatarBg};`
-        : `background:${c.avatarBg};`;
       inner = `
         <div class="be-head">
-          ${settings.showAvatar ? `<div class="be-avatar" style="${userAvStyle}"></div>` : ''}
-          ${settings.showAvatar ? `<div class="be-char-avatar" style="${charAvStyle}"></div>` : ''}
+          ${settings.showAvatar ? `<div class="be-avatar" style="${avatarStyle}"></div>` : ''}
+          ${settings.showAvatar ? `<div class="be-char-avatar" style="background:${c.avatarBg};display:none;"></div>` : ''}
           <div class="be-meta">
             <div class="be-name">${maskNameDisplay(userName, '')}</div>
             ${settings.showDate ? `<div class="be-date" style="color:${c.sub};">${dateText}</div>` : ''}
@@ -4684,10 +4832,8 @@ $(() => {
     }
   }
 
-  // ---------- 截图（纯 html2canvas，本地随包优先，CDN 兜底） ----------
+  // ---------- 截图（纯 html2canvas，CN 镜像优先） ----------
   // v0.6.1：去掉 html-to-image —— 它内部 fetch 远程字体/资源经常挂起，留下未清理 buffer 易导致 OOM/闪退
-  // v1.3.0（扩展化）：扩展仓库自带一份 lib/html2canvas.min.js，同源加载不受网络/代理影响，
-  // 是这份列表里第一个候选；下面 4 个 CDN 镜像保留原样当兜底（本地文件万一缺失/被清理时还能用）。
   let LOCAL_H2C_URL = '';
   try { LOCAL_H2C_URL = new URL('./lib/html2canvas.min.js', import.meta.url).href; } catch (e) {}
   const H2C_LIB_URLS = [
@@ -4768,10 +4914,14 @@ $(() => {
   // 把错误对象格式化成人话
   function fmtErr(e) {
     if (!e) return '未知错误';
-    if (typeof e === 'string') return e;
-    if (e.message) return e.message;
-    if (e.type) return `加载资源失败 (${e.type})`;
-    try { return JSON.stringify(e); } catch { return String(e); }
+    const raw = typeof e === 'string' ? e
+      : (e.message || (e.type ? `加载资源失败 (${e.type})` : (() => { try { return JSON.stringify(e); } catch { return String(e); } })()));
+    // 头像图片跨域没带 CORS 头，画布被污染后 toBlob/toDataURL 会抛这类错误，给个能自查的提示，
+    // 而不是一句笼统的"保存失败"——极少数用户反馈过导出失败但复现不了，多半是这类环境问题。
+    if (/tainted|SecurityError|cross-origin|insecure/i.test(raw)) {
+      return `${raw}（可能是头像图片跨域导致，可尝试换一张头像或改用"用户/角色头像"再试）`;
+    }
+    return raw;
   }
 
   function dataUrlToBlob(dataUrl) {
@@ -4975,20 +5125,49 @@ $(() => {
       cardClone.style.width = cardW + 'px';
       cardClone.style.maxWidth = 'none';
       idoc.body.appendChild(cardClone);
+      // 诗笺（竖排 vertical-rl）专属：正文放在 grid 的 1fr 轨道里，轨道宽度被卡片整体宽度写死后，
+      // 文字一多会向左新增竖排列——但那部分列超出了 1fr 轨道的固定宽度，html2canvas 按元素包围盒截图会直接裁掉。
+      // 这里先把轨道临时换成 max-content 量出正文真实需要的宽度，再把卡片整体宽度放大到能装下所有列，
+      // 避免动其它模板（其余模板都是纵向撑高，不存在这个问题）。
+      if (cardClone.classList.contains('tpl-verse')) {
+        try {
+          const head = cardClone.querySelector('.be-head');
+          const quoteEl = cardClone.querySelector('.be-quote');
+          if (head && quoteEl) {
+            head.style.gridTemplateColumns = 'max-content auto';
+            void cardClone.offsetHeight; // 强制回流，量的是渲染框本身，不受 scrollWidth 只统计右/下溢出的限制
+            const neededQuoteW = quoteEl.getBoundingClientRect().width;
+            const cardCs = mainWin.getComputedStyle(cardClone);
+            const headPad = parseFloat(cardCs.paddingLeft || '0') + parseFloat(cardCs.paddingRight || '0');
+            const sideEl = cardClone.querySelector('.be-vs-side');
+            const sideW = sideEl ? sideEl.getBoundingClientRect().width : 0;
+            const headCs = mainWin.getComputedStyle(head);
+            const gap = parseFloat(headCs.columnGap || headCs.gap || '16') || 16;
+            const neededCardW = Math.ceil(neededQuoteW + sideW + gap + headPad) + 8;
+            head.style.gridTemplateColumns = ''; // 量完恢复成原本的 1fr auto，视觉排版比例不变
+            if (neededCardW > cardW) {
+              cardClone.style.width = neededCardW + 'px';
+              iframe.style.width = (neededCardW + 4) + 'px';
+            }
+          }
+        } catch (e) {}
+      }
       // 在 clone 上把头像换成清晰 <img>（不影响主文档预览）
       await processAvatarInClone(cardClone, idoc);
       // 宽度变化会改变高度，重排后按内容真实高度调整 iframe（h2c 按元素尺寸截，留足空间即可）
-      await new Promise(r => setTimeout(r, 16));
+      // 设备卡顿/长文本下 16ms 不一定够一次真实重排，适当加长
+      await new Promise(r => setTimeout(r, 32));
       iframe.style.height = (cardClone.scrollHeight + 4) + 'px';
-      // 等字体（iframe 自己的字体加载）
+      // 等字体（iframe 自己的字体加载）：慢网/自定义字体首次加载可能来不及，适当放宽超时给更多机会加载完，
+      // 超时仍继续（不阻塞保存），只是尽量减少"极少数环境下用了 fallback 字体导致排版跟预览不一致"的概率
       try {
         await Promise.race([
           (idoc.fonts && idoc.fonts.ready) || Promise.resolve(),
-          new Promise(r => setTimeout(r, 600))
+          new Promise(r => setTimeout(r, 1800))
         ]);
       } catch (e) {}
-      // 再让浏览器布局/绘制一帧
-      await new Promise(r => setTimeout(r, 16));
+      // 再让浏览器布局/绘制一帧（设备卡顿/长文本下 16ms 不一定够一次真实重排，适当加长）
+      await new Promise(r => setTimeout(r, 32));
       const canvas = await h2c(cardClone, {
         backgroundColor: bg,
         scale: dpr,
@@ -5190,6 +5369,71 @@ $(() => {
     renderSettings();
   }
 
+  // 自定义配色列表：内置 17 色永远不可删；这里只管理用户另存的配色，删除激活项时回退到内置默认色
+  function deleteCustomColor(cid) {
+    settings.customColors = (settings.customColors || []).filter(c => c.id !== cid);
+    if (settings.colorPreset === 'saved-' + cid) settings.colorPreset = 'paper-warm';
+    saveSettings(settings);
+    renderSettings();
+    if (mainDoc.getElementById('be-card')) renderCard(lastText);
+  }
+  function openSaveColorDialog() {
+    const MASK_ID = 'be-save-color-mask';
+    let mask = mainDoc.getElementById(MASK_ID);
+    if (!mask) {
+      mask = mainDoc.createElement('div');
+      mask.id = MASK_ID;
+      mask.className = 'be-import-tpl-mask';
+      mask.innerHTML = `
+        <div class="be-import-tpl-box">
+          <div class="be-src-title">保存当前配色</div>
+          <div class="be-src-field">
+            <label>配色名称</label>
+            <input type="text" id="be-save-color-name" placeholder="自定义配色">
+          </div>
+          <div class="be-src-actions">
+            <button class="be-btn" id="be-save-color-cancel">取消</button>
+            <button class="be-btn primary" id="be-save-color-save">保存</button>
+          </div>
+        </div>
+      `;
+      mainDoc.body.appendChild(mask);
+      mask.addEventListener('click', e => { if (e.target === mask) mask.classList.remove('open'); });
+    } else if (mask.parentNode !== mainDoc.body || mask.nextSibling) {
+      mainDoc.body.appendChild(mask);
+    }
+    detectAndApplyTheme();
+    const list = Array.isArray(settings.customColors) ? settings.customColors : [];
+    mask.querySelector('#be-save-color-name').value = `自定义${list.length + 1}`;
+    mask.classList.add('open');
+
+    const close = () => mask.classList.remove('open');
+    const reNew = (sel, fn) => {
+      const el = mask.querySelector(sel);
+      const clone = el.cloneNode(true);
+      el.parentNode.replaceChild(clone, el);
+      clone.addEventListener('click', fn);
+    };
+    reNew('#be-save-color-cancel', close);
+    reNew('#be-save-color-save', () => {
+      const curList = Array.isArray(settings.customColors) ? settings.customColors : [];
+      const name = mask.querySelector('#be-save-color-name').value.trim() || `自定义${curList.length + 1}`;
+      const id = 'c' + Date.now() + Math.random().toString(36).slice(2, 5);
+      const newList = curList.slice();
+      newList.push({ id, name, bg: settings.customBg || '#f5f1e8', fg: settings.customFg || '#222222', fgEnabled: !!settings.customFgEnabled });
+      settings.customColors = newList;
+      settings.colorPreset = 'saved-' + id;
+      saveSettings(settings);
+      close();
+      renderSettings();
+      if (mainDoc.getElementById('be-card')) renderCard(lastText);
+      toast('已保存配色', 'success');
+    });
+  }
+
+  // 设置面板二级分组：外观 / 划线 / 功能与数据。纯内存状态，不落盘，重开面板/切主 Tab 都保留上次选的分组
+  let settingsGroup = 'appearance';
+
   // "使用说明"折叠区：脱离酒馆助手后，说明/版本号不再依赖宿主工具的展示位，自己在面板底部带一份
   let _aboutOpen = false;
   function renderAboutGroup() {
@@ -5202,15 +5446,15 @@ $(() => {
         <div class="be-tpl-group-body">
           <div class="be-about-sec">
             <div class="be-about-h">划线 / 想法</div>
-            <div class="be-about-p">选中聊天里的文字，浮动栏点"划线"（可选下划线/波浪线/荧光笔样式和颜色）或"想法"。点已有划线会弹出工具栏：复制、删划线、写想法、想法列表、做书摘。</div>
+            <div class="be-about-p">选中聊天里的文字，浮动栏点"划线"（可选下划线/波浪线/荧光笔样式和颜色）或"想法"。点已有划线会弹出工具栏：复制、删划线、写想法、想法列表、做书摘。跟其它选中类插件冲突时可在设置里一键关闭划线功能。部分用正则/HTML 渲染的状态栏（尤其用 iframe 隔离样式的）也能尝试划线，但不保证所有实现都兼容，划线也不保证跨刷新还在。</div>
           </div>
           <div class="be-about-sec">
             <div class="be-about-h">划线合并</div>
-            <div class="be-about-p">设置里开启后，点已有划线的工具栏上会多一个"加入合并"；笔记本详情页也能勾选批量加入。攒够了点悬浮篮子或笔记本的"完成"，选择存为笔记本条目还是直接生成书摘卡片，也可以选是否删除原来的散乱划线，这两步都能勾选"记住"跳过下次询问。</div>
+            <div class="be-about-p">默认开启：点已有划线的工具栏上有"加入合并"，笔记本详情页也能勾选批量加入（选中会显示加入顺序的数字）。攒够了点悬浮篮子或笔记本的"完成"，选择存为笔记本条目还是直接生成书摘卡片，也可以选是否删除原来的散乱划线，这两步都能勾选"记住"跳过下次询问，不需要可在设置里关掉。</div>
           </div>
           <div class="be-about-sec">
             <div class="be-about-h">书摘卡片</div>
-            <div class="be-about-p">浮动栏"书摘"或点已有划线的工具栏都能生成卡片。模板/颜色/字体/字号在此设置面板调，也可在卡片预览页临时改。支持正文打码、保留删除线、自定义模板导入（JSON/CSS，选择器写 .be-card.be-custom）。</div>
+            <div class="be-about-p">浮动栏"书摘"或点已有划线的工具栏都能生成卡片。模板/颜色/字体/字号在此设置面板调，也可在卡片预览页临时改。自定义配色可保存多份、命名、一键复用或删除；正文字号最小可调到 11px。支持正文打码、保留删除线、自定义模板导入（JSON/CSS，选择器写 .be-card.be-custom，头像会跟随"头像类型"设置）。</div>
           </div>
           <div class="be-about-sec">
             <div class="be-about-h">笔记本</div>
@@ -5425,13 +5669,49 @@ $(() => {
     if (mainDoc.getElementById('be-card')) renderCard(lastText);
   }
 
+  // 设置面板分两层：壳层（Tab 条，只建一次，切分组时不重建、不参与动画）+ 内容层（真正随分组变化的部分）。
   function renderSettings() {
-    const body = mainDoc.getElementById('be-p-body');
-    if (!body) return;
-    const _savedScroll = body.scrollTop;
+    const panelBody = mainDoc.getElementById('be-p-body');
+    if (!panelBody) return;
+    let content = panelBody.querySelector('#be-settings-content');
+    if (!content) {
+      panelBody.innerHTML = `
+        <div class="be-settings-subtabs">
+          <button type="button" data-g="appearance" class="${settingsGroup==='appearance'?'active':''}">外观</button>
+          <button type="button" data-g="highlight" class="${settingsGroup==='highlight'?'active':''}">划线</button>
+          <button type="button" data-g="feature" class="${settingsGroup==='feature'?'active':''}">功能与数据</button>
+        </div>
+        <div id="be-settings-content"></div>
+      `;
+      panelBody.querySelectorAll('.be-settings-subtabs button').forEach(el => {
+        el.addEventListener('click', () => {
+          const g = el.getAttribute('data-g');
+          if (g === settingsGroup) return;
+          settingsGroup = g;
+          panelBody.querySelectorAll('.be-settings-subtabs button').forEach(b => b.classList.toggle('active', b === el));
+          // 跟"笔记本/设置"顶部主 Tab 切换用同一套手法：内容瞬间换掉（没有旧内容残留/重叠这回事），
+          // 只在新内容上补一个入场淡入，跟主 Tab 切换的手感保持一致——那个切换用户没意见，直接照搬。
+          panelBody.scrollTop = 0;
+          renderSettingsGroupContent(mainDoc.getElementById('be-settings-content'));
+          const freshContent = mainDoc.getElementById('be-settings-content');
+          if (freshContent) {
+            freshContent.classList.remove('be-body-anim');
+            void freshContent.offsetWidth;
+            freshContent.classList.add('be-body-anim');
+          }
+        });
+      });
+      content = panelBody.querySelector('#be-settings-content');
+    }
+    renderSettingsGroupContent(content);
+  }
+
+  function renderSettingsGroupContent(container) {
+    const body = container; // 下面沿用原来 body.querySelector(...) 的写法，body 现在指内容容器而不是 #be-p-body
     const isCustomColor = settings.colorPreset === 'custom';
 
     body.innerHTML = `
+      ${settingsGroup === 'appearance' ? `
       <div class="be-sec">
         <h4>模板（排版）</h4>
         <div class="be-tpl-grid">
@@ -5451,6 +5731,17 @@ $(() => {
                  title="${escapeHtml(p.name)}"
                  style="background:${p.bg};color:${p.fg};">A</div>
           `).join('')}
+          ${(settings.customColors || []).map(c => {
+            const active = settings.colorPreset === ('saved-' + c.id);
+            return `
+              <div class="be-color-dot-wrap">
+                <div class="be-color-dot ${active?'active':''}" data-k="saved-${c.id}"
+                     title="${escapeHtml(c.name || '自定义配色')}"
+                     style="background:${c.bg};color:${c.fg};">A</div>
+                <span class="be-color-del" data-cdel="${c.id}" title="删除这份自定义配色">×</span>
+              </div>
+            `;
+          }).join('')}
           <div class="be-color-dot rainbow ${isCustomColor?'active':''}" data-k="custom" title="自定义"></div>
         </div>
         <div class="be-row" style="margin-top:10px;">
@@ -5467,6 +5758,9 @@ $(() => {
         </div>
         <div class="be-row" style="font-size:11px;opacity:0.7;">
           <span>关闭"自定义字色"时，按背景明度自动配深/浅字</span>
+        </div>
+        <div class="be-row">
+          <button class="be-btn" id="be-save-color" ${isCustomColor?'':'disabled'} style="${isCustomColor?'':'opacity:0.4;'}">保存当前配色，以后一键复用</button>
         </div>
       </div>
 
@@ -5487,60 +5781,7 @@ $(() => {
       </div>
 
       <div class="be-sec">
-        <h4>划线色系（筛选/工具栏的 5 色）</h4>
-        <div class="be-palette-grid">
-          ${Object.entries(PALETTE_SCHEMES).map(([k, v]) => `
-            <div class="be-palette-card ${settings.palette===k?'active':''}" data-k="${k}">
-              <div class="be-palette-name">${v.name}</div>
-              <div class="be-palette-row">
-                ${v.colors.map(c => `<span class="be-palette-dot" style="background:${c};"></span>`).join('')}
-              </div>
-            </div>
-          `).join('')}
-        </div>
-      </div>
-
-      <div class="be-sec">
-        <h4>划线样式</h4>
-        <div class="be-row">
-          <div class="be-radio-group" id="be-hl-group">
-            <button class="be-radio-opt ${settings.highlightStyle==='underline'?'active':''}" data-v="underline">下划线</button>
-            <button class="be-radio-opt ${settings.highlightStyle==='wavy'?'active':''}" data-v="wavy">波浪线</button>
-            <button class="be-radio-opt ${settings.highlightStyle==='marker'?'active':''}" data-v="marker">荧光笔</button>
-          </div>
-        </div>
-        <div class="be-row">
-          <label style="flex:1;">下划线颜色</label>
-          <input type="color" id="be-color-underline" value="${escapeHtml(settings.underlineColor || '#c9a76a')}">
-          <button class="be-btn" id="be-color-underline-reset" style="padding:3px 8px;font-size:11px;">还原</button>
-        </div>
-        <div class="be-row">
-          <label style="flex:1;">荧光笔颜色</label>
-          <input type="color" id="be-color-marker" value="${escapeHtml(settings.markerColor || '#ffdc6e')}">
-          <button class="be-btn" id="be-color-marker-reset" style="padding:3px 8px;font-size:11px;">还原</button>
-        </div>
-        <div class="be-row">
-          <label style="flex:1;">想法虚线颜色（只想法没划线时）</label>
-          <input type="color" id="be-color-thought" value="${escapeHtml(settings.thoughtLineColor || '#ffdc6e')}">
-        </div>
-        <div class="be-row">
-          <label style="flex:1;">有想法的划线自动提升明度</label>
-          <label class="be-toggle">
-            <input type="checkbox" id="be-thought-boost" ${settings.thoughtBoost?'checked':''}>
-            <span class="be-slider"></span>
-          </label>
-        </div>
-        <div class="be-row">
-          <label style="flex:1;">划线穿过特殊格式时剥离原样式</label>
-          <label class="be-toggle">
-            <input type="checkbox" id="be-strip" ${settings.stripStyle?'checked':''}>
-            <span class="be-slider"></span>
-          </label>
-        </div>
-      </div>
-
-      <div class="be-sec">
-        <h4>排版</h4>
+        <h4>正文排版</h4>
         <div class="be-typo-presets">
           <span data-typo="compact">紧凑</span>
           <span data-typo="normal">默认</span>
@@ -5548,7 +5789,7 @@ $(() => {
         </div>
         <div class="be-row">
           <label style="flex:1;">正文字号 <span class="be-val" id="be-qsize-val">${Number(settings.quoteFontSize)||19}px</span></label>
-          <input type="range" id="be-qsize" min="14" max="22" step="1" value="${Number(settings.quoteFontSize)||19}">
+          <input type="range" id="be-qsize" min="11" max="22" step="1" value="${Number(settings.quoteFontSize)||19}">
         </div>
         <div class="be-row">
           <label style="flex:1;">行距 <span class="be-val" id="be-qlh-val">${Number(settings.quoteLineHeight)||2.05}</span></label>
@@ -5565,7 +5806,7 @@ $(() => {
       </div>
 
       <div class="be-sec">
-        <h4>显示</h4>
+        <h4>显示与出处</h4>
         <div class="be-row">
           <label style="flex:1;">显示头像</label>
           <label class="be-toggle">
@@ -5623,11 +5864,7 @@ $(() => {
             <span class="be-slider"></span>
           </label>
         </div>
-      </div>
-
-      <div class="be-sec">
-        <h4>出处</h4>
-        <div class="be-row" style="font-size:12px;opacity:0.8;">
+        <div class="be-row" style="font-size:12px;opacity:0.8;margin-top:8px;">
           <span style="flex:1;">用户名：${escapeHtml(settings.sourceUser || '（默认：{{user}}）')}</span>
         </div>
         <div class="be-row" style="font-size:12px;opacity:0.8;">
@@ -5640,7 +5877,78 @@ $(() => {
           <button class="be-btn" id="be-edit-source-btn">编辑出处</button>
         </div>
       </div>
+      ` : ''}
 
+      ${settingsGroup === 'highlight' ? `
+      <div class="be-sec">
+        <h4>划线总开关</h4>
+        <div class="be-row">
+          <label style="flex:1;">关闭划线功能</label>
+          <label class="be-toggle">
+            <input type="checkbox" id="be-highlight-disabled" ${settings.highlightDisabled?'checked':''}>
+            <span class="be-slider"></span>
+          </label>
+        </div>
+        <div class="be-row" style="font-size:11px;opacity:0.7;">
+          <span>只影响"选中文字弹出划线小工具栏"这一步，已有的划线、笔记本、书摘卡片都不受影响</span>
+        </div>
+      </div>
+
+      <div class="be-sec">
+        <h4>划线样式与颜色</h4>
+        <div class="be-row">
+          <div class="be-radio-group" id="be-hl-group">
+            <button class="be-radio-opt ${settings.highlightStyle==='underline'?'active':''}" data-v="underline">下划线</button>
+            <button class="be-radio-opt ${settings.highlightStyle==='wavy'?'active':''}" data-v="wavy">波浪线</button>
+            <button class="be-radio-opt ${settings.highlightStyle==='marker'?'active':''}" data-v="marker">荧光笔</button>
+          </div>
+        </div>
+        <div class="be-row">
+          <label style="flex:1;">下划线颜色</label>
+          <input type="color" id="be-color-underline" value="${escapeHtml(settings.underlineColor || '#c9a76a')}">
+          <button class="be-btn" id="be-color-underline-reset" style="padding:3px 8px;font-size:11px;">还原</button>
+        </div>
+        <div class="be-row">
+          <label style="flex:1;">荧光笔颜色</label>
+          <input type="color" id="be-color-marker" value="${escapeHtml(settings.markerColor || '#ffdc6e')}">
+          <button class="be-btn" id="be-color-marker-reset" style="padding:3px 8px;font-size:11px;">还原</button>
+        </div>
+        <div class="be-row">
+          <label style="flex:1;">想法虚线颜色（只想法没划线时）</label>
+          <input type="color" id="be-color-thought" value="${escapeHtml(settings.thoughtLineColor || '#ffdc6e')}">
+        </div>
+        <div class="be-row">
+          <label style="flex:1;">有想法的划线自动提升明度</label>
+          <label class="be-toggle">
+            <input type="checkbox" id="be-thought-boost" ${settings.thoughtBoost?'checked':''}>
+            <span class="be-slider"></span>
+          </label>
+        </div>
+        <div class="be-row">
+          <label style="flex:1;">划线穿过特殊格式时剥离原样式</label>
+          <label class="be-toggle">
+            <input type="checkbox" id="be-strip" ${settings.stripStyle?'checked':''}>
+            <span class="be-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="be-sec">
+        <h4>划线色系（筛选/工具栏的 5 色）</h4>
+        <div class="be-palette-grid">
+          ${Object.entries(PALETTE_SCHEMES).map(([k, v]) => `
+            <div class="be-palette-card ${settings.palette===k?'active':''}" data-k="${k}">
+              <div class="be-palette-name">${v.name}</div>
+              <div class="be-palette-row">
+                ${v.colors.map(c => `<span class="be-palette-dot" style="background:${c};"></span>`).join('')}
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+      ` : ''}
+
+      ${settingsGroup === 'feature' ? `
       <div class="be-sec">
         <h4>划线合并</h4>
         <div class="be-row">
@@ -5687,8 +5995,22 @@ $(() => {
       </div>
 
       <div class="be-sec">
+        <h4>保存方式</h4>
+        <div class="be-row">
+          <div class="be-radio-group" id="be-savemode-group">
+            <button type="button" class="be-radio-opt ${(settings.saveMode||'download')==='download'?'active':''}" data-v="download">下载文件</button>
+            <button type="button" class="be-radio-opt ${settings.saveMode==='popup'?'active':''}" data-v="popup">弹图长按</button>
+          </div>
+        </div>
+        <div class="be-row" style="font-size:11px;opacity:0.7;">
+          <span>下载没反应的内嵌浏览器可以换「弹图长按」，跟卡片编辑页「编辑出处」里的这个选项是同一个设置</span>
+        </div>
+      </div>
+
+      <div class="be-sec">
         ${renderAboutGroup()}
       </div>
+      ` : ''}
     `;
 
     // 绑定
@@ -5757,6 +6079,16 @@ $(() => {
         renderSettings();
         if (mainDoc.getElementById('be-card')) renderCard(lastText);
       });
+    });
+    body.querySelectorAll('.be-color-del').forEach(el => {
+      el.addEventListener('click', e => {
+        e.stopPropagation();
+        deleteCustomColor(el.getAttribute('data-cdel'));
+      });
+    });
+    body.querySelector('#be-save-color')?.addEventListener('click', () => {
+      if (settings.colorPreset !== 'custom') return;
+      openSaveColorDialog();
     });
     body.querySelector('#be-custom-bg')?.addEventListener('input', e => {
       settings.customBg = e.target.value;
@@ -5868,6 +6200,13 @@ $(() => {
         const row = body.querySelector('#be-custom-avatar-row');
         if (row) row.style.display = settings.avatarType === 'custom' ? '' : 'none';
         if (mainDoc.getElementById('be-card')) renderCard(lastText);
+      });
+    });
+    body.querySelectorAll('#be-savemode-group .be-radio-opt').forEach(btn => {
+      btn.addEventListener('click', () => {
+        settings.saveMode = btn.getAttribute('data-v') === 'popup' ? 'popup' : 'download';
+        saveSettings(settings);
+        body.querySelectorAll('#be-savemode-group .be-radio-opt').forEach(b => b.classList.toggle('active', b === btn));
       });
     });
     body.querySelector('#be-avatar-upload')?.addEventListener('click', () => {
@@ -5990,6 +6329,11 @@ $(() => {
       saveSettings(settings);
       if (mainDoc.getElementById('be-card')) renderCard(lastText);
     });
+    body.querySelector('#be-highlight-disabled')?.addEventListener('change', e => {
+      settings.highlightDisabled = e.target.checked;
+      saveSettings(settings);
+      if (settings.highlightDisabled) hideBar();
+    });
     body.querySelector('#be-merge-enabled')?.addEventListener('change', e => {
       settings.mergeEnabled = e.target.checked;
       saveSettings(settings);
@@ -6037,7 +6381,6 @@ $(() => {
       });
       toast('已清空', 'success');
     });
-    body.scrollTop = _savedScroll;
   }
 
   // 防抖刷新列表区（input 节点保持不动，输入法不会被关）
@@ -6239,7 +6582,7 @@ $(() => {
           const picked = charMergeMode && isInMergeBasket(it.id);
           return `
             <div class="be-note-card ${charMergeMode ? 'be-merge-pickable' : ''} ${picked ? 'be-merge-picked' : ''}" data-id="${it.id}">
-              ${charMergeMode ? `<div class="be-merge-check">${picked ? '✓' : ''}</div>` : ''}
+              ${charMergeMode ? `<div class="be-merge-check">${picked ? mergeBasketOrder(it.id) : ''}</div>` : ''}
               <div class="be-note-icon ${hasThought ? 'is-thought' : 'is-line'}">${iconInner}</div>
               <div class="be-note-body">
                 ${it.merged ? `<div class="be-note-merged-tag">合并 · ${it.mergedCount || ''} 段</div>` : ''}
