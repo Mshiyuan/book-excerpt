@@ -7,7 +7,7 @@ $(() => {
 
   const SCRIPT_ID = 'book-excerpt';
   const SCRIPT_NAME = '书摘';
-  const VERSION = '1.4.2';
+  const VERSION = '1.4.3';
   const LS_SETTINGS = `${SCRIPT_ID}:settings`;
   const LS_NOTES = `${SCRIPT_ID}:notes`;
   // 本次脚本实例的代号。酒馆助手可能在不刷新页面的情况下重建脚本 iframe（热更新/切聊天等），
@@ -1960,7 +1960,7 @@ $(() => {
     #be-panel .be-p-body {
       padding: 2px 18px 24px;
       overflow-y: auto; flex: 1; color: var(--be-panel-fg);
-      transition: opacity 0.14s ease; /* 设置面板二级分组切换用：淡出旧内容再淡入新内容，不是硬切换 */
+      position: relative; /* 设置分组切换交叉淡出淡入时，旧内容临时绝对定位叠在这里 */
     }
     @keyframes be-body-in { from { opacity: 0; } to { opacity: 1; } }
     .be-body-anim { animation: be-body-in 0.18s ease; }
@@ -5670,19 +5670,72 @@ $(() => {
     if (mainDoc.getElementById('be-card')) renderCard(lastText);
   }
 
+  // 设置面板分两层：壳层（Tab 条，只建一次，切分组时不重建、不参与动画）+ 内容层（真正随分组变化的部分）。
   function renderSettings() {
-    const body = mainDoc.getElementById('be-p-body');
-    if (!body) return;
-    const _savedScroll = body.scrollTop;
+    const panelBody = mainDoc.getElementById('be-p-body');
+    if (!panelBody) return;
+    let content = panelBody.querySelector('#be-settings-content');
+    if (!content) {
+      panelBody.innerHTML = `
+        <div class="be-settings-subtabs">
+          <button type="button" data-g="appearance" class="${settingsGroup==='appearance'?'active':''}">外观</button>
+          <button type="button" data-g="highlight" class="${settingsGroup==='highlight'?'active':''}">划线</button>
+          <button type="button" data-g="feature" class="${settingsGroup==='feature'?'active':''}">功能与数据</button>
+        </div>
+        <div id="be-settings-content"></div>
+      `;
+      panelBody.querySelectorAll('.be-settings-subtabs button').forEach(el => {
+        el.addEventListener('click', () => {
+          const g = el.getAttribute('data-g');
+          if (g === settingsGroup) return;
+          settingsGroup = g;
+          panelBody.querySelectorAll('.be-settings-subtabs button').forEach(b => b.classList.toggle('active', b === el));
+          crossfadeSettingsGroup();
+        });
+      });
+      content = panelBody.querySelector('#be-settings-content');
+    }
+    renderSettingsGroupContent(content);
+  }
+
+  // 切分组时的过渡：新旧内容同时可见、同时淡出/淡入（不是先淡没了再淡入），画面上任何时刻都有内容，
+  // 才不会读成"闪一下"。旧内容临时绝对定位叠在原地，新内容正常撑开高度，两者同时起步、同一时长。
+  let _settingsSwitching = false;
+  function crossfadeSettingsGroup() {
+    const panelBody = mainDoc.getElementById('be-p-body');
+    const oldEl = panelBody?.querySelector('#be-settings-content');
+    if (!panelBody || !oldEl || _settingsSwitching) return;
+    _settingsSwitching = true;
+    oldEl.removeAttribute('id');
+    oldEl.style.position = 'absolute';
+    oldEl.style.top = '0'; oldEl.style.left = '0'; oldEl.style.right = '0';
+    oldEl.style.transition = 'opacity .22s ease';
+    const newEl = mainDoc.createElement('div');
+    newEl.id = 'be-settings-content';
+    newEl.style.opacity = '0';
+    newEl.style.transition = 'opacity .22s ease';
+    oldEl.insertAdjacentElement('afterend', newEl);
+    panelBody.scrollTop = 0;
+    renderSettingsGroupContent(newEl);
+    void newEl.offsetHeight; // 强制重排，确保下面的 opacity 变化真的触发过渡，不会被合并成瞬间跳变
+    requestAnimationFrame(() => {
+      oldEl.style.opacity = '0';
+      newEl.style.opacity = '1';
+    });
+    setTimeout(() => {
+      oldEl.remove();
+      newEl.style.position = '';
+      newEl.style.top = newEl.style.left = newEl.style.right = '';
+      newEl.style.transition = '';
+      _settingsSwitching = false;
+    }, 260);
+  }
+
+  function renderSettingsGroupContent(container) {
+    const body = container; // 下面沿用原来 body.querySelector(...) 的写法，body 现在指内容容器而不是 #be-p-body
     const isCustomColor = settings.colorPreset === 'custom';
 
     body.innerHTML = `
-      <div class="be-settings-subtabs">
-        <button data-g="appearance" class="${settingsGroup==='appearance'?'active':''}">外观</button>
-        <button data-g="highlight" class="${settingsGroup==='highlight'?'active':''}">划线</button>
-        <button data-g="feature" class="${settingsGroup==='feature'?'active':''}">功能与数据</button>
-      </div>
-
       ${settingsGroup === 'appearance' ? `
       <div class="be-sec">
         <h4>模板（排版）</h4>
@@ -5849,19 +5902,6 @@ $(() => {
           <button class="be-btn" id="be-edit-source-btn">编辑出处</button>
         </div>
       </div>
-
-      <div class="be-sec">
-        <h4>保存方式</h4>
-        <div class="be-row">
-          <div class="be-radio-group" id="be-savemode-group">
-            <button type="button" class="be-radio-opt ${(settings.saveMode||'download')==='download'?'active':''}" data-v="download">下载文件</button>
-            <button type="button" class="be-radio-opt ${settings.saveMode==='popup'?'active':''}" data-v="popup">弹图长按</button>
-          </div>
-        </div>
-        <div class="be-row" style="font-size:11px;opacity:0.7;">
-          <span>下载没反应的内嵌浏览器可以换「弹图长按」，跟卡片编辑页「编辑出处」里的这个选项是同一个设置</span>
-        </div>
-      </div>
       ` : ''}
 
       ${settingsGroup === 'highlight' ? `
@@ -5980,34 +6020,25 @@ $(() => {
       </div>
 
       <div class="be-sec">
+        <h4>保存方式</h4>
+        <div class="be-row">
+          <div class="be-radio-group" id="be-savemode-group">
+            <button type="button" class="be-radio-opt ${(settings.saveMode||'download')==='download'?'active':''}" data-v="download">下载文件</button>
+            <button type="button" class="be-radio-opt ${settings.saveMode==='popup'?'active':''}" data-v="popup">弹图长按</button>
+          </div>
+        </div>
+        <div class="be-row" style="font-size:11px;opacity:0.7;">
+          <span>下载没反应的内嵌浏览器可以换「弹图长按」，跟卡片编辑页「编辑出处」里的这个选项是同一个设置</span>
+        </div>
+      </div>
+
+      <div class="be-sec">
         ${renderAboutGroup()}
       </div>
       ` : ''}
     `;
 
     // 绑定
-    body.querySelectorAll('.be-settings-subtabs button').forEach(el => {
-      el.addEventListener('click', () => {
-        const g = el.getAttribute('data-g');
-        if (g === settingsGroup || body.classList.contains('be-subtab-switching')) return;
-        // 用平滑的淡出再淡入代替之前硬切换+重放关键帧动画的做法——原来那种"啪"一下重绘容易让人一惊，
-        // 现在先把旧内容淡出，内容换好之后再淡入，观感上是一次连续的过渡，不是一次跳变。
-        body.classList.add('be-subtab-switching');
-        body.style.opacity = '0';
-        setTimeout(() => {
-          settingsGroup = g;
-          body.scrollTop = 0; // 切分组前清零，避免带着上一个分组的滚动位置渲染新内容
-          renderSettings();
-          const freshBody = mainDoc.getElementById('be-p-body');
-          if (freshBody) {
-            requestAnimationFrame(() => {
-              freshBody.style.opacity = '1';
-              freshBody.classList.remove('be-subtab-switching');
-            });
-          }
-        }, 140);
-      });
-    });
     body.querySelectorAll('.be-tpl-card').forEach(el => {
       if (el.id === 'be-tpl-import') {
         el.addEventListener('click', openImportTemplateDialog);
@@ -6375,7 +6406,6 @@ $(() => {
       });
       toast('已清空', 'success');
     });
-    body.scrollTop = _savedScroll;
   }
 
   // 防抖刷新列表区（input 节点保持不动，输入法不会被关）
