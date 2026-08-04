@@ -7,7 +7,7 @@ $(() => {
 
   const SCRIPT_ID = 'book-excerpt';
   const SCRIPT_NAME = '书摘';
-  const VERSION = '1.4.3';
+  const VERSION = '1.4.4';
   const LS_SETTINGS = `${SCRIPT_ID}:settings`;
   const LS_NOTES = `${SCRIPT_ID}:notes`;
   // 本次脚本实例的代号。酒馆助手可能在不刷新页面的情况下重建脚本 iframe（热更新/切聊天等），
@@ -1960,7 +1960,6 @@ $(() => {
     #be-panel .be-p-body {
       padding: 2px 18px 24px;
       overflow-y: auto; flex: 1; color: var(--be-panel-fg);
-      position: relative; /* 设置分组切换交叉淡出淡入时，旧内容临时绝对定位叠在这里 */
     }
     @keyframes be-body-in { from { opacity: 0; } to { opacity: 1; } }
     .be-body-anim { animation: be-body-in 0.18s ease; }
@@ -5690,45 +5689,21 @@ $(() => {
           if (g === settingsGroup) return;
           settingsGroup = g;
           panelBody.querySelectorAll('.be-settings-subtabs button').forEach(b => b.classList.toggle('active', b === el));
-          crossfadeSettingsGroup();
+          // 跟"笔记本/设置"顶部主 Tab 切换用同一套手法：内容瞬间换掉（没有旧内容残留/重叠这回事），
+          // 只在新内容上补一个入场淡入，跟主 Tab 切换的手感保持一致——那个切换用户没意见，直接照搬。
+          panelBody.scrollTop = 0;
+          renderSettingsGroupContent(mainDoc.getElementById('be-settings-content'));
+          const freshContent = mainDoc.getElementById('be-settings-content');
+          if (freshContent) {
+            freshContent.classList.remove('be-body-anim');
+            void freshContent.offsetWidth;
+            freshContent.classList.add('be-body-anim');
+          }
         });
       });
       content = panelBody.querySelector('#be-settings-content');
     }
     renderSettingsGroupContent(content);
-  }
-
-  // 切分组时的过渡：新旧内容同时可见、同时淡出/淡入（不是先淡没了再淡入），画面上任何时刻都有内容，
-  // 才不会读成"闪一下"。旧内容临时绝对定位叠在原地，新内容正常撑开高度，两者同时起步、同一时长。
-  let _settingsSwitching = false;
-  function crossfadeSettingsGroup() {
-    const panelBody = mainDoc.getElementById('be-p-body');
-    const oldEl = panelBody?.querySelector('#be-settings-content');
-    if (!panelBody || !oldEl || _settingsSwitching) return;
-    _settingsSwitching = true;
-    oldEl.removeAttribute('id');
-    oldEl.style.position = 'absolute';
-    oldEl.style.top = '0'; oldEl.style.left = '0'; oldEl.style.right = '0';
-    oldEl.style.transition = 'opacity .22s ease';
-    const newEl = mainDoc.createElement('div');
-    newEl.id = 'be-settings-content';
-    newEl.style.opacity = '0';
-    newEl.style.transition = 'opacity .22s ease';
-    oldEl.insertAdjacentElement('afterend', newEl);
-    panelBody.scrollTop = 0;
-    renderSettingsGroupContent(newEl);
-    void newEl.offsetHeight; // 强制重排，确保下面的 opacity 变化真的触发过渡，不会被合并成瞬间跳变
-    requestAnimationFrame(() => {
-      oldEl.style.opacity = '0';
-      newEl.style.opacity = '1';
-    });
-    setTimeout(() => {
-      oldEl.remove();
-      newEl.style.position = '';
-      newEl.style.top = newEl.style.left = newEl.style.right = '';
-      newEl.style.transition = '';
-      _settingsSwitching = false;
-    }, 260);
   }
 
   function renderSettingsGroupContent(container) {
