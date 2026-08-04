@@ -7,7 +7,7 @@ $(() => {
 
   const SCRIPT_ID = 'book-excerpt';
   const SCRIPT_NAME = '书摘';
-  const VERSION = '1.4.4';
+  const VERSION = '1.4.5';
   const LS_SETTINGS = `${SCRIPT_ID}:settings`;
   const LS_NOTES = `${SCRIPT_ID}:notes`;
   // 本次脚本实例的代号。酒馆助手可能在不刷新页面的情况下重建脚本 iframe（热更新/切聊天等），
@@ -5883,7 +5883,7 @@ $(() => {
       <div class="be-sec">
         <h4>划线总开关</h4>
         <div class="be-row">
-          <label style="flex:1;">关闭划线功能（与其它选中文字弹工具栏的插件冲突时用）</label>
+          <label style="flex:1;">关闭划线功能</label>
           <label class="be-toggle">
             <input type="checkbox" id="be-highlight-disabled" ${settings.highlightDisabled?'checked':''}>
             <span class="be-slider"></span>
