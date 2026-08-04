@@ -7,7 +7,7 @@ $(() => {
 
   const SCRIPT_ID = 'book-excerpt';
   const SCRIPT_NAME = '书摘';
-  const VERSION = '1.4.1';
+  const VERSION = '1.4.2';
   const LS_SETTINGS = `${SCRIPT_ID}:settings`;
   const LS_NOTES = `${SCRIPT_ID}:notes`;
   // 本次脚本实例的代号。酒馆助手可能在不刷新页面的情况下重建脚本 iframe（热更新/切聊天等），
@@ -1960,6 +1960,7 @@ $(() => {
     #be-panel .be-p-body {
       padding: 2px 18px 24px;
       overflow-y: auto; flex: 1; color: var(--be-panel-fg);
+      transition: opacity 0.14s ease; /* 设置面板二级分组切换用：淡出旧内容再淡入新内容，不是硬切换 */
     }
     @keyframes be-body-in { from { opacity: 0; } to { opacity: 1; } }
     .be-body-anim { animation: be-body-in 0.18s ease; }
@@ -5848,6 +5849,19 @@ $(() => {
           <button class="be-btn" id="be-edit-source-btn">编辑出处</button>
         </div>
       </div>
+
+      <div class="be-sec">
+        <h4>保存方式</h4>
+        <div class="be-row">
+          <div class="be-radio-group" id="be-savemode-group">
+            <button type="button" class="be-radio-opt ${(settings.saveMode||'download')==='download'?'active':''}" data-v="download">下载文件</button>
+            <button type="button" class="be-radio-opt ${settings.saveMode==='popup'?'active':''}" data-v="popup">弹图长按</button>
+          </div>
+        </div>
+        <div class="be-row" style="font-size:11px;opacity:0.7;">
+          <span>下载没反应的内嵌浏览器可以换「弹图长按」，跟卡片编辑页「编辑出处」里的这个选项是同一个设置</span>
+        </div>
+      </div>
       ` : ''}
 
       ${settingsGroup === 'highlight' ? `
@@ -5975,16 +5989,23 @@ $(() => {
     body.querySelectorAll('.be-settings-subtabs button').forEach(el => {
       el.addEventListener('click', () => {
         const g = el.getAttribute('data-g');
-        if (g === settingsGroup) return;
-        settingsGroup = g;
-        body.scrollTop = 0; // 切分组前先清零，避免带着上一个分组的滚动位置渲染新内容
-        renderSettings();
-        const freshBody = mainDoc.getElementById('be-p-body');
-        if (freshBody) {
-          freshBody.classList.remove('be-body-anim');
-          void freshBody.offsetWidth;
-          freshBody.classList.add('be-body-anim');
-        }
+        if (g === settingsGroup || body.classList.contains('be-subtab-switching')) return;
+        // 用平滑的淡出再淡入代替之前硬切换+重放关键帧动画的做法——原来那种"啪"一下重绘容易让人一惊，
+        // 现在先把旧内容淡出，内容换好之后再淡入，观感上是一次连续的过渡，不是一次跳变。
+        body.classList.add('be-subtab-switching');
+        body.style.opacity = '0';
+        setTimeout(() => {
+          settingsGroup = g;
+          body.scrollTop = 0; // 切分组前清零，避免带着上一个分组的滚动位置渲染新内容
+          renderSettings();
+          const freshBody = mainDoc.getElementById('be-p-body');
+          if (freshBody) {
+            requestAnimationFrame(() => {
+              freshBody.style.opacity = '1';
+              freshBody.classList.remove('be-subtab-switching');
+            });
+          }
+        }, 140);
       });
     });
     body.querySelectorAll('.be-tpl-card').forEach(el => {
@@ -6173,6 +6194,13 @@ $(() => {
         const row = body.querySelector('#be-custom-avatar-row');
         if (row) row.style.display = settings.avatarType === 'custom' ? '' : 'none';
         if (mainDoc.getElementById('be-card')) renderCard(lastText);
+      });
+    });
+    body.querySelectorAll('#be-savemode-group .be-radio-opt').forEach(btn => {
+      btn.addEventListener('click', () => {
+        settings.saveMode = btn.getAttribute('data-v') === 'popup' ? 'popup' : 'download';
+        saveSettings(settings);
+        body.querySelectorAll('#be-savemode-group .be-radio-opt').forEach(b => b.classList.toggle('active', b === btn));
       });
     });
     body.querySelector('#be-avatar-upload')?.addEventListener('click', () => {
