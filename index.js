@@ -4,7 +4,7 @@ $(() => {
 
   const SCRIPT_ID = 'book-excerpt';
   const SCRIPT_NAME = '书摘';
-  const VERSION = '1.5.0';
+  const VERSION = '1.5.1';
   const LS_SETTINGS = `${SCRIPT_ID}:settings`;
   const LS_NOTES = `${SCRIPT_ID}:notes`;
   const LS_CANVASES = `${SCRIPT_ID}:canvases`;
@@ -2675,7 +2675,10 @@ $(() => {
     }
     #be-fc-mask.open { display: flex; }
     #be-fc-body {
+      position: relative; /* 图层抽屉靠这个定位锚点做绝对定位悬浮，不挤占编辑区纵向空间 */
       flex: 1; display: flex; flex-direction: column;
+      min-height: 0; /* flex 子元素默认 min-height:auto，内容比可用空间高时会把自己撑爆而不是内部滚动，这里必须清零 */
+      max-height: 100vh; max-height: 100dvh; /* 不完全依赖 flex 传高度，参照 #be-panel 的写法加一层硬上限兜底 */
       background: var(--be-panel-bg); color: var(--be-panel-fg);
       overflow: hidden;
     }
@@ -2688,7 +2691,7 @@ $(() => {
     .be-fc-newrow { padding: 14px 16px 0; flex: 0 0 auto; }
     .be-fc-newrow .be-btn { width: 100%; }
     .be-fc-grid {
-      flex: 1; overflow-y: auto; padding: 14px 16px 24px;
+      flex: 1; min-height: 0; overflow-y: auto; align-content: start; padding: 14px 16px 24px;
       display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 12px;
     }
     .be-fc-card {
@@ -2715,11 +2718,42 @@ $(() => {
     .be-fc-card:hover .be-fc-card-del { opacity: 1; }
 
     .be-fc-toolbar {
-      flex: 0 0 auto; display: flex; gap: 8px; padding: 10px 16px;
-      border-bottom: 1px solid var(--be-panel-divider); flex-wrap: wrap;
+      flex: 0 0 auto; display: flex; align-items: center; gap: 4px; padding: 6px 10px;
+      border-bottom: 1px solid var(--be-panel-divider);
+    }
+    .be-fc-toolbar-spacer { flex: 1; }
+    .be-fc-icon-btn {
+      width: 40px; height: 40px; min-width: 40px; flex: none; /* >=40px 可点击高度，移动端最低触摸目标 */
+      display: flex; align-items: center; justify-content: center;
+      background: var(--be-panel-row-bg); border: none; border-radius: 10px;
+      color: var(--be-panel-fg); font-size: 16px; line-height: 1; cursor: pointer;
+      font-family: inherit;
+    }
+    .be-fc-icon-btn:disabled { opacity: 0.35; cursor: default; }
+    .be-fc-icon-btn.primary { background: var(--be-accent); color: #1a1a1a; font-weight: 600; font-size: 20px; }
+    .be-fc-icon-btn.danger:not(:disabled) { color: #ff9b9b; }
+    .be-fc-menu-wrap { position: relative; }
+    .be-fc-dropdown {
+      display: none; flex-direction: column; gap: 2px;
+      position: absolute; top: 44px; left: 0; min-width: 150px;
+      background: var(--be-panel-bg); border: 1px solid var(--be-panel-divider); border-radius: 12px;
+      padding: 6px; box-shadow: 0 10px 30px rgba(0,0,0,0.3); z-index: 20;
+    }
+    .be-fc-dropdown.open { display: flex; }
+    .be-fc-dropdown-right { left: auto; right: 0; }
+    .be-fc-dropdown button {
+      background: none; border: none; color: var(--be-panel-fg); text-align: left;
+      padding: 10px 12px; border-radius: 8px; font-size: 13px; font-family: inherit;
+      cursor: pointer; white-space: nowrap; min-height: 40px;
+    }
+    .be-fc-dropdown button:hover { background: var(--be-panel-row-bg-hover); }
+    .be-fc-dropdown button.primary { background: var(--be-accent); color: #1a1a1a; font-weight: 600; }
+    .be-fc-dropdown-row {
+      display: flex; align-items: center; justify-content: space-between; gap: 8px;
+      padding: 8px 12px; font-size: 12px;
     }
     .be-fc-canvas-wrap {
-      flex: 1; overflow: auto; padding: 24px;
+      flex: 1; min-height: 0; overflow: auto; padding: 24px;
       display: flex; align-items: flex-start; justify-content: center;
       background: repeating-conic-gradient(#8884 0% 25%, transparent 0% 50%) 0 0/20px 20px;
     }
@@ -2731,6 +2765,13 @@ $(() => {
          手柄会抓不到。导出时另外在沙箱克隆节点上单独裁（fcExportCanvas 里加 overflow:hidden），
          两边各取所需，不用二选一。 */
     }
+    .be-fc-empty-hint {
+      position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      text-align: center; font-size: 14px; line-height: 1.8; color: #999;
+      pointer-events: none; /* 空状态提示不该挡住画布本身的点击/框选 */
+      white-space: nowrap;
+    }
+    .be-fc-empty-hint b { color: var(--be-accent); font-size: 20px; }
     .be-fc-el {
       position: absolute; box-sizing: border-box;
       touch-action: none;
@@ -2750,17 +2791,22 @@ $(() => {
       width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none;
     }
     .be-fc-handle {
-      position: absolute; width: 12px; height: 12px; border-radius: 50%;
+      /* 视觉尺寸从早期的 12px 放大到 22px——原尺寸在移动端手指根本点不准，这是用户反馈"不知道怎么操作"
+         的一部分原因，不是"不知道该做什么"，是压根戳不中。 */
+      position: absolute; width: 22px; height: 22px; border-radius: 50%;
       background: #fff; box-shadow: 0 0 0 1.5px var(--be-accent);
       display: none; z-index: 2;
     }
     .be-fc-el.selected .be-fc-handle { display: block; }
-    .be-fc-handle-nw { left: -6px; top: -6px; cursor: nwse-resize; }
-    .be-fc-handle-ne { right: -6px; top: -6px; cursor: nesw-resize; }
-    .be-fc-handle-sw { left: -6px; bottom: -6px; cursor: nesw-resize; }
-    .be-fc-handle-se { right: -6px; bottom: -6px; cursor: nwse-resize; }
+    .be-fc-handle-nw { left: -11px; top: -11px; cursor: nwse-resize; }
+    .be-fc-handle-ne { right: -11px; top: -11px; cursor: nesw-resize; }
+    .be-fc-handle-sw { left: -11px; bottom: -11px; cursor: nesw-resize; }
+    .be-fc-handle-se { right: -11px; bottom: -11px; cursor: nwse-resize; }
     .be-fc-handle-rotate {
-      left: 50%; top: -28px; margin-left: -6px; cursor: grab;
+      /* 旋转手柄是真正的手势触发目标（不像四角只是视觉提示，实际缩放靠 interact.js 的边缘检测），
+         单独给到比其它手柄更大的尺寸 */
+      width: 26px; height: 26px;
+      left: 50%; top: -36px; margin-left: -13px; cursor: grab;
       background: var(--be-accent); box-shadow: none;
     }
     .be-fc-el.locked .be-fc-handle { display: none; }
@@ -2789,7 +2835,6 @@ $(() => {
     .be-fc-prop-btn.active { background: var(--be-accent-soft); color: var(--be-accent); }
     .be-fc-prop-sep { width: 1px; height: 16px; background: var(--be-panel-divider); margin: 0 2px; }
     .be-fc-prop-sep-row { height: 1px; background: var(--be-panel-divider); margin: 6px 0; }
-    .be-fc-toolbar-sep { width: 1px; align-self: stretch; background: var(--be-panel-divider); margin: 0 2px; }
     #be-fc-export-scale {
       background: var(--be-panel-row-bg); border: 1px solid var(--be-panel-divider); color: var(--be-panel-fg);
       border-radius: 6px; padding: 5px 6px; font-size: 12px; font-family: inherit;
@@ -2813,14 +2858,20 @@ $(() => {
     .be-fc-multibar-align { display: flex; gap: 4px; flex-wrap: wrap; }
     .be-fc-align-btn {
       background: var(--be-panel-row-bg); border: 1px solid var(--be-panel-divider);
-      color: var(--be-panel-fg); border-radius: 6px; padding: 3px 8px; font-size: 12px; cursor: pointer;
+      color: var(--be-panel-fg); border-radius: 6px; padding: 3px 10px; font-size: 12px; cursor: pointer;
+      min-height: 40px; /* 移动端最低触摸目标 */
     }
     .be-fc-layers {
-      max-height: 220px; overflow-y: auto; margin: 0 0 8px;
-      border: 1px solid var(--be-panel-divider); border-radius: 8px;
+      display: none; /* 图层面板改成悬浮抽屉：不用的时候完全不占编辑区空间，用 .open 类切换显隐 */
+      position: absolute; top: 50px; right: 10px; z-index: 15;
+      width: min(280px, calc(100% - 20px)); max-height: 60vh; overflow-y: auto;
+      background: var(--be-panel-bg); border: 1px solid var(--be-panel-divider); border-radius: 12px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.3);
     }
+    .be-fc-layers.open { display: block; }
     .be-fc-layer-row {
       display: flex; align-items: center; gap: 8px; padding: 6px 10px; cursor: pointer;
+      min-height: 40px; box-sizing: border-box; /* 移动端最低触摸目标 */
       border-bottom: 1px solid var(--be-panel-divider);
     }
     .be-fc-layer-row:last-child { border-bottom: none; }
@@ -2829,7 +2880,10 @@ $(() => {
     .be-fc-layer-icon { font-size: 14px; }
     .be-fc-layer-name { flex: 1; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .be-fc-layer-thumb { width: 28px; height: 28px; object-fit: cover; border-radius: 4px; flex: none; }
-    .be-fc-layer-lock { background: none; border: none; cursor: pointer; font-size: 13px; opacity: 0.6; padding: 2px 4px; }
+    .be-fc-layer-lock {
+      background: none; border: none; cursor: pointer; font-size: 15px; opacity: 0.6;
+      width: 36px; height: 36px; flex: none; /* 移动端最低触摸目标 */
+    }
     .be-fc-layer-lock.active { opacity: 1; }
     .be-fc-selbox {
       position: absolute; border: 1px dashed var(--be-accent); background: var(--be-accent-soft);
@@ -7435,23 +7489,36 @@ $(() => {
         <button class="be-btn" id="be-fc-close">×</button>
       </div>
       <div class="be-fc-toolbar">
-        <button class="be-btn" id="be-fc-undo" disabled title="撤销 (Ctrl+Z)">↩ 撤销</button>
-        <button class="be-btn" id="be-fc-redo" disabled title="重做 (Ctrl+Shift+Z)">↪ 重做</button>
-        <button class="be-btn" id="be-fc-add-text">+ 文字</button>
-        <button class="be-btn" id="be-fc-add-image">+ 图片</button>
-        <button class="be-btn" id="be-fc-split-image">裂图</button>
-        <button class="be-btn" id="be-fc-layers-toggle">图层</button>
-        <button class="be-btn danger" id="be-fc-del-selected" disabled>删除</button>
-        <span class="be-fc-toolbar-sep"></span>
-        <button class="be-btn" id="be-fc-save-template">存为模板</button>
-        <select id="be-fc-export-scale" title="导出倍率">
-          <option value="1">1x</option>
-          <option value="2" selected>2x</option>
-          <option value="3">3x</option>
-        </select>
-        <button class="be-btn primary" id="be-fc-export">导出图片</button>
+        <button class="be-fc-icon-btn" id="be-fc-undo" disabled title="撤销 (Ctrl+Z)">↩</button>
+        <button class="be-fc-icon-btn" id="be-fc-redo" disabled title="重做 (Ctrl+Shift+Z)">↪</button>
+        <div class="be-fc-menu-wrap">
+          <button class="be-fc-icon-btn primary" id="be-fc-add-toggle" title="添加文字/图片">+</button>
+          <div class="be-fc-dropdown" id="be-fc-add-menu">
+            <button type="button" id="be-fc-add-text">📝 文字</button>
+            <button type="button" id="be-fc-add-image">🖼️ 图片</button>
+            <button type="button" id="be-fc-split-image">✂️ 裂图</button>
+          </div>
+        </div>
+        <button class="be-fc-icon-btn" id="be-fc-layers-toggle" title="图层">▤</button>
+        <button class="be-fc-icon-btn danger" id="be-fc-del-selected" disabled title="删除选中">🗑️</button>
+        <span class="be-fc-toolbar-spacer"></span>
+        <div class="be-fc-menu-wrap">
+          <button class="be-fc-icon-btn" id="be-fc-more-toggle" title="更多">⋯</button>
+          <div class="be-fc-dropdown be-fc-dropdown-right" id="be-fc-more-menu">
+            <button type="button" id="be-fc-save-template">💾 存为模板</button>
+            <div class="be-fc-dropdown-row">
+              <span>导出倍率</span>
+              <select id="be-fc-export-scale" title="导出倍率">
+                <option value="1">1x</option>
+                <option value="2" selected>2x</option>
+                <option value="3">3x</option>
+              </select>
+            </div>
+            <button type="button" class="primary" id="be-fc-export">⬇️ 导出图片</button>
+          </div>
+        </div>
       </div>
-      <div class="be-fc-layers" id="be-fc-layers" style="display:none;"></div>
+      <div class="be-fc-layers" id="be-fc-layers"></div>
       <div class="be-fc-multibar" id="be-fc-multibar" style="display:none;">
         <span id="be-fc-multibar-count"></span>
         <div class="be-fc-multibar-align">
@@ -7472,19 +7539,31 @@ $(() => {
     body.querySelector('#be-fc-close').addEventListener('click', closeFreeform);
     body.querySelector('#be-fc-undo').addEventListener('click', fcUndo);
     body.querySelector('#be-fc-redo').addEventListener('click', fcRedo);
-    body.querySelector('#be-fc-export').addEventListener('click', fcExportCanvas);
-    body.querySelector('#be-fc-save-template').addEventListener('click', openSaveTemplateDialog);
-    body.querySelector('#be-fc-add-text').addEventListener('click', fcAddTextElement);
-    body.querySelector('#be-fc-add-image').addEventListener('click', fcAddImageElement);
-    body.querySelector('#be-fc-split-image').addEventListener('click', fcOpenSplitDialog);
+    body.querySelector('#be-fc-export').addEventListener('click', () => { fcCloseAllDropdowns(); fcExportCanvas(); });
+    body.querySelector('#be-fc-save-template').addEventListener('click', () => { fcCloseAllDropdowns(); openSaveTemplateDialog(); });
+    body.querySelector('#be-fc-add-text').addEventListener('click', () => { fcCloseAllDropdowns(); fcAddTextElement(); });
+    body.querySelector('#be-fc-add-image').addEventListener('click', () => { fcCloseAllDropdowns(); fcAddImageElement(); });
+    body.querySelector('#be-fc-split-image').addEventListener('click', () => { fcCloseAllDropdowns(); fcOpenSplitDialog(); });
     body.querySelector('#be-fc-del-selected').addEventListener('click', fcDeleteSelected);
     body.querySelector('#be-fc-layers-toggle').addEventListener('click', () => {
+      fcCloseAllDropdowns();
       const panel = mainDoc.getElementById('be-fc-layers');
       if (!panel) return;
-      const showing = panel.style.display !== 'none';
-      panel.style.display = showing ? 'none' : '';
-      if (!showing) renderFcLayersPanel();
+      const showing = panel.classList.contains('open');
+      fcCloseLayersPanel();
+      if (!showing) { panel.classList.add('open'); renderFcLayersPanel(); }
     });
+    // 工具条里"+"和"更多"是两个下拉菜单：点触发按钮开关自己，点其它任何地方（含另一个菜单）全部收起，
+    // 不用逐个菜单单独判断，document 上挂一个统一的"点了菜单外面就关"监听器最省心
+    body.querySelector('#be-fc-add-toggle').addEventListener('click', e => {
+      e.stopPropagation();
+      fcToggleDropdown('be-fc-add-menu');
+    });
+    body.querySelector('#be-fc-more-toggle').addEventListener('click', e => {
+      e.stopPropagation();
+      fcToggleDropdown('be-fc-more-menu');
+    });
+    mainDoc.addEventListener('click', fcOutsideDropdownClick);
     body.querySelectorAll('.be-fc-align-btn').forEach(btn => {
       btn.addEventListener('click', () => fcAlignSelected(btn.getAttribute('data-align')));
     });
@@ -7500,6 +7579,35 @@ $(() => {
     mainDoc.addEventListener('pointermove', fcCanvasPointerMove);
     mainDoc.addEventListener('pointerup', fcCanvasPointerUp);
     mainDoc.addEventListener('keydown', fcHandleUndoRedoKey);
+  }
+
+  // ---- 工具条的"+"/"更多"下拉菜单 + 图层抽屉：统一开关逻辑，点菜单外任意位置全部收起 ----
+  function fcToggleDropdown(id) {
+    const el = mainDoc.getElementById(id);
+    if (!el) return;
+    const willOpen = !el.classList.contains('open');
+    fcCloseAllDropdowns();
+    if (willOpen) el.classList.add('open');
+  }
+  function fcCloseAllDropdowns() {
+    ['be-fc-add-menu', 'be-fc-more-menu'].forEach(id => {
+      const el = mainDoc.getElementById(id);
+      if (el) el.classList.remove('open');
+    });
+  }
+  function fcCloseLayersPanel() {
+    const panel = mainDoc.getElementById('be-fc-layers');
+    if (panel) panel.classList.remove('open');
+  }
+  // 用 composedPath() 而不是 e.target.closest()：点图层面板某一行会触发 fcSelect → renderFcLayersPanel
+  // 把面板 innerHTML 整个重建，被点的那个行节点在事件冒泡过程中就已经被摘掉了（parentNode 变 null），
+  // 这时候再用 closest() 网上找，孤立节点找不到 .be-fc-layers 祖先，会被误判成"点在面板外面"从而自己把自己关掉。
+  // composedPath() 是事件派发那一刻就拍好的快照，不受后续 DOM 变动影响，才是稳的写法。
+  function fcOutsideDropdownClick(e) {
+    const path = (typeof e.composedPath === 'function') ? e.composedPath() : [e.target];
+    const hasAncestor = (pred) => path.some(n => n && n.nodeType === 1 && pred(n));
+    if (!hasAncestor(n => n.classList && n.classList.contains('be-fc-menu-wrap'))) fcCloseAllDropdowns();
+    if (!hasAncestor(n => n.id === 'be-fc-layers' || n.id === 'be-fc-layers-toggle')) fcCloseLayersPanel();
   }
 
   // 编辑文字时 Ctrl+Z 应该走浏览器原生 contenteditable 的文字撤销，不能被画布级撤销抢走，
@@ -8155,7 +8263,9 @@ $(() => {
     const canvas = fcGetCanvas();
     const canvasEl = fcCanvasEl();
     if (!canvas || !canvasEl) return;
-    canvasEl.innerHTML = canvas.elements.slice().sort((a, b) => (a.z||0) - (b.z||0)).map(fcElementHtml).join('');
+    const emptyHint = canvas.elements.length ? '' :
+      `<div class="be-fc-empty-hint">点左上角 <b>+</b> 号<br>添加文字或图片</div>`;
+    canvasEl.innerHTML = emptyHint + canvas.elements.slice().sort((a, b) => (a.z||0) - (b.z||0)).map(fcElementHtml).join('');
     fcSyncSelectionUI();
   }
 
@@ -8870,6 +8980,8 @@ $(() => {
       clone.querySelectorAll('.be-fc-el').forEach(n => n.classList.remove('selected'));
       const selbox = clone.querySelector('.be-fc-selbox');
       if (selbox) selbox.remove();
+      const emptyHint = clone.querySelector('.be-fc-empty-hint');
+      if (emptyHint) emptyHint.remove();
       clone.querySelectorAll('[contenteditable]').forEach(n => n.setAttribute('contenteditable', 'false'));
       clone.style.width = w + 'px';
       clone.style.height = h + 'px';
