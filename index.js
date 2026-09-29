@@ -89,9 +89,9 @@ $(() => {
     // 自由排版存的版式模板，用独立字段而不是塞进 customTemplates——那个数组被卡片主题抽屉/设置里的
     // "自定义模板"列表/导出弹窗等好几处已有 UI 直接遍历渲染，混进去会在那些地方出现不认识的条目
     freeformTemplates: [],
-    hiddenTemplates: [],           // 被用户隐藏的内置模板 id 列表（TEMPLATES 的 key）
+    hiddenTemplates: [],           // 被隐藏的模板 key（默认 'classic' / 导入 'custom-<id>' 都行）
     hiddenColorPresets: [],        // 被用户隐藏的内置配色 id 列表（COLOR_PRESETS 的 id）
-    templateOrder: [],             // 自定义模板的自由排序（存 customTemplates 的 id，未出现的按原数组顺序排在后面）
+    templateOrder: [],             // 模板排序（默认+导入统一，存 key；没排过的按 默认→导入 的原顺序排在后面）
     templateFavorites: []          // 收藏的模板 key 列表（跟 settings.template 同格式：'classic' / 'custom-<id>'），选模板时排在最前
   };
 
@@ -268,9 +268,10 @@ $(() => {
         s._scaleDefault3 = true;
       }
       // 收藏改成跟 settings.template 同一套 key（'classic' / 'custom-<id>'），默认模板以后也能收藏
-      if (Array.isArray(s.templateFavorites)) {
-        s.templateFavorites = s.templateFavorites.map(f => (TEMPLATES[f] || String(f).startsWith('custom-')) ? f : `custom-${f}`);
-      }
+      const toKey = f => (TEMPLATES[f] || String(f).startsWith('custom-')) ? f : `custom-${f}`;
+      if (Array.isArray(s.templateFavorites)) s.templateFavorites = s.templateFavorites.map(toKey);
+      // 排序同理：旧版只给导入模板排序、存的是裸 id
+      if (Array.isArray(s.templateOrder)) s.templateOrder = s.templateOrder.map(toKey);
       delete s.avatarQuality;
       return s;
     } catch { return JSON.parse(JSON.stringify(DEFAULT_SETTINGS)); }
@@ -490,27 +491,6 @@ $(() => {
   }
   function escapeRegExp(s) {
     return String(s == null ? '' : s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  }
-  // 长按手势：用于默认模板/配色"长按隐藏"这类不需要常驻按钮的次要操作。
-  // 长按触发后当次的 click 会被吞掉，避免误触发"选中这个模板/配色"的主操作。
-  function bindLongPress(el, handler, delay = 500) {
-    let timer = null;
-    let fired = false;
-    const start = () => {
-      fired = false;
-      timer = setTimeout(() => { fired = true; timer = null; handler(); }, delay);
-    };
-    const cancel = () => { if (timer) clearTimeout(timer); timer = null; };
-    el.addEventListener('touchstart', start, { passive: true });
-    el.addEventListener('touchend', cancel);
-    el.addEventListener('touchmove', cancel);
-    el.addEventListener('touchcancel', cancel);
-    el.addEventListener('mousedown', start);
-    el.addEventListener('mouseup', cancel);
-    el.addEventListener('mouseleave', cancel);
-    el.addEventListener('click', e => {
-      if (fired) { e.preventDefault(); e.stopPropagation(); fired = false; }
-    }, true);
   }
   // ====== 名字打码：分享时隐去角色/用户名 ======
   // 收集要打码的目标词：自动取角色名/用户名（含出处里自定义的名字）+ 额外补充词
@@ -1181,6 +1161,13 @@ $(() => {
       border: 0; padding: 0; margin: 0;
       background: transparent;
     }
+
+    /* 正则直接渲染在消息里的状态栏常写 user-select:none，长按选不中字就弹不出划线工具条。
+       划线功能开着时只对文字类元素放开选择，按钮/输入框不动（关闭划线功能时这段不输出） */
+    ${settings.highlightDisabled ? '' : `
+    .mes_text :where(div, span, p, li, td, th, dd, dt, font, b, i, em, strong, small, u, s, del, ins, mark, sub, sup, label, blockquote, pre, code, h1, h2, h3, h4, h5, h6, section, article, details, summary) {
+      -webkit-user-select: text !important; user-select: text !important;
+    }`}
 
     /* ===== 划线样式 ===== */
     .be-highlight {
@@ -2351,6 +2338,124 @@ $(() => {
       opacity: 0.4; margin: 0 0 12px; font-weight: 600;
       color: var(--be-panel-sub);
     }
+    /* 酒馆美化主题常直接给所有 h4 加贴图/边框/字色（有的还带 !important），会渗进本插件的分区标题；
+       设置面板/笔记本不跟随酒馆主题，这里把这些装饰清掉 */
+    .be-sec h4 {
+      background: none !important; border: none !important; box-shadow: none !important;
+      text-shadow: none !important; border-image: none !important; padding: 0 !important;
+      color: var(--be-panel-sub) !important; font-weight: 600 !important;
+    }
+    .be-sec h4::before, .be-sec h4::after { content: none !important; }
+    /* 面板里的 .be-row 等写了 display，会盖掉浏览器默认的 [hidden] 隐藏，这里统一兜回来 */
+    #be-panel [hidden], #be-tpl-preview [hidden] { display: none !important; }
+    .be-sec-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+    .be-sec-head h4 { margin: 0; flex: 1; }
+    .be-sec-head-btns { display: flex; gap: 6px; }
+    .be-mini-btn {
+      background: var(--be-panel-row-bg); color: var(--be-panel-fg);
+      border: 1px solid transparent; border-radius: 999px;
+      padding: 4px 12px; font-size: 12px; cursor: pointer; font-family: inherit;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .be-mini-btn:hover { background: var(--be-panel-row-bg-hover); }
+    .be-mini-btn.active { background: var(--be-accent); color: #1a1a1a; }
+    .be-subh {
+      font-size: 11px; font-weight: 600; letter-spacing: 0.08em;
+      color: var(--be-panel-sub); opacity: 0.75; margin: 14px 0 2px;
+    }
+    .be-subh:first-of-type { margin-top: 0; }
+    .be-row.be-hint { min-height: 0; font-size: 11px; opacity: 0.7; padding: 2px 0 6px; }
+    .be-text-in {
+      width: 100%; box-sizing: border-box;
+      background: var(--be-panel-input-bg); border: 1px solid var(--be-panel-input-border);
+      color: inherit; padding: 7px 10px; border-radius: 8px; font-size: 13px; font-family: inherit;
+    }
+    /* 模板列表：默认和导入的统一成长条，平时折叠 */
+    .be-tl-current {
+      display: flex; align-items: center; gap: 8px;
+      padding: 10px 12px; border-radius: 12px; cursor: pointer;
+      background: var(--be-panel-row-bg); font-size: 13px;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .be-tl-current > span:first-child { flex: 1; }
+    .be-tl-current .be-caret {
+      display: inline-block; width: 0; height: 0;
+      border-left: 4px solid transparent; border-right: 4px solid transparent;
+      border-top: 5px solid currentColor; opacity: 0.6; transition: transform 0.15s;
+    }
+    .be-tl-current.open .be-caret { transform: rotate(180deg); }
+    .be-tl-body { padding-top: 8px; }
+    .be-tl-hint { font-size: 11px; opacity: 0.65; margin: 0 2px 8px; line-height: 1.6; }
+    .be-tl-list { display: flex; flex-direction: column; gap: 6px; }
+    .be-tl-sep { text-align: center; opacity: 0.45; margin: 4px 0; line-height: 1; }
+    .be-tl-row {
+      display: flex; align-items: center; gap: 8px;
+      padding: 9px 10px 9px 12px; border-radius: 12px;
+      background: var(--be-panel-row-bg); cursor: pointer; font-size: 13px;
+      border: 1.5px solid transparent;
+      transition: background 0.15s;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .be-tl-row:hover { background: var(--be-panel-row-bg-hover); }
+    .be-tl-row.active { border-color: var(--be-accent); background: var(--be-accent-soft); }
+    .be-tl-row.dragging { opacity: 0.85; box-shadow: 0 6px 18px rgba(0,0,0,0.35); position: relative; z-index: 1; }
+    .be-tl-row-hidden { cursor: default; }
+    .be-tl-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .be-tl-star { color: #ffb400; font-size: 12px; }
+    .be-tl-tag {
+      font-size: 10px; padding: 1px 6px; border-radius: 6px;
+      background: rgba(128,128,128,0.18); color: var(--be-panel-sub); flex: 0 0 auto;
+    }
+    .be-tl-handle {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 22px; height: 26px; margin-left: -4px; cursor: grab; opacity: 0.5;
+      touch-action: none; flex: 0 0 auto;
+    }
+    .be-tl-handle svg { width: 12px; height: 12px; fill: currentColor; }
+    .be-tl-row button {
+      background: transparent; border: none; color: var(--be-panel-sub);
+      cursor: pointer; padding: 2px 6px; font-size: 15px; line-height: 1; flex: 0 0 auto;
+      font-family: inherit;
+    }
+    .be-tl-fav.on, .be-tl-fav:hover { color: #ffb400; }
+    .be-tl-prev svg { width: 17px; height: 17px; stroke: currentColor; fill: none; stroke-width: 1.7; display: block; }
+    .be-tl-prev:hover, .be-tl-more:hover { color: var(--be-accent); }
+    .be-tl-row .be-mini-btn { font-size: 11px; padding: 3px 10px; }
+    #be-tl-menu {
+      position: absolute; z-index: 2147483646; display: none; flex-direction: column;
+      min-width: 110px; padding: 6px; border-radius: 12px;
+      background: var(--be-panel-bg, #1b1b1b); color: var(--be-panel-fg, #eee);
+      border: 1px solid var(--be-panel-border, rgba(255,255,255,0.1));
+      box-shadow: 0 10px 30px rgba(0,0,0,0.45);
+      font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+    #be-tl-menu.show { display: flex; }
+    #be-tl-menu button {
+      background: transparent; border: none; color: inherit; text-align: left;
+      padding: 9px 12px; border-radius: 8px; font-size: 13px; cursor: pointer; font-family: inherit;
+    }
+    #be-tl-menu button:hover { background: var(--be-panel-row-bg-hover, rgba(255,255,255,0.08)); }
+    #be-tl-menu button.danger { color: #ff8a8a; }
+    /* 模板预览弹窗 */
+    #be-tpl-preview {
+      position: absolute; top: 0; left: 0; width: 100%; height: 100vh; height: 100dvh;
+      z-index: 2147483646; display: none; align-items: center; justify-content: center;
+      background: rgba(0,0,0,0.6); padding: 16px; box-sizing: border-box;
+    }
+    #be-tpl-preview.open { display: flex; }
+    #be-tpl-preview .be-tpv-box {
+      width: min(380px, 92vw); max-height: 88dvh; overflow: auto;
+      background: var(--be-panel-bg, #1b1b1b); color: var(--be-panel-fg, #eee);
+      border-radius: 18px; padding: 12px 14px 14px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+      font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+    #be-tpl-preview .be-tpv-head { display: flex; align-items: center; font-size: 14px; margin-bottom: 10px; }
+    #be-tpl-preview .be-tpv-head span { flex: 1; font-weight: 600; }
+    #be-tpl-preview .be-tpv-close { background: transparent; border: none; color: inherit; font-size: 20px; cursor: pointer; line-height: 1; }
+    #be-tpl-preview .be-tpv-stage { width: 100%; overflow: hidden; position: relative; }
+    #be-tpl-preview .be-tpv-scale { transform-origin: top left; pointer-events: none; }
+    #be-tpl-preview .be-tpv-foot { display: flex; justify-content: flex-end; margin-top: 12px; }
     .be-row {
       display: flex; align-items: center; gap: 10px;
       min-height: 42px; font-size: 13px; color: var(--be-panel-fg);
@@ -3946,14 +4051,34 @@ $(() => {
     'border-image-source', 'border-image-slice', 'border-image-width', 'border-image-outset', 'border-image-repeat',
     '--be-float-fg', '--be-float-arrow', '--be-float-divider', '--be-float-fw'
   ];
-  function applyTavernFloatStyle(el, kind) {
-    if (!el) return;
-    TAVERN_FLOAT_PROPS.forEach(p => { try { el.style.removeProperty(p); } catch (e) {} });
-    if (!settings.followTavernTheme) return;
+  // 采样结果缓存：只在第一次用到、开关切换、或酒馆主题变化时重新读一次，弹工具条时直接套缓存
+  const _tavernStyleCache = new Map();
+  let _tavernStyleObserver = null;
+  function invalidateTavernStyleCache() { _tavernStyleCache.clear(); }
+  function watchTavernThemeChanges() {
+    if (_tavernStyleObserver) return;
+    try {
+      // 酒馆换主题/改美化：会改 <head> 里的样式（custom-style 等）或 :root/body 上的内联变量和 class
+      _tavernStyleObserver = new mainWin.MutationObserver(muts => {
+        for (const m of muts) {
+          const t = m.target.nodeType === 1 ? m.target : m.target.parentElement;
+          if (t && t.id && t.id.startsWith('be-')) continue; // 自己注入的样式变化不算
+          invalidateTavernStyleCache();
+          return;
+        }
+      });
+      _tavernStyleObserver.observe(mainDoc.head, { childList: true, subtree: true, characterData: true });
+      _tavernStyleObserver.observe(mainDoc.documentElement, { attributes: true, attributeFilter: ['style', 'class'] });
+      _tavernStyleObserver.observe(mainDoc.body, { attributes: true, attributeFilter: ['style'] });
+    } catch (e) {}
+  }
+  function computeTavernFloatProps(kind) {
     const sample = findTavernSample(kind);
-    if (!sample) return;
+    if (!sample) return null;
     let cs;
-    try { cs = mainWin.getComputedStyle(sample); } catch (e) { return; }
+    try { cs = mainWin.getComputedStyle(sample); } catch (e) { return null; }
+    const out = [];
+    const set = (p, v) => out.push([p, v]);
     const { layers, blur, alphaLeft } = collectTavernBgStack(sample);
     // 一路叠到 body 都还很透明（主题把面板做成了纯透明）时，垫一层酒馆的 UI 背景色，
     // 否则工具条浮在聊天文字上面根本看不清
@@ -3972,38 +4097,45 @@ $(() => {
       }
     });
     if (imgs.length) {
-      el.style.setProperty('background-color', 'transparent');
-      el.style.setProperty('background-image', imgs.join(', '));
-      el.style.setProperty('background-size', sizes.join(', '));
-      el.style.setProperty('background-position', poss.join(', '));
-      el.style.setProperty('background-repeat', reps.join(', '));
+      set('background-color', 'transparent');
+      set('background-image', imgs.join(', '));
+      set('background-size', sizes.join(', '));
+      set('background-position', poss.join(', '));
+      set('background-repeat', reps.join(', '));
     }
-    if (blur) {
-      el.style.setProperty('backdrop-filter', blur);
-      el.style.setProperty('-webkit-backdrop-filter', blur);
-    }
+    if (blur) { set('backdrop-filter', blur); set('-webkit-backdrop-filter', blur); }
     ['top', 'right', 'bottom', 'left'].forEach(side => {
       const w = cs.getPropertyValue(`border-${side}-width`);
       const st = cs.getPropertyValue(`border-${side}-style`);
       const c = cs.getPropertyValue(`border-${side}-color`);
-      if (st && st !== 'none' && parseFloat(w) > 0) el.style.setProperty(`border-${side}`, `${w} ${st} ${c}`);
+      if (st && st !== 'none' && parseFloat(w) > 0) set(`border-${side}`, `${w} ${st} ${c}`);
     });
     const radius = cs.getPropertyValue('border-top-left-radius');
-    if (radius && parseFloat(radius) > 0) el.style.setProperty('border-radius', cs.borderRadius);
-    if (cs.boxShadow && cs.boxShadow !== 'none') el.style.setProperty('box-shadow', cs.boxShadow);
-    if (cs.textShadow && cs.textShadow !== 'none') el.style.setProperty('text-shadow', cs.textShadow);
+    if (radius && parseFloat(radius) > 0) set('border-radius', cs.borderRadius);
+    if (cs.boxShadow && cs.boxShadow !== 'none') set('box-shadow', cs.boxShadow);
+    if (cs.textShadow && cs.textShadow !== 'none') set('text-shadow', cs.textShadow);
     if (cs.borderImageSource && cs.borderImageSource !== 'none') {
-      el.style.setProperty('border-image-source', cs.borderImageSource);
-      el.style.setProperty('border-image-slice', cs.borderImageSlice);
-      el.style.setProperty('border-image-width', cs.borderImageWidth);
-      el.style.setProperty('border-image-outset', cs.borderImageOutset);
-      el.style.setProperty('border-image-repeat', cs.borderImageRepeat);
+      set('border-image-source', cs.borderImageSource);
+      set('border-image-slice', cs.borderImageSlice);
+      set('border-image-width', cs.borderImageWidth);
+      set('border-image-outset', cs.borderImageOutset);
+      set('border-image-repeat', cs.borderImageRepeat);
     }
-    el.style.setProperty('--be-float-fg', cs.color);
+    set('--be-float-fg', cs.color);
     const fg = parseCssColor(cs.color);
-    if (fg) el.style.setProperty('--be-float-divider', `rgba(${fg.r}, ${fg.g}, ${fg.b}, 0.2)`);
-    el.style.setProperty('--be-float-arrow', blendLayerColors(layers, { r: 43, g: 43, b: 43 }));
-    if (kind === 'h4') el.style.setProperty('--be-float-fw', cs.fontWeight);
+    if (fg) set('--be-float-divider', `rgba(${fg.r}, ${fg.g}, ${fg.b}, 0.2)`);
+    set('--be-float-arrow', blendLayerColors(layers, { r: 43, g: 43, b: 43 }));
+    if (kind === 'h4') set('--be-float-fw', cs.fontWeight);
+    return out;
+  }
+  function applyTavernFloatStyle(el, kind) {
+    if (!el) return;
+    TAVERN_FLOAT_PROPS.forEach(p => { try { el.style.removeProperty(p); } catch (e) {} });
+    if (!settings.followTavernTheme) return;
+    watchTavernThemeChanges();
+    if (!_tavernStyleCache.has(kind)) _tavernStyleCache.set(kind, computeTavernFloatProps(kind));
+    const props = _tavernStyleCache.get(kind);
+    if (props) props.forEach(([p, v]) => el.style.setProperty(p, v));
   }
 
   function showBar(rect) {
@@ -4066,14 +4198,22 @@ $(() => {
   function handlePickStepMain() {
     if (!lastRange) return;
     if (!pickPendingStart) {
-      pickPendingStart = { node: lastRange.startContainer, offset: lastRange.startOffset };
+      pickPendingStart = { node: lastRange.startContainer, offset: lastRange.startOffset, frame: lastRangeFrame };
       hidePickStepBar();
-      try { mainWin.getSelection().removeAllRanges(); } catch (e) {}
+      try { (lastRangeFrame ? frameSelWin(lastRangeFrame) : mainWin).getSelection().removeAllRanges(); } catch (e) {}
       toast('已设置开头，请再选中结尾的词语', 'info');
       return;
     }
     const endRange = lastRange;
-    const range = mainDoc.createRange();
+    const endFrame = lastRangeFrame;
+    // 开头和结尾要在同一个文档里（同在聊天正文，或同在一个状态栏 iframe 里）才能拼成一个选区
+    if (pickPendingStart.frame !== endFrame) {
+      toast('开头和结尾不在同一段文字里（比如一个在状态栏、一个在正文），请重新开始', 'error');
+      resetPickPending();
+      return;
+    }
+    const doc = (pickPendingStart.node && pickPendingStart.node.ownerDocument) || mainDoc;
+    const range = doc.createRange();
     try {
       range.setStart(pickPendingStart.node, pickPendingStart.offset);
       range.setEnd(endRange.endContainer, endRange.endOffset);
@@ -4092,10 +4232,10 @@ $(() => {
     lastText = picked.text;
     lastRichText = picked.rich;
     lastRange = range.cloneRange();
-    lastRangeFrame = null;
+    lastRangeFrame = endFrame;
     const rects = range.getClientRects();
     const rect = rects.length ? rects[rects.length - 1] : range.getBoundingClientRect();
-    showBar(rect);
+    showBar(endFrame ? translateFrameRect(rect, endFrame) : rect);
   }
   function showPickStepBar(rect) {
     const bar = ensurePickStepBar();
@@ -4805,37 +4945,63 @@ $(() => {
     lastRangeFrame = iframeEl;
     const rects = range.getClientRects();
     const rect = rects.length ? rects[rects.length - 1] : range.getBoundingClientRect();
-    showBar(translateFrameRect(rect, iframeEl));
+    const r2 = translateFrameRect(rect, iframeEl);
+    if (settings.selectMode === 'tap') { hideBar(); showPickStepBar(r2); }
+    else { hidePickStepBar(); showBar(r2); }
   }
   let frameSelDebounce = null;
   function scheduleFrameCheck(iframeEl, delay = 80) {
     if (frameSelDebounce) clearTimeout(frameSelDebounce);
     frameSelDebounce = setTimeout(() => checkSelectionInFrame(iframeEl), delay);
   }
+  // 状态栏（酒馆助手把正则/代码块渲染成 .mes_text .TH-render > iframe）划线不弹工具条的两个根因：
+  //  1) iframe 的文档会被整个换掉：元素刚插进来时是 about:blank，srcdoc/blob 加载完才是真内容；状态栏刷新也会重新加载。
+  //     旧代码只在第一次给"当时那个文档"绑监听，并把 iframe 元素记为已接管——文档一换，监听跟着旧文档死掉，且永不重绑。
+  //  2) 酒馆助手是消息渲染完之后才异步插 iframe，旧代码只在"新增整条消息"时扫描，晚插入的 iframe 根本没被发现。
+  // 现在：按文档绑定（WeakSet 记录已绑过的文档），iframe 每次 load 都检查一遍；并且聊天区里一出现 iframe 就立即接管。
+  const boundFrameDocs = new WeakSet();
+  const FRAME_SELECTABLE_CSS = `
+    body, body :where(div, span, p, li, td, th, dd, dt, font, b, i, em, strong, small, u, s, del, ins, mark, sub, sup, label, blockquote, pre, code, h1, h2, h3, h4, h5, h6, section, article, details, summary) {
+      -webkit-user-select: text !important; user-select: text !important;
+    }`;
+  function bindFrameDoc(iframeEl) {
+    const doc = frameSelDoc(iframeEl);
+    if (!doc || boundFrameDocs.has(doc)) return; // 跨域读不到 / 这个文档已经绑过
+    if (doc.readyState === 'loading') return;      // 还在加载，等 load 事件
+    boundFrameDocs.add(doc);
+    trackedFrames.add(iframeEl);
+    frameDocMap.set(doc, iframeEl);
+    try {
+      doc.addEventListener('selectionchange', () => scheduleFrameCheck(iframeEl, 120));
+      doc.addEventListener('mouseup', () => scheduleFrameCheck(iframeEl, 30));
+      doc.addEventListener('touchend', () => scheduleFrameCheck(iframeEl, 120));
+      // 有些状态栏自己写了 user-select:none，长按根本选不中字——只对文字类元素放开，按钮/输入框不动
+      if (doc.head && !doc.getElementById('be-frame-selectable')) {
+        const st = doc.createElement('style');
+        st.id = 'be-frame-selectable';
+        st.textContent = FRAME_SELECTABLE_CSS;
+        doc.head.appendChild(st);
+      }
+    } catch (e) {}
+  }
   function trackIframeForSelection(iframeEl) {
-    if (!iframeEl || trackedFrames.has(iframeEl)) return;
-    const bind = () => {
-      const doc = frameSelDoc(iframeEl);
-      if (!doc) return; // 跨域/未就绪，跳过
-      trackedFrames.add(iframeEl);
-      frameDocMap.set(doc, iframeEl);
-      try {
-        doc.addEventListener('selectionchange', () => scheduleFrameCheck(iframeEl, 120));
-        doc.addEventListener('mouseup', () => scheduleFrameCheck(iframeEl, 30));
-        doc.addEventListener('touchend', () => scheduleFrameCheck(iframeEl, 120));
-      } catch (e) {}
-    };
-    const doc0 = frameSelDoc(iframeEl);
-    if (!doc0 || doc0.readyState === 'loading') {
-      iframeEl.addEventListener('load', bind, { once: true });
-    } else {
-      bind();
+    if (!iframeEl) return;
+    if (!iframeEl._beFrameWatched) {
+      iframeEl._beFrameWatched = true;
+      iframeEl.addEventListener('load', () => bindFrameDoc(iframeEl));
     }
+    bindFrameDoc(iframeEl);
   }
   function scanForStatusBarFrames(root) {
     try {
       (root || mainDoc).querySelectorAll('.mes_text iframe').forEach(trackIframeForSelection);
     } catch (e) {}
+  }
+  // 聊天区里任何时候插入 iframe（包括插在已经存在的消息里）都马上接管，不等下一次消息事件
+  let _frameScanT = 0;
+  function scheduleFrameScan() {
+    if (_frameScanT) return;
+    _frameScanT = setTimeout(() => { _frameScanT = 0; scanForStatusBarFrames(); }, 60);
   }
 
   // ---------- 划线 ----------
@@ -6128,14 +6294,16 @@ $(() => {
     }, hold);
   }
 
-  function renderCard(text) {
-    const wrap = mainDoc.getElementById('be-card-wrap');
-    if (!wrap) return;
-    // 模板 id：内置或 custom-<id>
-    const isCustomTpl = String(settings.template || '').startsWith('custom-');
+  // 只负责拼卡片 HTML，不碰页面：书摘弹窗（renderCard）和设置里的模板预览共用
+  // opts.tplKey 指定模板（默认当前模板）；opts.preview 时不带 id、不用想法/删除线这些"当前这次摘录"的状态
+  function buildCardMarkup(text, opts = {}) {
+    const tplKey = opts.tplKey || settings.template;
+    const isCustomTpl = String(tplKey || '').startsWith('custom-');
     const tplId = isCustomTpl
-      ? settings.template
-      : (TEMPLATES[settings.template] ? settings.template : 'classic');
+      ? tplKey
+      : (TEMPLATES[tplKey] ? tplKey : 'classic');
+    const thoughtText = opts.preview ? '' : currentThoughtText;
+    const richText = opts.preview ? '' : currentRichText;
     const c = resolveColors();
     const _fontKey = settings.font || 'kinghwa';
     let _fontCss;
@@ -6182,10 +6350,10 @@ $(() => {
     //  · 普通：直接展示引文
     //  · 想法书摘：大字想法在上 + 小字原句在下（带引号边线）
     // 「保留原文删除线」开启且富文本与当前文本对应时，用带哨兵标记的富文本渲染
-    const useRich = !!settings.keepDelLine && currentRichText && stripDelMarks(currentRichText) === text;
-    const quotePart = quoteHtml(useRich ? currentRichText : text);
-    const q = currentThoughtText
-      ? `<div class="be-thought-main">${maskText(currentThoughtText)}</div>
+    const useRich = !!settings.keepDelLine && richText && stripDelMarks(richText) === text;
+    const quotePart = quoteHtml(useRich ? richText : text);
+    const q = thoughtText
+      ? `<div class="be-thought-main">${maskText(thoughtText)}</div>
          <div class="be-quote-orig">${quotePart}</div>`
       : quotePart;
 
@@ -6372,12 +6540,21 @@ $(() => {
 
     // 想法书摘：原句引用符号可关
     const noQuoteCls = (settings.showThoughtQuote === false) ? ' be-no-thought-quote' : '';
-    wrap.innerHTML = `
-      <div class="be-card tpl-${tplId}${noQuoteCls}" id="be-card"
+    const html = `
+      <div class="be-card tpl-${tplId}${noQuoteCls}" ${opts.preview ? '' : 'id="be-card"'}
            style="background:${c.bg};color:${c.fg};font-family:${fontCssAttr};--be-card-bg:${c.bg};--be-card-fg:${c.fg};">
         ${inner}
       </div>
     `;
+    return { html, fontCss: font.css };
+  }
+
+  function renderCard(text) {
+    const wrap = mainDoc.getElementById('be-card-wrap');
+    if (!wrap) return;
+    const built = buildCardMarkup(text);
+    const font = { css: built.fontCss };
+    wrap.innerHTML = built.html;
     // 字号/行距/字距(CSS 变量) + 整体宽度(外层容器居中)：与拖动滑块共用同一套应用逻辑
     applyTypoLive();
     // 强制把字体应用到 .be-quote（防止某些环境样式被 user-agent 覆盖）
@@ -7031,6 +7208,8 @@ $(() => {
     renderSettings();
   }
   let _hiddenColorOpen = false;
+  let _colorOrganize = false;
+  let _customColorOpen = false;
   function renderHiddenColorGroup() {
     const hidden = (settings.hiddenColorPresets || []).map(id => COLOR_PRESETS.find(p => p.id === id)).filter(Boolean);
     if (!hidden.length) return '';
@@ -7106,7 +7285,7 @@ $(() => {
   }
 
   // 设置面板二级分组：外观 / 划线 / 功能与数据。纯内存状态，不落盘，重开面板/切主 Tab 都保留上次选的分组
-  let settingsGroup = 'appearance';
+  let settingsGroup = 'card';
 
   // "使用说明"折叠区：脱离酒馆助手后，说明/版本号不再依赖宿主工具的展示位，自己在面板底部带一份
   let _aboutOpen = false;
@@ -7120,7 +7299,7 @@ $(() => {
         <div class="be-tpl-group-body">
           <div class="be-about-sec">
             <div class="be-about-h">划线 / 想法</div>
-            <div class="be-about-p">选中聊天里的文字，浮动栏点"划线"（可选下划线/波浪线/荧光笔样式和颜色）或"想法"。点已有划线会弹出工具栏：复制、删划线、写想法、想法列表、做书摘。跟其它选中类插件冲突时可在设置里一键关闭划线功能。部分用正则/HTML 渲染的状态栏（尤其用 iframe 隔离样式的）也能尝试划线，但不保证所有实现都兼容，划线也不保证跨刷新还在。</div>
+            <div class="be-about-p">选中聊天里的文字，浮动栏点"划线"（可选下划线/波浪线/荧光笔样式和颜色）或"想法"。点已有划线会弹出工具栏：复制、删划线、写想法、想法列表、做书摘。跟其它选中类插件冲突时可在设置里一键关闭划线功能。正则/酒馆助手渲染的状态栏（包括 iframe 里的）也能选字划线、做书摘；状态栏刷新后里面的划线不一定还在。手机上拖选不准可以在「划线」页改用两点定位。</div>
           </div>
           <div class="be-about-sec">
             <div class="be-about-h">划线合并</div>
@@ -7128,7 +7307,7 @@ $(() => {
           </div>
           <div class="be-about-sec">
             <div class="be-about-h">书摘卡片</div>
-            <div class="be-about-p">浮动栏"书摘"或点已有划线的工具栏都能生成卡片。模板/颜色/字体/字号在此设置面板调，也可在卡片预览页临时改。自定义配色可保存多份、命名、一键复用或删除；正文字号最小可调到 11px。支持正文打码、保留删除线、自定义模板导入（JSON/CSS，选择器写 .be-card.be-custom，头像会跟随"头像类型"设置）。</div>
+            <div class="be-about-p">浮动栏"书摘"或点已有划线的工具栏都能生成卡片。模板/配色/字体/排版/卡片内容/打码都在「书摘卡片」页，也可在卡片预览页临时改。模板列表里 👁 可预览；点「整理」可拖动排序、☆收藏（选模板时排最前）、隐藏或管理导入的模板。自定义模板（JSON/CSS，选择器写 .be-card.be-custom）里引用的图片、以及头像，都能直接点卡片上的对应位置换图。卡片正文还能再选中局部加下划线/荧光笔/字色/加粗。</div>
           </div>
           <div class="be-about-sec">
             <div class="be-about-h">笔记本</div>
@@ -7144,28 +7323,40 @@ $(() => {
     `;
   }
 
-  // 渲染"自定义模板"折叠区
-  let _customTplOpen = false;
-  // 自定义模板：按 templateOrder 排序，收藏的置顶（稳定排序，未记录顺序的按原数组顺序排在后面）
-  function getOrderedCustomTemplates() {
-    const list = Array.isArray(settings.customTemplates) ? settings.customTemplates.slice() : [];
-    const order = settings.templateOrder || [];
-    const favSet = new Set(settings.templateFavorites || []);
-    const idx = id => { const i = order.indexOf(id); return i < 0 ? Infinity : i; };
-    list.sort((a, b) => idx(a.id) - idx(b.id));
-    const favs = list.filter(t => favSet.has(`custom-${t.id}`));
-    const rest = list.filter(t => !favSet.has(`custom-${t.id}`));
-    return favs.concat(rest);
-  }
-  // 选模板用（书摘弹窗里的"模板"抽屉）：收藏的——不分默认/自定义——统一排最前，其余按 默认模板→自定义模板 排
-  function getTemplatePickerEntries() {
+  // ---------- 模板管理（默认模板和导入的模板统一成一张列表）----------
+  // key 跟 settings.template 同格式：默认模板 'classic'，导入模板 'custom-<id>'。
+  // templateOrder / templateFavorites / hiddenTemplates 都存 key，默认和导入的一起排序、收藏、隐藏。
+  const ICON_DOTS4 = '<svg viewBox="0 0 12 12"><circle cx="3" cy="3" r="1.4"/><circle cx="9" cy="3" r="1.4"/><circle cx="3" cy="9" r="1.4"/><circle cx="9" cy="9" r="1.4"/></svg>';
+  const ICON_EYE = '<svg viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>';
+  let _tplListOpen = false;
+  let _tplOrganize = false;
+  let _hiddenTplOpen = false;
+  function getAllTemplateEntries() {
     const favSet = new Set(settings.templateFavorites || []);
     const hidden = new Set(settings.hiddenTemplates || []);
-    const all = [
-      ...Object.entries(TEMPLATES).filter(([k]) => !hidden.has(k)).map(([k, v]) => ({ key: k, name: v.name })),
-      ...getOrderedCustomTemplates().map(t => ({ key: `custom-${t.id}`, name: t.name || '未命名' }))
-    ].map(e => ({ ...e, fav: favSet.has(e.key) }));
-    return { favs: all.filter(e => e.fav), rest: all.filter(e => !e.fav) };
+    const natural = [
+      ...Object.entries(TEMPLATES).map(([k, v]) => ({ key: k, name: v.name, isDefault: true })),
+      ...(settings.customTemplates || []).map(t => ({ key: `custom-${t.id}`, name: t.name || '未命名', isDefault: false, tid: t.id }))
+    ];
+    const order = settings.templateOrder || [];
+    const idx = k => { const i = order.indexOf(k); return i < 0 ? Infinity : i; };
+    return natural
+      .map((e, i) => ({ ...e, fav: favSet.has(e.key), hidden: hidden.has(e.key), _n: i }))
+      .sort((a, b) => (idx(a.key) - idx(b.key)) || (a._n - b._n));
+  }
+  // 列表/选模板共用的顺序：收藏的排最前，其余按用户排的顺序；隐藏的单独列出
+  function getTemplateListEntries() {
+    const all = getAllTemplateEntries();
+    const shown = all.filter(e => !e.hidden);
+    return { favs: shown.filter(e => e.fav), rest: shown.filter(e => !e.fav), hidden: all.filter(e => e.hidden) };
+  }
+  function getTemplatePickerEntries() {
+    const { favs, rest } = getTemplateListEntries();
+    return { favs, rest };
+  }
+  function templateNameOf(key) {
+    const e = getAllTemplateEntries().find(x => x.key === key);
+    return e ? e.name : (TEMPLATES.classic.name);
   }
   function toggleTemplateFavorite(key) {
     const favs = new Set(settings.templateFavorites || []);
@@ -7174,49 +7365,279 @@ $(() => {
     saveSettings(settings);
     renderSettings();
   }
-  let _tplDragId = null;
-  function reorderCustomTemplate(dragId, targetId, insertBefore) {
-    if (!dragId || dragId === targetId) return;
-    const list = getOrderedCustomTemplates();
-    const fromIdx = list.findIndex(t => t.id === dragId);
-    const toIdx = list.findIndex(t => t.id === targetId);
-    if (fromIdx < 0 || toIdx < 0) return;
-    const [moved] = list.splice(fromIdx, 1);
-    const insertIdx = list.findIndex(t => t.id === targetId);
-    list.splice(insertBefore ? insertIdx : insertIdx + 1, 0, moved);
-    settings.templateOrder = list.map(t => t.id);
+  function hideTemplate(key) {
+    const hidden = new Set(settings.hiddenTemplates || []);
+    hidden.add(key);
+    settings.hiddenTemplates = Array.from(hidden);
+    // 隐藏的正好是当前用的模板：退到列表里第一个还显示着的
+    if (settings.template === key) {
+      const { favs, rest } = getTemplateListEntries();
+      settings.template = (favs[0] || rest[0] || { key: 'classic' }).key;
+    }
+    saveSettings(settings);
+    renderSettings();
+    if (mainDoc.getElementById('be-card')) renderCard(lastText);
+  }
+  function restoreTemplate(key) {
+    settings.hiddenTemplates = (settings.hiddenTemplates || []).filter(k => k !== key);
     saveSettings(settings);
     renderSettings();
   }
-  function renderCustomTemplateGroup() {
-    const list = getOrderedCustomTemplates();
-    if (!list.length) return '';
-    const favSet = new Set(settings.templateFavorites || []);
+  function exportCustomTemplate(tid) {
+    try {
+      const tpl = (settings.customTemplates || []).find(x => x.id === tid);
+      if (!tpl) { toast('找不到模板', 'error'); return; }
+      const text = JSON.stringify(templateToPortable(tpl), null, 2);
+      const blob = new Blob([text], { type: 'application/json;charset=utf-8' });
+      const dlName = String(tpl.name || '模板').replace(/[\\/:*?"<>|]/g, '_') + '.json';
+      triggerDownload(blob, dlName);
+      toast('已导出 ' + dlName, 'success');
+    } catch (err) {
+      console.error('[BookExcerpt] export failed', err);
+      toast('导出失败：' + (err?.message || err), 'error');
+    }
+  }
+  function editCustomTemplate(tid) {
+    // 开发者模式下用可拖动的悬浮CSS编辑窗（能跟卡片预览同屏），否则走普通弹窗
+    if (settings.creatorMode) openCssFloatEditor(tid);
+    else openImportTemplateDialog(tid);
+  }
+  function renderTemplateRow(e, org) {
+    const active = settings.template === e.key;
     return `
-      <div class="be-tpl-group ${_customTplOpen ? 'open' : ''}" id="be-tpl-group">
-        <div class="be-tpl-group-head" id="be-tpl-group-head">
+      <div class="be-tl-row ${active ? 'active' : ''}" data-k="${e.key}">
+        ${org ? `<span class="be-tl-handle" title="按住拖动排序">${ICON_DOTS4}</span>
+                 <button type="button" class="be-tl-fav ${e.fav ? 'on' : ''}" data-fav="${e.key}" title="${e.fav ? '取消收藏' : '收藏'}">${e.fav ? '★' : '☆'}</button>`
+              : (e.fav ? '<span class="be-tl-star">★</span>' : '')}
+        <span class="be-tl-name">${escapeHtml(e.name)}</span>
+        ${e.isDefault ? '<span class="be-tl-tag">默认</span>' : ''}
+        ${org ? `<button type="button" class="be-tl-more" data-more="${e.key}" title="更多操作">⋯</button>`
+              : `<button type="button" class="be-tl-prev" data-prev="${e.key}" title="预览">${ICON_EYE}</button>`}
+      </div>`;
+  }
+  function renderTemplateSection() {
+    const { favs, rest, hidden } = getTemplateListEntries();
+    const org = _tplOrganize;
+    const open = _tplListOpen || org;
+    return `
+      <div class="be-sec" id="be-tpl-sec">
+        <div class="be-sec-head">
+          <h4>模板</h4>
+          <span class="be-sec-head-btns">
+            <button type="button" class="be-mini-btn ${org ? 'active' : ''}" id="be-tpl-organize">${org ? '完成' : '整理'}</button>
+            <button type="button" class="be-mini-btn" id="be-tpl-import">+ 导入</button>
+          </span>
+        </div>
+        <div class="be-tl-current ${open ? 'open' : ''}" id="be-tl-toggle">
+          <span>当前：<b>${escapeHtml(templateNameOf(settings.template))}</b></span>
           <span class="be-caret"></span>
-          <span>自定义模板（${list.length}）</span>
         </div>
-        <div class="be-tpl-group-body">
-          ${list.map(t => {
-            const id = `custom-${t.id}`;
-            const active = settings.template === id;
-            const isFav = favSet.has(id);
-            return `
-              <div class="be-tpl-custom-row ${active?'active':''}" draggable="true" data-k="${id}" data-tid="${t.id}">
-                <span class="be-tpl-drag-handle" title="拖动排序"><svg viewBox="0 0 12 12"><circle cx="3" cy="3" r="1.4"/><circle cx="9" cy="3" r="1.4"/><circle cx="3" cy="9" r="1.4"/><circle cx="9" cy="9" r="1.4"/></svg></span>
-                <span class="be-tpl-custom-name">${escapeHtml(t.name || '未命名')}</span>
-                <button data-fav="${t.id}" class="be-tpl-fav ${isFav?'active':''}" title="${isFav?'取消收藏':'收藏'}">${isFav?'★':'☆'}</button>
-                <button data-edit="${t.id}" title="编辑CSS">✎</button>
-                <button data-export="${t.id}" title="导出为 JSON">⬇</button>
-                <button data-del="${t.id}" title="删除">×</button>
-              </div>
-            `;
-          }).join('')}
+        <div class="be-tl-body" ${open ? '' : 'hidden'}>
+          ${org ? '<div class="be-tl-hint">按住左边的四点拖动排序；☆ 收藏（选模板时排最前）；⋯ 里可以隐藏、编辑、导出、删除</div>' : ''}
+          <div class="be-tl-list" data-group="fav">${favs.map(e => renderTemplateRow(e, org)).join('')}</div>
+          ${favs.length && rest.length ? '<div class="be-tl-sep">·</div>' : ''}
+          <div class="be-tl-list" data-group="rest">${rest.map(e => renderTemplateRow(e, org)).join('')}</div>
+          ${hidden.length ? `
+          <div class="be-tpl-group ${_hiddenTplOpen ? 'open' : ''}" id="be-hidden-tpl-group">
+            <div class="be-tpl-group-head" id="be-hidden-tpl-group-head">
+              <span class="be-caret"></span>
+              <span>已隐藏（${hidden.length}）</span>
+            </div>
+            <div class="be-tpl-group-body">
+              ${hidden.map(e => `
+                <div class="be-tl-row be-tl-row-hidden">
+                  <span class="be-tl-name">${escapeHtml(e.name)}</span>
+                  ${e.isDefault ? '<span class="be-tl-tag">默认</span>' : ''}
+                  <button type="button" class="be-mini-btn" data-restore-tpl="${e.key}">恢复</button>
+                </div>`).join('')}
+            </div>
+          </div>` : ''}
         </div>
-      </div>
-    `;
+      </div>`;
+  }
+  function commitTemplateOrderFromDom(sec) {
+    const keys = Array.from(sec.querySelectorAll('.be-tl-list .be-tl-row')).map(r => r.getAttribute('data-k'));
+    const hiddenKeys = getAllTemplateEntries().filter(e => e.hidden).map(e => e.key);
+    settings.templateOrder = keys.concat(hiddenKeys);
+    saveSettings(settings);
+  }
+  // 手指/鼠标拖动排序：用 pointer 事件自己做，不用 HTML5 draggable（那套在手机浏览器上基本拖不动）。
+  // 收藏组和其余组各自内部排，拖动时直接在 DOM 里挪行，松手后按 DOM 顺序落盘。
+  function bindTemplateDrag(sec) {
+    sec.querySelectorAll('.be-tl-handle').forEach(h => {
+      h.addEventListener('pointerdown', e => {
+        e.preventDefault();
+        const row = h.closest('.be-tl-row');
+        const list = row.parentElement;
+        const scroller = sec.closest('#be-p-body') || sec.parentElement;
+        // 不用 setPointerCapture：拖动时要在 DOM 里挪这一行，挪动会让手柄暂时脱离文档，浏览器随之丢掉捕获，
+        // 后续 move/up 就收不到了。直接在 document 上监听，跟指针落在哪个元素上无关。
+        const pid = e.pointerId;
+        row.classList.add('dragging');
+        const onMove = ev => {
+          if (ev.pointerId !== pid) return;
+          ev.preventDefault();
+          const y = ev.clientY;
+          const box = scroller.getBoundingClientRect();
+          if (y < box.top + 40) scroller.scrollTop -= 12;
+          else if (y > box.bottom - 40) scroller.scrollTop += 12;
+          const others = Array.from(list.children).filter(r => r !== row);
+          let before = null;
+          for (const r of others) {
+            const rc = r.getBoundingClientRect();
+            if (y < rc.top + rc.height / 2) { before = r; break; }
+          }
+          if (before) { if (row.nextSibling !== before) list.insertBefore(row, before); }
+          else if (list.lastElementChild !== row) list.appendChild(row);
+        };
+        const onUp = ev => {
+          if (ev.pointerId !== pid) return;
+          mainDoc.removeEventListener('pointermove', onMove, true);
+          mainDoc.removeEventListener('pointerup', onUp, true);
+          mainDoc.removeEventListener('pointercancel', onUp, true);
+          row.classList.remove('dragging');
+          commitTemplateOrderFromDom(sec);
+        };
+        mainDoc.addEventListener('pointermove', onMove, { capture: true, passive: false });
+        mainDoc.addEventListener('pointerup', onUp, true);
+        mainDoc.addEventListener('pointercancel', onUp, true);
+      });
+    });
+  }
+  function closeTplMenu() {
+    mainDoc.getElementById('be-tl-menu')?.classList.remove('show');
+  }
+  function openTplMenu(key, anchor) {
+    const entry = getAllTemplateEntries().find(e => e.key === key);
+    if (!entry) return;
+    let menu = mainDoc.getElementById('be-tl-menu');
+    if (!menu) {
+      menu = mainDoc.createElement('div');
+      menu.id = 'be-tl-menu';
+      mainDoc.body.appendChild(menu);
+      mainDoc.addEventListener('pointerdown', ev => {
+        const m = mainDoc.getElementById('be-tl-menu');
+        if (m && m.classList.contains('show') && !m.contains(ev.target) && !ev.target.closest('.be-tl-more')) closeTplMenu();
+      }, true);
+    } else if (menu.parentNode !== mainDoc.body || menu.nextSibling) {
+      mainDoc.body.appendChild(menu);
+    }
+    const acts = entry.isDefault
+      ? [['hide', '隐藏']]
+      : [['edit', '编辑CSS'], ['export', '导出'], ['hide', '隐藏'], ['del', '删除']];
+    menu.innerHTML = acts.map(([a, t]) => `<button type="button" data-act="${a}" class="${a === 'del' ? 'danger' : ''}">${t}</button>`).join('');
+    menu.querySelectorAll('button').forEach(b => {
+      b.addEventListener('click', () => {
+        const a = b.getAttribute('data-act');
+        closeTplMenu();
+        if (a === 'hide') hideTemplate(key);
+        else if (a === 'edit') editCustomTemplate(entry.tid);
+        else if (a === 'export') exportCustomTemplate(entry.tid);
+        else if (a === 'del') { if (mainWin.confirm(`删除模板「${entry.name}」？`)) deleteCustomTemplate(entry.tid); }
+      });
+    });
+    menu.classList.add('show');
+    const r = anchor.getBoundingClientRect();
+    const mw = menu.offsetWidth, mh = menu.offsetHeight;
+    let left = Math.min(r.right - mw, mainWin.innerWidth - mw - 8);
+    let top = r.bottom + 4;
+    if (top + mh > mainWin.innerHeight - 8) top = r.top - mh - 4;
+    menu.style.left = (Math.max(8, left) + (mainWin.scrollX || 0)) + 'px';
+    menu.style.top = (Math.max(8, top) + (mainWin.scrollY || 0)) + 'px';
+  }
+  // 模板预览：用固定示例文字 + 当前头像/名字，按该模板渲染一张缩小的卡片
+  const PREVIEW_SAMPLE_TEXT = '我们终将走向同一片海。潮水会记住所有被说出口的话，也会原谅那些没来得及说的。';
+  function closeTplPreview() {
+    mainDoc.getElementById('be-tpl-preview')?.classList.remove('open');
+  }
+  function openTplPreview(key) {
+    let mask = mainDoc.getElementById('be-tpl-preview');
+    if (!mask) {
+      mask = mainDoc.createElement('div');
+      mask.id = 'be-tpl-preview';
+      mask.addEventListener('click', e => { if (e.target === mask || e.target.closest('.be-tpv-close')) closeTplPreview(); });
+      mainDoc.body.appendChild(mask);
+    } else if (mask.parentNode !== mainDoc.body || mask.nextSibling) {
+      mainDoc.body.appendChild(mask);
+    }
+    const cw = Number(settings.cardWidth) || 440;
+    const built = buildCardMarkup(PREVIEW_SAMPLE_TEXT, { tplKey: key, preview: true });
+    mask.innerHTML = `
+      <div class="be-tpv-box">
+        <div class="be-tpv-head"><span>${escapeHtml(templateNameOf(key))}</span><button type="button" class="be-tpv-close">×</button></div>
+        <div class="be-tpv-stage"><div class="be-tpv-scale" style="width:${cw}px;">${built.html}</div></div>
+        <div class="be-tpv-foot">
+          <button type="button" class="be-btn primary" id="be-tpv-use">用这个模板</button>
+        </div>
+      </div>`;
+    const card = mask.querySelector('.be-card');
+    if (card) {
+      const qs = Number(settings.quoteFontSize), ql = Number(settings.quoteLineHeight), qls = Number(settings.quoteLetterSpacing);
+      if (qs > 0) card.style.setProperty('--be-quote-size', qs + 'px');
+      if (ql > 0) card.style.setProperty('--be-quote-lh', ql);
+      if (qls >= 0) card.style.setProperty('--be-quote-ls', qls + 'em');
+      const q = card.querySelector('.be-quote');
+      if (q) q.style.fontFamily = built.fontCss;
+    }
+    mask.classList.add('open');
+    const stage = mask.querySelector('.be-tpv-stage');
+    const scaler = mask.querySelector('.be-tpv-scale');
+    const scale = Math.min(1, (stage.clientWidth || 300) / cw);
+    scaler.style.transform = `scale(${scale})`;
+    stage.style.height = Math.ceil(scaler.offsetHeight * scale) + 'px';
+    mask.querySelector('#be-tpv-use').addEventListener('click', () => {
+      settings.template = key;
+      saveSettings(settings);
+      closeTplPreview();
+      renderSettings();
+      if (mainDoc.getElementById('be-card')) renderCard(lastText);
+    });
+  }
+  function bindTemplateSection(body) {
+    const sec = body.querySelector('#be-tpl-sec');
+    if (!sec) return;
+    sec.querySelector('#be-tpl-import')?.addEventListener('click', () => openImportTemplateDialog());
+    sec.querySelector('#be-tpl-organize')?.addEventListener('click', () => {
+      _tplOrganize = !_tplOrganize;
+      if (!_tplOrganize) _tplListOpen = true;
+      closeTplMenu();
+      renderSettings();
+    });
+    sec.querySelector('#be-tl-toggle')?.addEventListener('click', () => {
+      if (_tplOrganize) return;
+      _tplListOpen = !_tplListOpen;
+      renderSettings();
+    });
+    sec.querySelectorAll('.be-tl-list .be-tl-row').forEach(row => {
+      row.addEventListener('click', e => {
+        if (_tplOrganize || e.target.closest('button, .be-tl-handle')) return;
+        settings.template = row.getAttribute('data-k');
+        saveSettings(settings);
+        renderSettings();
+        if (mainDoc.getElementById('be-card')) renderCard(lastText);
+      });
+    });
+    sec.querySelectorAll('[data-prev]').forEach(b => b.addEventListener('click', e => {
+      e.stopPropagation();
+      openTplPreview(b.getAttribute('data-prev'));
+    }));
+    sec.querySelectorAll('[data-fav]').forEach(b => b.addEventListener('click', e => {
+      e.stopPropagation();
+      toggleTemplateFavorite(b.getAttribute('data-fav'));
+    }));
+    sec.querySelectorAll('[data-more]').forEach(b => b.addEventListener('click', e => {
+      e.stopPropagation();
+      openTplMenu(b.getAttribute('data-more'), b);
+    }));
+    sec.querySelector('#be-hidden-tpl-group-head')?.addEventListener('click', () => {
+      _hiddenTplOpen = !_hiddenTplOpen;
+      sec.querySelector('#be-hidden-tpl-group')?.classList.toggle('open', _hiddenTplOpen);
+    });
+    sec.querySelectorAll('[data-restore-tpl]').forEach(b => b.addEventListener('click', e => {
+      e.stopPropagation();
+      restoreTemplate(b.getAttribute('data-restore-tpl'));
+    }));
+    if (_tplOrganize) bindTemplateDrag(sec);
   }
 
   // 导入自定义字体（名称 + 完整 CSS 片段）
@@ -7613,7 +8034,7 @@ $(() => {
       saveSettings(settings);
       clearTplLivePreview();
       injectCustomTemplateStyles();
-      _customTplOpen = true;
+      _tplListOpen = true;
       mask.classList.remove('open');
       disableClassInspector();
       renderSettings();
@@ -7627,48 +8048,16 @@ $(() => {
     if (doomed && doomed.slotImages) Object.values(doomed.slotImages).forEach(imgForget);
     const list = (settings.customTemplates || []).filter(t => t.id !== tid);
     settings.customTemplates = list;
+    const key = `custom-${tid}`;
+    settings.templateFavorites = (settings.templateFavorites || []).filter(k => k !== key);
+    settings.hiddenTemplates = (settings.hiddenTemplates || []).filter(k => k !== key);
+    settings.templateOrder = (settings.templateOrder || []).filter(k => k !== key);
     // 如果删的是当前选中的，退回经典
-    if (settings.template === `custom-${tid}`) settings.template = 'classic';
+    if (settings.template === key) settings.template = 'classic';
     saveSettings(settings);
     injectCustomTemplateStyles();
     renderSettings();
     if (mainDoc.getElementById('be-card')) renderCard(lastText);
-  }
-  function hideBuiltinTemplate(tk) {
-    const hidden = new Set(settings.hiddenTemplates || []);
-    hidden.add(tk);
-    settings.hiddenTemplates = Array.from(hidden);
-    // 如果隐藏的是当前选中的，退回经典（经典本身没法被隐藏，见下方渲染逻辑）
-    if (settings.template === tk) settings.template = 'classic';
-    saveSettings(settings);
-    renderSettings();
-    if (mainDoc.getElementById('be-card')) renderCard(lastText);
-  }
-  function restoreBuiltinTemplate(tk) {
-    settings.hiddenTemplates = (settings.hiddenTemplates || []).filter(k => k !== tk);
-    saveSettings(settings);
-    renderSettings();
-  }
-  let _hiddenTplOpen = false;
-  function renderHiddenTemplateGroup() {
-    const hidden = (settings.hiddenTemplates || []).filter(k => TEMPLATES[k]);
-    if (!hidden.length) return '';
-    return `
-      <div class="be-tpl-group ${_hiddenTplOpen ? 'open' : ''}" id="be-hidden-tpl-group">
-        <div class="be-tpl-group-head" id="be-hidden-tpl-group-head">
-          <span class="be-caret"></span>
-          <span>已隐藏的默认模板（${hidden.length}）</span>
-        </div>
-        <div class="be-tpl-group-body">
-          ${hidden.map(k => `
-            <div class="be-tpl-custom-row" data-k="">
-              <span class="be-tpl-custom-name">${escapeHtml(TEMPLATES[k].name)}</span>
-              <button data-restore-tpl="${k}" title="恢复显示">↺ 恢复</button>
-            </div>
-          `).join('')}
-        </div>
-      </div>
-    `;
   }
 
   // 设置面板分两层：壳层（Tab 条，只建一次，切分组时不重建、不参与动画）+ 内容层（真正随分组变化的部分）。
@@ -7679,9 +8068,9 @@ $(() => {
     if (!content) {
       panelBody.innerHTML = `
         <div class="be-settings-subtabs">
-          <button type="button" data-g="appearance" class="${settingsGroup==='appearance'?'active':''}">外观</button>
+          <button type="button" data-g="card" class="${settingsGroup==='card'?'active':''}">书摘卡片</button>
           <button type="button" data-g="highlight" class="${settingsGroup==='highlight'?'active':''}">划线</button>
-          <button type="button" data-g="feature" class="${settingsGroup==='feature'?'active':''}">功能与数据</button>
+          <button type="button" data-g="general" class="${settingsGroup==='general'?'active':''}">通用</button>
         </div>
         <div id="be-settings-content"></div>
       `;
@@ -7718,96 +8107,61 @@ $(() => {
       if (p && u) { p.style.backgroundImage = `url('${u}')`; p.classList.remove('empty'); }
     });
 
+    const toggleHtml = (id, on, extra = '') => `<label class="be-toggle"><input type="checkbox" id="${id}" ${on ? 'checked' : ''} ${extra}><span class="be-slider"></span></label>`;
+    const textInput = (id, val, ph) => `<input type="text" class="be-text-in" id="${id}" value="${escapeHtml(val || '')}" placeholder="${escapeHtml(ph || '')}">`;
+    const hint = (t) => `<div class="be-row be-hint"><span>${t}</span></div>`;
+    const expScale = Math.max(2, Math.min(5, Number(settings.exportScale) || 3));
+
     body.innerHTML = `
-      ${settingsGroup === 'appearance' ? `
-      <div class="be-sec">
-        <h4>模板（排版）</h4>
-        <div class="be-tpl-grid">
-          ${Object.entries(TEMPLATES).filter(([k]) => !(settings.hiddenTemplates||[]).includes(k)).map(([k, v]) => `
-            <div class="be-tpl-card" data-k="${k}" data-thide="${k}">${v.name}</div>
-          `).join('')}
-          <div class="be-tpl-card be-tpl-import" id="be-tpl-import">+ 导入</div>
-        </div>
-        <div class="be-row" style="font-size:11px;opacity:0.7;">
-          <span>长按默认模板可以隐藏它（自定义模板用旁边的 × 删除）</span>
-        </div>
-        ${renderCustomTemplateGroup()}
-        ${renderHiddenTemplateGroup()}
-        <div class="be-row" style="margin-top:8px;">
-          <label style="flex:1;">开发者模式</label>
-          <label class="be-toggle">
-            <input type="checkbox" id="be-creator-mode" ${settings.creatorMode?'checked':''}>
-            <span class="be-slider"></span>
-          </label>
-        </div>
-        <div class="be-row" style="font-size:11px;opacity:0.7;">
-          <span>开启后点自定义模板的 ✎ 会打开一个可拖动缩放的悬浮CSS编辑窗，跟卡片预览同屏、边改边看效果，还带类名查询器</span>
-        </div>
-      </div>
+      ${settingsGroup === 'card' ? `
+      ${renderTemplateSection()}
 
-      <div class="be-sec">
-        <h4>插件主题色</h4>
-        <div class="be-row">
-          <label style="flex:1;">主题色</label>
-          <input type="color" id="be-theme-color" value="${escapeHtml(settings.themeColor || '#95b6d6')}">
+      <div class="be-sec" id="be-color-sec">
+        <div class="be-sec-head">
+          <h4>配色</h4>
+          <span class="be-sec-head-btns">
+            <button type="button" class="be-mini-btn ${_colorOrganize ? 'active' : ''}" id="be-color-organize">${_colorOrganize ? '完成' : '整理'}</button>
+          </span>
         </div>
-        <div class="be-row" style="font-size:11px;opacity:0.7;">
-          <span>只影响插件自己的界面（设置面板/笔记本/悬浮按钮等），不影响下面"颜色"里卡片本身的配色方案</span>
-        </div>
-        <div class="be-row" style="margin-top:8px;">
-          <label style="flex:1;">划线工具条跟随酒馆主题</label>
-          <label class="be-toggle">
-            <input type="checkbox" id="be-follow-tavern-theme" ${settings.followTavernTheme?'checked':''}>
-            <span class="be-slider"></span>
-          </label>
-        </div>
-        <div class="be-row" style="font-size:11px;opacity:0.7;">
-          <span>只影响划线时弹出的那条小工具条（划线/想法/书摘）的背景和字色，跟酒馆当前主题的输入框颜色保持一致；不影响设置面板/笔记本，也不影响上面的主题色和卡片配色</span>
-        </div>
-      </div>
-
-      <div class="be-sec">
-        <h4>颜色</h4>
         <div class="be-color-grid">
           ${COLOR_PRESETS.filter(p => !(settings.hiddenColorPresets||[]).includes(p.id)).map(p => `
-            <div class="be-color-dot ${settings.colorPreset===p.id?'active':''}" data-k="${p.id}" data-chide="${p.id}"
-                 title="${escapeHtml(p.name)}"
-                 style="background:${p.bg};color:${p.fg};">A</div>
+            <div class="be-color-dot-wrap">
+              <div class="be-color-dot ${settings.colorPreset===p.id?'active':''}" data-k="${p.id}"
+                   title="${escapeHtml(p.name)}" style="background:${p.bg};color:${p.fg};">A</div>
+              ${_colorOrganize ? `<span class="be-color-del" data-chide="${p.id}" title="隐藏这个默认配色">×</span>` : ''}
+            </div>
           `).join('')}
-          ${(settings.customColors || []).map(c => {
-            const active = settings.colorPreset === ('saved-' + c.id);
-            return `
-              <div class="be-color-dot-wrap">
-                <div class="be-color-dot ${active?'active':''}" data-k="saved-${c.id}"
-                     title="${escapeHtml(c.name || '自定义配色')}"
-                     style="background:${c.bg};color:${c.fg};">A</div>
-                <span class="be-color-del" data-cdel="${c.id}" title="删除这份自定义配色">×</span>
-              </div>
-            `;
-          }).join('')}
+          ${(settings.customColors || []).map(c => `
+            <div class="be-color-dot-wrap">
+              <div class="be-color-dot ${settings.colorPreset === ('saved-' + c.id)?'active':''}" data-k="saved-${c.id}"
+                   title="${escapeHtml(c.name || '自定义配色')}" style="background:${c.bg};color:${c.fg};">A</div>
+              ${_colorOrganize ? `<span class="be-color-del" data-cdel="${c.id}" title="删除这份自定义配色">×</span>` : ''}
+            </div>
+          `).join('')}
           <div class="be-color-dot rainbow ${isCustomColor?'active':''}" data-k="custom" title="自定义"></div>
         </div>
-        <div class="be-row" style="font-size:11px;opacity:0.7;">
-          <span>长按默认配色可以隐藏它（自定义配色用旁边的 × 删除）</span>
-        </div>
+        ${_colorOrganize ? hint('点 × 隐藏默认配色、删除自己存的配色；整理完点「完成」') : ''}
         ${renderHiddenColorGroup()}
-        <div class="be-row" style="margin-top:10px;">
-          <label style="flex:1;">自定义背景</label>
-          <input type="color" id="be-custom-bg" value="${escapeHtml(settings.customBg || '#f5f1e8')}" ${isCustomColor?'':'disabled'}>
-        </div>
-        <div class="be-row">
-          <label style="flex:1;">自定义字体颜色</label>
-          <label class="be-toggle" ${isCustomColor?'':'style="opacity:0.4;pointer-events:none;"'}>
-            <input type="checkbox" id="be-custom-fg-on" ${settings.customFgEnabled?'checked':''} ${isCustomColor?'':'disabled'}>
-            <span class="be-slider"></span>
-          </label>
-          <input type="color" id="be-custom-fg" value="${escapeHtml(settings.customFg || '#222222')}" ${(isCustomColor && settings.customFgEnabled)?'':'disabled'} style="margin-left:8px;">
-        </div>
-        <div class="be-row" style="font-size:11px;opacity:0.7;">
-          <span>关闭"自定义字色"时，按背景明度自动配深/浅字</span>
-        </div>
-        <div class="be-row">
-          <button class="be-btn" id="be-save-color" ${isCustomColor?'':'disabled'} style="${isCustomColor?'':'opacity:0.4;'}">保存当前配色，以后一键复用</button>
+        <div class="be-tpl-group ${(_customColorOpen || isCustomColor) ? 'open' : ''}" id="be-custom-color-group">
+          <div class="be-tpl-group-head" id="be-custom-color-head"><span class="be-caret"></span><span>自定义配色（点彩虹圆圈后可调）</span></div>
+          <div class="be-tpl-group-body">
+            <div class="be-row">
+              <label style="flex:1;">背景色</label>
+              <input type="color" id="be-custom-bg" value="${escapeHtml(settings.customBg || '#f5f1e8')}" ${isCustomColor?'':'disabled'}>
+            </div>
+            <div class="be-row">
+              <label style="flex:1;">自定义字色</label>
+              <label class="be-toggle" ${isCustomColor?'':'style="opacity:0.4;pointer-events:none;"'}>
+                <input type="checkbox" id="be-custom-fg-on" ${settings.customFgEnabled?'checked':''} ${isCustomColor?'':'disabled'}>
+                <span class="be-slider"></span>
+              </label>
+              <input type="color" id="be-custom-fg" value="${escapeHtml(settings.customFg || '#222222')}" ${(isCustomColor && settings.customFgEnabled)?'':'disabled'} style="margin-left:8px;">
+            </div>
+            ${hint('关闭"自定义字色"时，按背景明度自动配深/浅字')}
+            <div class="be-row">
+              <button class="be-btn" id="be-save-color" ${isCustomColor?'':'disabled'} style="${isCustomColor?'':'opacity:0.4;'}">保存当前配色，以后一键复用</button>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -7828,7 +8182,7 @@ $(() => {
       </div>
 
       <div class="be-sec">
-        <h4>正文排版</h4>
+        <h4>排版</h4>
         <div class="be-typo-presets">
           <span data-typo="compact">紧凑</span>
           <span data-typo="normal">默认</span>
@@ -7850,16 +8204,21 @@ $(() => {
           <label style="flex:1;">整体宽度 <span class="be-val" id="be-qwidth-val">${Number(settings.cardWidth)||440}px</span></label>
           <input type="range" id="be-qwidth" min="300" max="440" step="10" value="${Number(settings.cardWidth)||440}">
         </div>
+        <div class="be-row">
+          <label style="flex:1;">保存清晰度</label>
+          <div class="be-radio-group" id="be-panel-scale-group">
+            ${[2, 3, 4, 5].map(v => `<button type="button" class="be-radio-opt ${expScale===v?'active':''}" data-v="${v}">${v}x</button>`).join('')}
+          </div>
+        </div>
+        ${hint('倍率越高保存的图越清晰，但生成更慢、文件更大；跟卡片编辑页「字号」里的是同一个设置')}
       </div>
 
       <div class="be-sec">
-        <h4>显示与出处</h4>
+        <h4>卡片内容</h4>
+        <div class="be-subh">头像</div>
         <div class="be-row">
           <label style="flex:1;">显示头像</label>
-          <label class="be-toggle">
-            <input type="checkbox" id="be-show-avatar" ${settings.showAvatar?'checked':''}>
-            <span class="be-slider"></span>
-          </label>
+          ${toggleHtml('be-show-avatar', settings.showAvatar)}
         </div>
         <div class="be-row">
           <label style="flex:1;">头像类型</label>
@@ -7879,96 +8238,122 @@ $(() => {
         </div>
         <div class="be-row">
           <label style="flex:1;">显示日期</label>
-          <label class="be-toggle">
-            <input type="checkbox" id="be-show-date" ${settings.showDate?'checked':''}>
-            <span class="be-slider"></span>
-          </label>
+          ${toggleHtml('be-show-date', settings.showDate)}
         </div>
-        <div class="be-row">
-          <label style="flex:1;">显示书名（需在「编辑出处」里填写）</label>
-          <label class="be-toggle">
-            <input type="checkbox" id="be-show-booktitle" ${srcVals.showSourceTitle?'checked':''}>
-            <span class="be-slider"></span>
-          </label>
-        </div>
-        <div class="be-row">
-          <label style="flex:1;">显示水印</label>
-          <label class="be-toggle">
-            <input type="checkbox" id="be-show-watermark" ${settings.showWatermark!==false?'checked':''}>
-            <span class="be-slider"></span>
-          </label>
+
+        <div class="be-subh">出处</div>
+        <div class="be-row be-row-stack">
+          <label>用户名（留空用 {{user}}）</label>
+          ${textInput('be-src-in-user', srcVals.sourceUser, '')}
         </div>
         <div class="be-row be-row-stack">
-          <label>水印文字</label>
-          <input type="text" id="be-watermark-text" value="${escapeHtml(settings.watermarkText || '')}"
-                 placeholder="留空默认显示 SillyTavern"
-                 style="width:100%;box-sizing:border-box;background:var(--be-panel-input-bg);border:1px solid var(--be-panel-input-border);color:inherit;padding:7px 10px;border-radius:6px;font-size:13px;">
+          <label>作者（留空用 {{char}}）</label>
+          ${textInput('be-src-in-author', srcVals.sourceAuthor, '')}
         </div>
         <div class="be-row">
-          <label style="flex:1;">想法书摘·原句引用符号</label>
-          <label class="be-toggle">
-            <input type="checkbox" id="be-show-thought-quote" ${settings.showThoughtQuote!==false?'checked':''}>
-            <span class="be-slider"></span>
-          </label>
+          <label style="flex:1;">显示书名</label>
+          ${toggleHtml('be-show-booktitle', srcVals.showSourceTitle)}
         </div>
-        <div class="be-row" style="font-size:12px;opacity:0.8;margin-top:8px;">
-          <span style="flex:1;">用户名：${escapeHtml(srcVals.sourceUser || '（默认：{{user}}）')}</span>
+        <div class="be-row be-row-stack" id="be-src-in-title-row" ${srcVals.showSourceTitle ? '' : 'hidden'}>
+          ${textInput('be-src-in-title', srcVals.sourceTitle, '书名 / 作品名')}
         </div>
-        <div class="be-row" style="font-size:12px;opacity:0.8;">
-          <span style="flex:1;">作者：${escapeHtml(srcVals.sourceAuthor || '（默认：{{char}}）')}</span>
+        <div class="be-row">
+          <label style="flex:1;">显示章名</label>
+          ${toggleHtml('be-show-chapter', srcVals.showSourceChapter)}
         </div>
-        <div class="be-row" style="font-size:12px;opacity:0.8;">
-          <span style="flex:1;">书名：${escapeHtml(srcVals.sourceTitle || '（未填，不显示）')}</span>
+        <div class="be-row be-row-stack" id="be-src-in-chapter-row" ${srcVals.showSourceChapter ? '' : 'hidden'}>
+          ${textInput('be-src-in-chapter', srcVals.sourceChapter, '章名（部分模板会显示在书名/作者旁）')}
         </div>
-        <div class="be-row" style="gap:6px;">
-          <button class="be-btn" id="be-edit-source-btn">编辑出处</button>
-        </div>
-        <div class="be-row" style="margin-top:8px;">
-          <label style="flex:1;">出处生效范围</label>
+        <div class="be-row" style="margin-top:4px;">
+          <label style="flex:1;">出处按什么区分</label>
         </div>
         <div class="be-row">
           <div class="be-radio-group" id="be-source-scope-group" style="width:100%;">
             <button type="button" class="be-radio-opt ${(settings.sourceScope||'global')==='global'?'active':''}" data-v="global">全局统一</button>
-            <button type="button" class="be-radio-opt ${settings.sourceScope==='character'?'active':''}" data-v="character">按角色区分</button>
-            <button type="button" class="be-radio-opt ${settings.sourceScope==='chat'?'active':''}" data-v="chat">按角色+聊天区分</button>
+            <button type="button" class="be-radio-opt ${settings.sourceScope==='character'?'active':''}" data-v="character">按角色</button>
+            <button type="button" class="be-radio-opt ${settings.sourceScope==='chat'?'active':''}" data-v="chat">按角色+聊天</button>
           </div>
         </div>
-        <div class="be-row" style="font-size:11px;opacity:0.7;">
-          <span>切换范围后"编辑出处"改的是当前角色/聊天各自的一份设定，互不影响；切回"全局统一"会恢复用回全局那一份</span>
+        ${hint('选"按角色"/"按角色+聊天"后，上面填的出处只属于当前角色/聊天；切回"全局统一"就用回全局那一份')}
+
+        <div class="be-subh">水印</div>
+        <div class="be-row">
+          <label style="flex:1;">显示水印</label>
+          ${toggleHtml('be-show-watermark', settings.showWatermark !== false)}
+        </div>
+        <div class="be-row be-row-stack">
+          ${textInput('be-watermark-text', settings.watermarkText, '留空默认显示 SillyTavern')}
+        </div>
+
+        <div class="be-subh">其它</div>
+        <div class="be-row">
+          <label style="flex:1;">想法书摘·原句引用符号</label>
+          ${toggleHtml('be-show-thought-quote', settings.showThoughtQuote !== false)}
+        </div>
+        <div class="be-row">
+          <label style="flex:1;">保留原文删除线</label>
+          ${toggleHtml('be-keepdel', !!settings.keepDelLine)}
+        </div>
+      </div>
+
+      <div class="be-sec">
+        <h4>打码</h4>
+        <div class="be-row">
+          <label style="flex:1;">正文打码（分享时隐去名字）</label>
+          ${toggleHtml('be-mask-on', !!settings.maskOn)}
+        </div>
+        <div id="be-mask-opts" ${settings.maskOn ? '' : 'hidden'}>
+          <div class="be-row">
+            <label style="flex:1;">打码用户名</label>
+            ${toggleHtml('be-mask-user', settings.maskUser !== false)}
+          </div>
+          <div class="be-row">
+            <label style="flex:1;">打码角色名</label>
+            ${toggleHtml('be-mask-char', settings.maskChar !== false)}
+          </div>
+          <div class="be-row">
+            <label style="flex:1;">同时打码出处里的用户名/作者</label>
+            ${toggleHtml('be-mask-source', !!settings.maskSource)}
+          </div>
+          <div class="be-row be-row-stack">
+            <label>额外打码词</label>
+            ${textInput('be-mask-extra', settings.maskExtra, '逗号分隔，如昵称、地名')}
+          </div>
+          <div class="be-row">
+            <label style="flex:1;">打码形式</label>
+            <div class="be-radio-group" id="be-mask-style-group">
+              <button type="button" class="be-radio-opt ${(settings.maskStyle||'block')==='block'?'active':''}" data-v="block">涂黑</button>
+              <button type="button" class="be-radio-opt ${settings.maskStyle==='symbol'?'active':''}" data-v="symbol">符号</button>
+              <button type="button" class="be-radio-opt ${settings.maskStyle==='custom'?'active':''}" data-v="custom">自定义</button>
+            </div>
+          </div>
+          <div class="be-row be-row-stack" id="be-mask-char-row" ${settings.maskStyle === 'custom' ? '' : 'hidden'}>
+            ${textInput('be-mask-char-in', settings.maskCustomChar, '例如 ✕ ※ ＊ ▩')}
+          </div>
         </div>
       </div>
       ` : ''}
 
       ${settingsGroup === 'highlight' ? `
       <div class="be-sec">
-        <h4>划线总开关</h4>
+        <h4>基本</h4>
         <div class="be-row">
           <label style="flex:1;">关闭划线功能</label>
-          <label class="be-toggle">
-            <input type="checkbox" id="be-highlight-disabled" ${settings.highlightDisabled?'checked':''}>
-            <span class="be-slider"></span>
-          </label>
+          ${toggleHtml('be-highlight-disabled', !!settings.highlightDisabled)}
         </div>
-        <div class="be-row" style="font-size:11px;opacity:0.7;">
-          <span>只影响"选中文字弹出划线小工具栏"这一步，已有的划线、笔记本、书摘卡片都不受影响</span>
-        </div>
-      </div>
-
-      <div class="be-sec">
-        <h4>取词方式</h4>
-        <div class="be-row">
+        ${hint('只影响"选中文字弹出划线小工具栏"这一步，已有的划线、笔记本、书摘卡片都不受影响')}
+        <div class="be-row" style="margin-top:6px;">
+          <label style="flex:1;">取词方式</label>
           <div class="be-radio-group" id="be-selectmode-group">
-            <button type="button" class="be-radio-opt ${(settings.selectMode||'drag')==='drag'?'active':''}" data-v="drag">拖选（默认）</button>
+            <button type="button" class="be-radio-opt ${(settings.selectMode||'drag')==='drag'?'active':''}" data-v="drag">拖选</button>
             <button type="button" class="be-radio-opt ${settings.selectMode==='tap'?'active':''}" data-v="tap">两点定位</button>
           </div>
         </div>
-        <div class="be-row" style="font-size:11px;opacity:0.7;">
-          <span>两点定位：正常拖选一小段当开头，点弹出的"设为开头"；再拖选一小段当结尾，点"设为结尾"，两段之间的全部文字就会被选中——适合手机端长文本一次性拖选不准的情况</span>
-        </div>
+        ${hint('两点定位：拖选一小段当开头点"设为开头"，再拖选一小段当结尾点"设为结尾"，两段之间全部选中——适合手机端长文本')}
       </div>
 
       <div class="be-sec">
-        <h4>划线样式与颜色</h4>
+        <h4>默认样式</h4>
         <div class="be-row">
           <div class="be-radio-group" id="be-hl-group">
             <button class="be-radio-opt ${settings.highlightStyle==='underline'?'active':''}" data-v="underline">下划线</button>
@@ -7987,22 +8372,16 @@ $(() => {
           <button class="be-btn" id="be-color-marker-reset" style="padding:3px 8px;font-size:11px;">还原</button>
         </div>
         <div class="be-row">
-          <label style="flex:1;">想法虚线颜色（只想法没划线时）</label>
+          <label style="flex:1;">想法虚线颜色（只写想法没划线时）</label>
           <input type="color" id="be-color-thought" value="${escapeHtml(settings.thoughtLineColor || '#ffdc6e')}">
         </div>
         <div class="be-row">
           <label style="flex:1;">有想法的划线自动提升明度</label>
-          <label class="be-toggle">
-            <input type="checkbox" id="be-thought-boost" ${settings.thoughtBoost?'checked':''}>
-            <span class="be-slider"></span>
-          </label>
+          ${toggleHtml('be-thought-boost', !!settings.thoughtBoost)}
         </div>
         <div class="be-row">
           <label style="flex:1;">划线穿过特殊格式时剥离原样式</label>
-          <label class="be-toggle">
-            <input type="checkbox" id="be-strip" ${settings.stripStyle?'checked':''}>
-            <span class="be-slider"></span>
-          </label>
+          ${toggleHtml('be-strip', !!settings.stripStyle)}
         </div>
       </div>
 
@@ -8019,21 +8398,23 @@ $(() => {
           `).join('')}
         </div>
       </div>
-      ` : ''}
 
-      ${settingsGroup === 'feature' ? `
+      <div class="be-sec">
+        <h4>工具条外观</h4>
+        <div class="be-row">
+          <label style="flex:1;">跟随酒馆主题</label>
+          ${toggleHtml('be-follow-tavern-theme', !!settings.followTavernTheme)}
+        </div>
+        ${hint('开启后：划线时弹出的小工具条仿酒馆下拉框、点划线弹出的工具栏仿酒馆 h4 标题（含美化主题的贴图/边框/字色）；关闭则是默认深色。不影响设置面板和笔记本')}
+      </div>
+
       <div class="be-sec">
         <h4>划线合并</h4>
         <div class="be-row">
           <label style="flex:1;">把不连续的几句话拼成一条书摘</label>
-          <label class="be-toggle">
-            <input type="checkbox" id="be-merge-enabled" ${settings.mergeEnabled?'checked':''}>
-            <span class="be-slider"></span>
-          </label>
+          ${toggleHtml('be-merge-enabled', !!settings.mergeEnabled)}
         </div>
-        <div class="be-row" style="font-size:11px;opacity:0.7;">
-          <span>开启后：点已有划线可"加入合并"，笔记本里也能勾选加入；关闭后界面完全不变</span>
-        </div>
+        ${hint('开启后：点已有划线可"加入合并"，笔记本里也能勾选加入；关闭后界面完全不变')}
         <div id="be-merge-opts-block" style="${settings.mergeEnabled ? '' : 'display:none;'}">
           <div class="be-row" style="margin-top:8px;">
             <label style="flex:1;">合并完成后</label>
@@ -8058,51 +8439,60 @@ $(() => {
           </div>
         </div>
       </div>
+      ` : ''}
 
+      ${settingsGroup === 'general' ? `
       <div class="be-sec">
-        <h4>数据</h4>
-        <div class="be-row" style="gap:6px;">
-          <button class="be-btn" id="be-export-all">导出全部</button>
-          <button class="be-btn" id="be-import-all">导入</button>
-          <button class="be-btn danger" id="be-clear-all">清空</button>
+        <h4>插件界面</h4>
+        <div class="be-row">
+          <label style="flex:1;">主题色</label>
+          <input type="color" id="be-theme-color" value="${escapeHtml(settings.themeColor || '#95b6d6')}">
         </div>
-        <div class="be-row" style="gap:6px;margin-top:8px;">
-          <button class="be-btn" id="be-export-bundle">导出模板/字体/颜色</button>
-          <button class="be-btn" id="be-import-bundle">批量导入</button>
-        </div>
-        <div class="be-row" style="font-size:11px;opacity:0.7;">
-          <span>打包导出/导入所有自定义模板、字体、配色（不含笔记，笔记数据用上面「导出全部/导入」）</span>
-        </div>
+        ${hint('设置面板、笔记本、悬浮按钮等插件界面的强调色；不影响卡片本身的配色')}
       </div>
 
       <div class="be-sec">
-        <h4>保存方式</h4>
+        <h4>保存图片</h4>
         <div class="be-row">
           <div class="be-radio-group" id="be-savemode-group">
             <button type="button" class="be-radio-opt ${(settings.saveMode||'download')==='download'?'active':''}" data-v="download">下载文件</button>
             <button type="button" class="be-radio-opt ${settings.saveMode==='popup'?'active':''}" data-v="popup">弹图长按</button>
           </div>
         </div>
-        <div class="be-row" style="font-size:11px;opacity:0.7;">
-          <span>下载没反应的内嵌浏览器可以换「弹图长按」，跟卡片编辑页「编辑出处」里的这个选项是同一个设置</span>
-        </div>
+        ${hint('下载没反应的内嵌浏览器可以换「弹图长按」')}
       </div>
 
-      ${IS_EXTENSION ? `
       <div class="be-sec">
-        <h4>自由排版</h4>
-        <div class="be-row">
-          <label style="flex:1;">开启自由排版（实验功能）</label>
-          <label class="be-toggle">
-            <input type="checkbox" id="be-freeform-enabled" ${settings.freeformEnabled?'checked':''}>
-            <span class="be-slider"></span>
-          </label>
+        <h4>数据</h4>
+        <div class="be-subh">笔记</div>
+        <div class="be-row" style="gap:6px;">
+          <button class="be-btn" id="be-export-all">导出全部</button>
+          <button class="be-btn" id="be-import-all">导入</button>
+          <button class="be-btn danger" id="be-clear-all">清空</button>
         </div>
-        <div class="be-row" style="font-size:11px;opacity:0.7;">
-          <span>开启后扩展菜单会多一个"自由排版"入口：自己摆文字/图片做排版，不受现成模板限制。关闭后入口消失，不影响已存的草稿</span>
+        <div class="be-subh">模板 · 字体 · 配色</div>
+        <div class="be-row" style="gap:6px;">
+          <button class="be-btn" id="be-export-bundle">打包导出</button>
+          <button class="be-btn" id="be-import-bundle">批量导入</button>
         </div>
+        ${hint('打包的是所有导入的模板、字体和自己存的配色，不含笔记')}
       </div>
-      ` : ''}
+
+      <div class="be-sec">
+        <h4>高级</h4>
+        <div class="be-row">
+          <label style="flex:1;">开发者模式</label>
+          ${toggleHtml('be-creator-mode', !!settings.creatorMode)}
+        </div>
+        ${hint('开启后，模板「整理」里的"编辑CSS"会打开可拖动缩放的悬浮编辑窗，跟卡片预览同屏实时看效果，还带类名查询器')}
+        ${IS_EXTENSION ? `
+        <div class="be-row" style="margin-top:6px;">
+          <label style="flex:1;">自由排版（实验功能）</label>
+          ${toggleHtml('be-freeform-enabled', !!settings.freeformEnabled)}
+        </div>
+        ${hint('开启后扩展菜单会多一个"自由排版"入口；关闭后入口消失，不影响已存的草稿')}
+        ` : ''}
+      </div>
 
       <div class="be-sec">
         ${renderAboutGroup()}
@@ -8111,107 +8501,14 @@ $(() => {
     `;
 
     // 绑定
-    body.querySelectorAll('.be-tpl-card').forEach(el => {
-      if (el.id === 'be-tpl-import') {
-        el.addEventListener('click', () => openImportTemplateDialog());
-        return;
-      }
-      el.addEventListener('click', () => {
-        settings.template = el.getAttribute('data-k');
-        saveSettings(settings);
-        renderSettings();
-        if (mainDoc.getElementById('be-card')) renderCard(lastText);
-      });
+    bindTemplateSection(body);
+    body.querySelector('#be-color-organize')?.addEventListener('click', () => {
+      _colorOrganize = !_colorOrganize;
+      renderSettings();
     });
-    body.querySelector('#be-tpl-group-head')?.addEventListener('click', () => {
-      _customTplOpen = !_customTplOpen;
-      body.querySelector('#be-tpl-group')?.classList.toggle('open', _customTplOpen);
-    });
-    body.querySelectorAll('#be-tpl-group .be-tpl-custom-row').forEach(row => {
-      row.addEventListener('click', e => {
-        if (e.target.closest('button')) return;
-        settings.template = row.getAttribute('data-k');
-        saveSettings(settings);
-        renderSettings();
-        if (mainDoc.getElementById('be-card')) renderCard(lastText);
-      });
-      row.addEventListener('dragstart', e => {
-        _tplDragId = row.getAttribute('data-tid');
-        e.dataTransfer && (e.dataTransfer.effectAllowed = 'move');
-      });
-      row.addEventListener('dragover', e => { e.preventDefault(); row.classList.add('dragover'); });
-      row.addEventListener('dragleave', () => row.classList.remove('dragover'));
-      row.addEventListener('drop', e => {
-        e.preventDefault();
-        row.classList.remove('dragover');
-        const targetId = row.getAttribute('data-tid');
-        if (!_tplDragId || _tplDragId === targetId) return;
-        const rect = row.getBoundingClientRect();
-        const insertBefore = (e.clientY - rect.top) < rect.height / 2;
-        reorderCustomTemplate(_tplDragId, targetId, insertBefore);
-        _tplDragId = null;
-      });
-    });
-    body.querySelectorAll('#be-tpl-group .be-tpl-custom-row button[data-fav]').forEach(b => {
-      b.addEventListener('click', e => {
-        e.stopPropagation();
-        toggleTemplateFavorite(`custom-${b.getAttribute('data-fav')}`);
-      });
-    });
-    body.querySelectorAll('#be-tpl-group .be-tpl-custom-row button[data-del]').forEach(b => {
-      b.addEventListener('click', e => {
-        e.stopPropagation();
-        const tid = b.getAttribute('data-del');
-        if (!mainWin.confirm('删除这个自定义模板？')) return;
-        deleteCustomTemplate(tid);
-      });
-    });
-    body.querySelector('#be-hidden-tpl-group-head')?.addEventListener('click', () => {
-      _hiddenTplOpen = !_hiddenTplOpen;
-      body.querySelector('#be-hidden-tpl-group')?.classList.toggle('open', _hiddenTplOpen);
-    });
-    body.querySelectorAll('#be-hidden-tpl-group button[data-restore-tpl]').forEach(b => {
-      b.addEventListener('click', e => {
-        e.stopPropagation();
-        restoreBuiltinTemplate(b.getAttribute('data-restore-tpl'));
-      });
-    });
-    body.querySelectorAll('.be-tpl-card[data-thide]').forEach(el => {
-      bindLongPress(el, () => hideBuiltinTemplate(el.getAttribute('data-thide')));
-    });
-    body.querySelectorAll('.be-tpl-custom-row button[data-edit]').forEach(b => {
-      b.addEventListener('click', e => {
-        e.stopPropagation();
-        const tid = b.getAttribute('data-edit');
-        // 开发者模式下用可拖动的悬浮CSS编辑窗（能跟卡片预览同屏），否则走普通弹窗
-        if (settings.creatorMode) openCssFloatEditor(tid);
-        else openImportTemplateDialog(tid);
-      });
-    });
-    body.querySelectorAll('.be-tpl-custom-row button[data-export]').forEach(b => {
-      b.addEventListener('click', e => {
-        e.stopPropagation();
-        const tid = b.getAttribute('data-export');
-        try {
-          const tpl = (settings.customTemplates || []).find(x => x.id === tid);
-          if (!tpl) { toast('找不到模板', 'error'); return; }
-          // 转义 id 里的 regex 特殊字符
-          const idEsc = String(tpl.id).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-          const cssOut = (tpl.css || '').replace(
-            new RegExp('\\.be-card\\.tpl-custom-' + idEsc, 'g'),
-            '.be-card.be-custom'
-          );
-          const payload = { name: tpl.name || '未命名', css: cssOut };
-          const text = JSON.stringify(payload, null, 2);
-          const blob = new Blob([text], { type: 'application/json;charset=utf-8' });
-          const dlName = String(tpl.name || '模板').replace(/[\\/:*?"<>|]/g, '_') + '.json';
-          triggerDownload(blob, dlName);
-          toast('已导出 ' + dlName, 'success');
-        } catch (err) {
-          console.error('[BookExcerpt] export failed', err);
-          toast('导出失败：' + (err?.message || err), 'error');
-        }
-      });
+    body.querySelector('#be-custom-color-head')?.addEventListener('click', () => {
+      _customColorOpen = !body.querySelector('#be-custom-color-group')?.classList.contains('open');
+      body.querySelector('#be-custom-color-group')?.classList.toggle('open', _customColorOpen);
     });
     body.querySelectorAll('.be-color-dot').forEach(el => {
       el.addEventListener('click', () => {
@@ -8227,8 +8524,11 @@ $(() => {
         deleteCustomColor(el.getAttribute('data-cdel'));
       });
     });
-    body.querySelectorAll('.be-color-dot[data-chide]').forEach(el => {
-      bindLongPress(el, () => hideColorPreset(el.getAttribute('data-chide')));
+    body.querySelectorAll('.be-color-del[data-chide]').forEach(el => {
+      el.addEventListener('click', e => {
+        e.stopPropagation();
+        hideColorPreset(el.getAttribute('data-chide'));
+      });
     });
     body.querySelector('#be-hidden-color-group-head')?.addEventListener('click', () => {
       _hiddenColorOpen = !_hiddenColorOpen;
@@ -8327,6 +8627,7 @@ $(() => {
     });
     body.querySelector('#be-follow-tavern-theme')?.addEventListener('change', e => {
       settings.followTavernTheme = e.target.checked;
+      invalidateTavernStyleCache();
       saveSettings(settings);
       refreshStyle();
       renderSettings();
@@ -8497,14 +8798,74 @@ $(() => {
       saveSettings(settings);
       if (mainDoc.getElementById('be-card')) renderCard(lastText);
     });
+    // 卡片内容 · 出处：直接在面板里填（编辑出处弹窗保留为卡片编辑页的快捷入口，改的是同一份）
+    let _srcInT = 0;
+    const refreshCard = () => { if (mainDoc.getElementById('be-card')) renderCard(lastText); };
+    [['#be-src-in-user', 'sourceUser'], ['#be-src-in-author', 'sourceAuthor'],
+     ['#be-src-in-title', 'sourceTitle'], ['#be-src-in-chapter', 'sourceChapter']].forEach(([sel, field]) => {
+      body.querySelector(sel)?.addEventListener('input', e => {
+        const v = e.target.value.trim();
+        if (_srcInT) mainWin.clearTimeout(_srcInT);
+        _srcInT = mainWin.setTimeout(() => { _srcInT = 0; setSourceValues({ [field]: v }); refreshCard(); }, 250);
+      });
+    });
     body.querySelector('#be-show-booktitle')?.addEventListener('change', e => {
       setSourceValues({ showSourceTitle: e.target.checked });
-      if (mainDoc.getElementById('be-card')) renderCard(lastText);
+      body.querySelector('#be-src-in-title-row').hidden = !e.target.checked;
+      refreshCard();
+    });
+    body.querySelector('#be-show-chapter')?.addEventListener('change', e => {
+      setSourceValues({ showSourceChapter: e.target.checked });
+      body.querySelector('#be-src-in-chapter-row').hidden = !e.target.checked;
+      refreshCard();
+    });
+    body.querySelector('#be-keepdel')?.addEventListener('change', e => {
+      settings.keepDelLine = e.target.checked;
+      saveSettings(settings);
+      refreshCard();
+    });
+    // 打码
+    const maskToggle = (sel, field) => body.querySelector(sel)?.addEventListener('change', e => {
+      settings[field] = e.target.checked;
+      saveSettings(settings);
+      if (field === 'maskOn') body.querySelector('#be-mask-opts').hidden = !e.target.checked;
+      refreshCard();
+    });
+    maskToggle('#be-mask-on', 'maskOn');
+    maskToggle('#be-mask-user', 'maskUser');
+    maskToggle('#be-mask-char', 'maskChar');
+    maskToggle('#be-mask-source', 'maskSource');
+    body.querySelector('#be-mask-extra')?.addEventListener('input', e => {
+      settings.maskExtra = e.target.value;
+      saveSettings(settings);
+      refreshCard();
+    });
+    body.querySelector('#be-mask-char-in')?.addEventListener('input', e => {
+      settings.maskCustomChar = e.target.value;
+      saveSettings(settings);
+      refreshCard();
+    });
+    body.querySelectorAll('#be-mask-style-group .be-radio-opt').forEach(btn => {
+      btn.addEventListener('click', () => {
+        settings.maskStyle = btn.getAttribute('data-v');
+        saveSettings(settings);
+        body.querySelectorAll('#be-mask-style-group .be-radio-opt').forEach(b => b.classList.toggle('active', b === btn));
+        body.querySelector('#be-mask-char-row').hidden = settings.maskStyle !== 'custom';
+        refreshCard();
+      });
+    });
+    body.querySelectorAll('#be-panel-scale-group .be-radio-opt').forEach(btn => {
+      btn.addEventListener('click', () => {
+        settings.exportScale = Number(btn.getAttribute('data-v')) || 3;
+        saveSettings(settings);
+        body.querySelectorAll('#be-panel-scale-group .be-radio-opt').forEach(b => b.classList.toggle('active', b === btn));
+      });
     });
     body.querySelector('#be-highlight-disabled')?.addEventListener('change', e => {
       settings.highlightDisabled = e.target.checked;
       saveSettings(settings);
       if (settings.highlightDisabled) { hideBar(); resetPickPending(); }
+      refreshStyle(); // 状态栏"允许选字"那段样式跟着划线开关走
     });
     body.querySelectorAll('#be-selectmode-group .be-radio-opt').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -8545,18 +8906,6 @@ $(() => {
         renderSettingsGroupContent(body); // 范围一变，预览文本要立刻换成对应角色/聊天那份
         if (mainDoc.getElementById('be-card')) renderCard(lastText);
       });
-    });
-    body.querySelector('#be-edit-source-btn')?.addEventListener('click', () => {
-      // 关掉/不关 panel 无所谓——出处对话框 z-index 比 panel 高
-      openSourceEditor();
-      // 监听 source dialog 关闭后刷新设置面板里的预览文本
-      const watch = setInterval(() => {
-        const m = mainDoc.getElementById('be-source-mask');
-        if (!m || !m.classList.contains('open')) {
-          clearInterval(watch);
-          renderSettings();
-        }
-      }, 300);
     });
     body.querySelector('#be-export-all')?.addEventListener('click', exportNotes);
     body.querySelector('#be-import-all')?.addEventListener('click', importNotes);
@@ -10990,7 +11339,7 @@ $(() => {
     ['be-float-bar', 'be-mask', 'be-thought-mask', 'be-source-mask', 'be-panel', 'be-style', 'be-menu-entry',
      'be-hl-bar', 'be-viewer-mask', 'be-imgpop', 'be-merge-badge', 'be-merge-sheet', 'be-merge-target-mask',
      'be-menu-entry-freeform', 'be-fc-mask', 'be-pick-step-bar', 'be-card-hl-bar', 'be-css-float',
-     'be-card-hl-pop', 'be-slot-chooser'].forEach(id => {
+     'be-card-hl-pop', 'be-slot-chooser', 'be-tl-menu', 'be-tpl-preview'].forEach(id => {
       mainDoc.getElementById(id)?.remove();
     });
   });
@@ -11050,6 +11399,7 @@ $(() => {
           if (m.addedNodes && m.addedNodes.length) {
             for (const n of m.addedNodes) {
               if (n.nodeType !== 1) continue;
+              if (n.tagName === 'IFRAME' || n.querySelector?.('iframe')) scheduleFrameScan();
               if (n.classList?.contains('mes') || n.querySelector?.('.mes_text')) {
                 needs = true; break;
               }
