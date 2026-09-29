@@ -13,6 +13,8 @@ $(() => {
   // 永远是 false（这行本身也绝不能出现 import.meta 这类模块语法，会导致脚本形态直接解析失败）。
   // 扩展仓库生成 index.js 时会把这一行 patch 成 true。
   const IS_EXTENSION = true;
+  // 自由排版这次不发布：设置项和菜单入口都不出现（代码保留，下次要发布改成 true 即可）
+  const FREEFORM_RELEASED = false;
   // 自由排版依赖的两个 vendor 库本地地址，同样只能靠扩展构建 patch 注入（import.meta.url），
   // 脚本形态下永远是空字符串——反正 IS_EXTENSION=false 时功能入口本身就不可达，这两个值不会被用到。
   let LOCAL_INTERACT_URL = '';
@@ -57,12 +59,12 @@ $(() => {
     maskSource: false,             // 是否同时打码出处显示的用户名/作者
     highlightStyle: 'underline',   // underline | marker
     stripStyle: true,
-    selectMode: 'drag',            // 取词方式：drag 原生拖选（默认）/ tap 两点定位（先点起点再点终点，供手机端长文本精确取词）
+    pickEnabled: true,             // 两点选线：划线浮动栏多一个"设为开头/设为结尾"，长句用它、短句照常拖选
     underlineColor: '#95b6d6',
     markerColor: '#ffdc6e',
     themeColor: '#95b6d6',         // 插件自身UI主题色（--be-accent），跟 underlineColor 解耦，默认值保持一致避免老用户升级视觉跳变
-    followTavernTheme: false,      // 开启后划线时弹出的浮动工具条背景/字色跟随酒馆当前主题，不影响设置面板/笔记本/主题色
-    creatorMode: false,            // 开发者模式：开启后自定义模板编辑支持CSS实时预览 + 类名查询器
+    followTavernTheme: true,       // 划线相关浮动栏仿酒馆下拉框样式；不影响设置面板/笔记本/主题色
+    creatorMode: true,             // 开发者模式：模板列表出现编辑CSS按钮，悬浮窗实时预览 + 类名查询器
     thoughtLineColor: '#ffdc6e',  // 只想法虚线颜色
     thoughtBoost: true,            // 有想法的划线提升明度
     showAvatar: true,
@@ -92,7 +94,10 @@ $(() => {
     hiddenTemplates: [],           // 被隐藏的模板 key（默认 'classic' / 导入 'custom-<id>' 都行）
     hiddenColorPresets: [],        // 被用户隐藏的内置配色 id 列表（COLOR_PRESETS 的 id）
     templateOrder: [],             // 模板排序（默认+导入统一，存 key；没排过的按 默认→导入 的原顺序排在后面）
-    templateFavorites: []          // 收藏的模板 key 列表（跟 settings.template 同格式：'classic' / 'custom-<id>'），选模板时排在最前
+    templateFavorites: [],         // 收藏的模板 key 列表（跟 settings.template 同格式：'classic' / 'custom-<id>'），选模板时排在最前
+    // 一次性迁移标记：新安装直接带上，存下来的设置里有它就不会再被迁移逻辑改动
+    _scaleDefault3: true,
+    _defaults150b: true
   };
 
   // ---------- 模板（仅排版，颜色独立）----------
@@ -273,6 +278,19 @@ $(() => {
       // 排序同理：旧版只给导入模板排序、存的是裸 id
       if (Array.isArray(s.templateOrder)) s.templateOrder = s.templateOrder.map(toKey);
       delete s.avatarQuality;
+      // v1.5.0 开发期间这几项的默认值改过（两点选线、跟随酒馆主题、开发者模式都改成默认开），
+      // 这几个设置都是 1.5.0 才新增的，只有测试版存档里有旧值，升一次到新默认
+      if (!parsed._defaults150b) {
+        s.pickEnabled = true;
+        s.followTavernTheme = true;
+        s.creatorMode = true;
+        s._defaults150b = true;
+      }
+      delete s.selectMode;
+      // 迁移结果立刻写回，否则用户没改过设置时每次加载都会重新迁移一遍（会覆盖掉之后的手动选择）
+      if (!parsed._scaleDefault3 || !parsed._defaults150b) {
+        try { mainWin.localStorage.setItem(LS_SETTINGS, JSON.stringify(s)); } catch (e) {}
+      }
       return s;
     } catch { return JSON.parse(JSON.stringify(DEFAULT_SETTINGS)); }
   }
@@ -874,13 +892,14 @@ $(() => {
   function wavyDataUri(color) {
     const c = color || '#c9a76a';
     // viewBox 24x5，波长大让线条疏一点
-    const svg = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 5'><path d='M0,2.5 Q6,-0.5 12,2.5 T24,2.5' stroke='${c}' stroke-width='1.2' fill='none' stroke-linecap='round'/></svg>`;
+    // 必须写 width/height：没有固有尺寸的 SVG 在 html2canvas 里宽高是 0，导出时波浪线整条消失
+    const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='24' height='5' viewBox='0 0 24 5'><path d='M0,2.5 Q6,-0.5 12,2.5 T24,2.5' stroke='${c}' stroke-width='1.2' fill='none' stroke-linecap='round'/></svg>`;
     return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
   }
   function dashDataUri(color) {
     const c = color || '#ffdc6e';
     // 12 宽 viewBox：line 长度 7，间距 5，比浏览器原生 dashed 间距更宽
-    const svg = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 2'><line x1='0' y1='1' x2='7' y2='1' stroke='${c}' stroke-width='1'/></svg>`;
+    const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='12' height='2' viewBox='0 0 12 2'><line x1='0' y1='1' x2='7' y2='1' stroke='${c}' stroke-width='1'/></svg>`;
     return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
   }
 
@@ -960,7 +979,7 @@ $(() => {
     /* ===== 浮动工具栏（仿微信阅读 · 紧凑版） ===== */
     /* --be-float-bg/--be-float-fg：默认写死深色；"跟随酒馆主题"开着时在 buildStyle() 里改成
        var(--black30a)/var(--SmartThemeBodyColor)，只影响这几条选区弹出的浮动工具条，不影响设置面板/笔记本 */
-    #be-float-bar, #be-card-hl-bar, #be-pick-step-bar {
+    #be-float-bar, #be-card-hl-bar {
       /* absolute + scrollY 偏移：Firefox 在 body 有 transform 时 fixed 会被重 anchor 到 body 而非视口，
          导致 bar 出现在屏幕外、并撑大 body 触发滚动条跳动。absolute 各浏览器表现一致。 */
       position: absolute; z-index: 2147483600;
@@ -973,9 +992,10 @@ $(() => {
       user-select: none;
       gap: 0;
     }
-    #be-float-bar.show, #be-card-hl-bar.show, #be-pick-step-bar.show { display: flex; }
+    #be-float-bar.show, #be-card-hl-bar.show { display: flex; }
+    #be-float-bar [hidden] { display: none !important; }
     /* 默认：工具栏在选区下方时，箭头在工具栏顶部、朝上指向文字 */
-    #be-float-bar::after, #be-card-hl-bar::after, #be-pick-step-bar::after {
+    #be-float-bar::after, #be-card-hl-bar::after {
       content: ''; position: absolute;
       top: -5px; left: var(--arrow-left, 50%); transform: translateX(-50%);
       width: 0; height: 0;
@@ -984,12 +1004,12 @@ $(() => {
       border-bottom: 5px solid var(--be-float-arrow, var(--be-float-bg, #2b2b2b));
     }
     /* 在选区上方时，箭头在工具栏底部、朝下指向文字 */
-    #be-float-bar.arrow-bottom::after, #be-card-hl-bar.arrow-bottom::after, #be-pick-step-bar.arrow-bottom::after {
+    #be-float-bar.arrow-bottom::after, #be-card-hl-bar.arrow-bottom::after {
       top: auto; bottom: -5px;
       border-bottom: none;
       border-top: 5px solid var(--be-float-arrow, var(--be-float-bg, #2b2b2b));
     }
-    #be-float-bar .be-fbtn, #be-card-hl-bar .be-fbtn, #be-pick-step-bar .be-fbtn {
+    #be-float-bar .be-fbtn, #be-card-hl-bar .be-fbtn {
       background: transparent; border: none;
       color: var(--be-float-fg, #f0f0f0);
       display: flex; flex-direction: column;
@@ -1005,11 +1025,11 @@ $(() => {
       -webkit-tap-highlight-color: transparent;
       touch-action: manipulation;
     }
-    #be-float-bar .be-fbtn:hover, #be-card-hl-bar .be-fbtn:hover, #be-pick-step-bar .be-fbtn:hover,
-    #be-float-bar .be-fbtn:active, #be-card-hl-bar .be-fbtn:active, #be-pick-step-bar .be-fbtn:active {
+    #be-float-bar .be-fbtn:hover, #be-card-hl-bar .be-fbtn:hover,
+    #be-float-bar .be-fbtn:active, #be-card-hl-bar .be-fbtn:active {
       background: rgba(128,128,128,0.18);
     }
-    #be-float-bar .be-fbtn svg, #be-card-hl-bar .be-fbtn svg, #be-pick-step-bar .be-fbtn svg {
+    #be-float-bar .be-fbtn svg, #be-card-hl-bar .be-fbtn svg {
       width: 15px; height: 15px;
       stroke: currentColor; fill: none;
       stroke-width: 1.6;
@@ -1018,7 +1038,7 @@ $(() => {
     /* 卡片二次高亮的工具条要浮在 #be-mask（书摘卡片弹窗，z-index 2147483630）之上才能点到，
        之前跟 #be-float-bar 共用同一个较低的 z-index，导致弹窗一直挡住它、点了没反应 */
     #be-card-hl-bar { z-index: 2147483640; }
-    #be-float-bar .be-fbtn-divider, #be-card-hl-bar .be-fbtn-divider, #be-pick-step-bar .be-fbtn-divider {
+    #be-float-bar .be-fbtn-divider, #be-card-hl-bar .be-fbtn-divider {
       width: 1px; background: var(--be-float-divider, rgba(128,128,128,0.25));
       margin: 6px 0;
     }
@@ -1107,6 +1127,9 @@ $(() => {
     .be-hl-sample.sample-bold { font-weight: 900; font-size: 14px; }
     /* 卡片二次高亮的新样式：只改字色，不画线也不铺底 */
     .be-highlight.style-fontcolor { border-bottom: none; background: none; }
+    .be-highlight.style-none { border-bottom: none; background: none; }
+    .be-chl-top { display: flex; align-items: center; gap: 4px; }
+    .be-chl-top .be-chl-sts { display: flex; align-items: center; margin-left: auto; }
     /* 卡片选区工具条上的文字图标（下划线/荧光笔/字色/加粗） */
     .be-chl-ico { display: block; font-size: 14px; font-weight: 600; line-height: 15px; height: 15px; }
     .be-chl-ico-u { border-bottom: 1.5px solid currentColor; line-height: 13px; }
@@ -2385,57 +2408,59 @@ $(() => {
     }
     .be-tl-current.open .be-caret { transform: rotate(180deg); }
     .be-tl-body { padding-top: 8px; }
-    .be-tl-hint { font-size: 11px; opacity: 0.65; margin: 0 2px 8px; line-height: 1.6; }
     .be-tl-list { display: flex; flex-direction: column; gap: 6px; }
     .be-tl-sep { text-align: center; opacity: 0.45; margin: 4px 0; line-height: 1; }
     .be-tl-row {
-      display: flex; align-items: center; gap: 8px;
-      padding: 9px 10px 9px 12px; border-radius: 12px;
-      background: var(--be-panel-row-bg); cursor: pointer; font-size: 13px;
-      border: 1.5px solid transparent;
-      transition: background 0.15s;
+      position: relative; overflow: hidden; border-radius: 12px;
+      background: #d9534f; /* 左滑后露出来的删除底色 */
+      -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
       -webkit-tap-highlight-color: transparent;
     }
-    .be-tl-row:hover { background: var(--be-panel-row-bg-hover); }
-    .be-tl-row.active { border-color: var(--be-accent); background: var(--be-accent-soft); }
-    .be-tl-row.dragging { opacity: 0.85; box-shadow: 0 6px 18px rgba(0,0,0,0.35); position: relative; z-index: 1; }
-    .be-tl-row-hidden { cursor: default; }
-    .be-tl-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .be-tl-star { color: #ffb400; font-size: 12px; }
+    .be-tl-row:not(.swipeable), .be-tl-row-hidden { background: transparent; }
+    .be-tl-inner {
+      position: relative; z-index: 1;
+      display: flex; align-items: center; gap: 4px;
+      padding: 7px 6px 7px 4px; border-radius: 12px;
+      background: var(--be-panel-row-bg); cursor: pointer; font-size: 13px;
+      border: 1.5px solid transparent;
+      transition: transform 0.18s ease, background 0.15s;
+      touch-action: pan-y;
+    }
+    .be-tl-row-hidden .be-tl-inner { cursor: default; padding-left: 12px; }
+    .be-tl-row:hover .be-tl-inner { background: var(--be-panel-row-bg-hover); }
+    .be-tl-row.active .be-tl-inner { border-color: var(--be-accent); background: var(--be-accent-soft); }
+    .be-tl-row.dragging { z-index: 2; box-shadow: 0 6px 18px rgba(0,0,0,0.35); }
+    .be-tl-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-left: 2px; }
     .be-tl-tag {
       font-size: 10px; padding: 1px 6px; border-radius: 6px;
       background: rgba(128,128,128,0.18); color: var(--be-panel-sub); flex: 0 0 auto;
     }
     .be-tl-handle {
       display: inline-flex; align-items: center; justify-content: center;
-      width: 22px; height: 26px; margin-left: -4px; cursor: grab; opacity: 0.5;
-      touch-action: none; flex: 0 0 auto;
+      width: 26px; height: 30px; cursor: grab; opacity: 0.5; flex: 0 0 auto;
+      touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
     }
     .be-tl-handle svg { width: 12px; height: 12px; fill: currentColor; }
-    .be-tl-row button {
-      background: transparent; border: none; color: var(--be-panel-sub);
-      cursor: pointer; padding: 2px 6px; font-size: 15px; line-height: 1; flex: 0 0 auto;
-      font-family: inherit;
+    .be-tl-ico {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 30px; height: 30px; flex: 0 0 auto; padding: 0;
+      background: transparent; border: none; border-radius: 8px;
+      color: var(--be-panel-sub); cursor: pointer; font-size: 16px; line-height: 1; font-family: inherit;
     }
-    .be-tl-fav.on, .be-tl-fav:hover { color: #ffb400; }
-    .be-tl-prev svg { width: 17px; height: 17px; stroke: currentColor; fill: none; stroke-width: 1.7; display: block; }
-    .be-tl-prev:hover, .be-tl-more:hover { color: var(--be-accent); }
+    .be-tl-ico:hover { background: rgba(128,128,128,0.15); color: var(--be-panel-fg); }
+    .be-tl-ico svg { width: 17px; height: 17px; stroke: currentColor; fill: none; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+    .be-tl-more svg { fill: currentColor; stroke: none; }
+    .be-tl-fav.on { color: #ffb400; }
+    .be-tl-extra { display: none; }
+    .be-tl-row.expanded .be-tl-extra { display: inline-flex; }
+    .be-tl-row.expanded .be-tl-more { background: rgba(128,128,128,0.18); color: var(--be-panel-fg); }
+    .be-tl-del {
+      position: absolute; right: 0; top: 0; bottom: 0; width: 64px;
+      display: flex; align-items: center; justify-content: center;
+      background: transparent; border: none; color: #fff; cursor: pointer; padding: 0;
+    }
+    .be-tl-del svg { width: 20px; height: 20px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
     .be-tl-row .be-mini-btn { font-size: 11px; padding: 3px 10px; }
-    #be-tl-menu {
-      position: absolute; z-index: 2147483646; display: none; flex-direction: column;
-      min-width: 110px; padding: 6px; border-radius: 12px;
-      background: var(--be-panel-bg, #1b1b1b); color: var(--be-panel-fg, #eee);
-      border: 1px solid var(--be-panel-border, rgba(255,255,255,0.1));
-      box-shadow: 0 10px 30px rgba(0,0,0,0.45);
-      font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
-    }
-    #be-tl-menu.show { display: flex; }
-    #be-tl-menu button {
-      background: transparent; border: none; color: inherit; text-align: left;
-      padding: 9px 12px; border-radius: 8px; font-size: 13px; cursor: pointer; font-family: inherit;
-    }
-    #be-tl-menu button:hover { background: var(--be-panel-row-bg-hover, rgba(255,255,255,0.08)); }
-    #be-tl-menu button.danger { color: #ff8a8a; }
     /* 模板预览弹窗 */
     #be-tpl-preview {
       position: absolute; top: 0; left: 0; width: 100%; height: 100vh; height: 100dvh;
@@ -3527,7 +3552,7 @@ $(() => {
     if (anySlot && !settings._slotHintShown) {
       settings._slotHintShown = true;
       saveSettings(settings);
-      toast('提示：这个模板里的图片可以直接点卡片上的图片区域更换', 'info');
+      toast('点击卡片上的图片区域可更换图片', 'info');
     }
   }
   function collectSlotCandidates(target, card) {
@@ -3762,10 +3787,7 @@ $(() => {
     lastRangeFrame = null;
     const rects = range.getClientRects();
     const rect = rects.length ? rects[rects.length - 1] : range.getBoundingClientRect();
-    // 两点定位模式：正常拖选（比如长按拖出选区）先记开头/结尾，拼出最终 Range 后才弹平时那条 划线/想法/书摘 工具栏，
-    // 不是另开一套点按坐标的机制——原生选区本来就能用，问题只出在"选太长/太短不好调"，所以复用选区本身分两步做就够了
-    if (settings.selectMode === 'tap') { hideBar(); showPickStepBar(rect); }
-    else { hidePickStepBar(); showBar(rect); }
+    showBar(rect);
   }
   function scheduleCheck(delay = 80) {
     if (selDebounce) clearTimeout(selDebounce);
@@ -3776,7 +3798,8 @@ $(() => {
   const ICONS = {
     underline: '<svg viewBox="0 0 24 24"><path d="M6 4v8a6 6 0 0 0 12 0V4"/><line x1="4" y1="20" x2="20" y2="20"/></svg>',
     thought:   '<svg viewBox="0 0 24 24"><path d="M12 20l-4 0a4 4 0 0 1-4-4l0-7a4 4 0 0 1 4-4l8 0a4 4 0 0 1 4 4l0 7a4 4 0 0 1-4 4l-2 0-2 3z"/><line x1="8" y1="11" x2="16" y2="11"/><line x1="8" y1="14" x2="13" y2="14"/></svg>',
-    excerpt:   '<svg viewBox="0 0 24 24"><path d="M4 5a2 2 0 0 1 2-2l6 0a2 2 0 0 1 2 2l0 16-4-3-4 3 0-16z"/><path d="M14 8l4 0a2 2 0 0 1 2 2l0 11-4-3"/></svg>'
+    excerpt:   '<svg viewBox="0 0 24 24"><path d="M4 5a2 2 0 0 1 2-2l6 0a2 2 0 0 1 2 2l0 16-4-3-4 3 0-16z"/><path d="M14 8l4 0a2 2 0 0 1 2 2l0 11-4-3"/></svg>',
+    pick:      '<svg viewBox="0 0 24 24"><path d="M8 5H5v14h3"/><path d="M16 5h3v14h-3"/></svg>'
   };
 
   function ensureBar() {
@@ -3791,11 +3814,17 @@ $(() => {
       <button class="be-fbtn" data-act="thought" type="button">${ICONS.thought}<span>想法</span></button>
       <span class="be-fbtn-divider"></span>
       <button class="be-fbtn" data-act="excerpt" type="button">${ICONS.excerpt}<span>书摘</span></button>
+      <span class="be-fbtn-divider be-pick-div"></span>
+      <button class="be-fbtn be-pick-btn" data-act="pick" type="button">${ICONS.pick}<span>设为开头</span></button>
     `;
     // 关键修复：触摸/鼠标按下时只阻止选区被清空，不阻止 click 默认行为
     // 让点击在 pointerup 上立刻派发（用 once 防重）
     const fireAction = (act) => {
       if (!lastText) return;
+      // 两点选线：第一次记开头，第二次拼出开头到结尾的整段选区，再弹回这条浮动栏
+      if (act === 'pick') { handlePickStepMain(); return; }
+      // 对当前选区做了普通操作，就放弃之前记下的开头
+      pickPendingStart = null;
       // 已划线区域再次点击"划线"→ 删除该划线
       if (act === 'highlight') {
         const existingId = findHighlightIdInRange(lastRange);
@@ -3950,8 +3979,8 @@ $(() => {
   }
 
   // ---------- 跟随酒馆主题：现场采样酒馆真实元素的样式 ----------
-  // 不猜变量名：直接找一个酒馆自己的下拉框(select) / h4 标题，读它的计算样式——这样用户装的美化主题
-  // （给 select/h4 加的贴图 background-image、边框、border-image、阴影、毛玻璃）都会原样带过来。
+  // 不猜变量名：直接找一个酒馆自己的下拉框(select)，读它的计算样式——这样用户装的美化主题
+  // （给 select 加的贴图 background-image、边框、border-image、阴影、毛玻璃）都会原样带过来。
   // select 本身常是半透明（ST 默认 --black30a），真实观感是"它叠在所在面板背景上"，所以要沿祖先往上
   // 把每层背景（颜色+贴图）按顺序叠起来，直到遇到不透明的一层，否则挪到聊天区上方就成了透明的。
   function splitCssList(v) {
@@ -3973,9 +4002,7 @@ $(() => {
     return { r: p[0], g: p[1], b: p[2], a: p.length > 3 ? p[3] : 1 };
   }
   function findTavernSample(kind) {
-    const sels = kind === 'select'
-      ? ['#themes', '#left-nav-panel select', '.drawer-content select', 'select.text_pole', 'select']
-      : ['#left-nav-panel h4', '#rm_api_block h4', '.drawer-content h4', 'h4'];
+    const sels = ['#themes', '#left-nav-panel select', '.drawer-content select', 'select.text_pole', 'select'];
     for (const s of sels) {
       let list;
       try { list = mainDoc.querySelectorAll(s); } catch (e) { continue; }
@@ -4125,7 +4152,6 @@ $(() => {
     const fg = parseCssColor(cs.color);
     if (fg) set('--be-float-divider', `rgba(${fg.r}, ${fg.g}, ${fg.b}, 0.2)`);
     set('--be-float-arrow', blendLayerColors(layers, { r: 43, g: 43, b: 43 }));
-    if (kind === 'h4') set('--be-float-fw', cs.fontWeight);
     return out;
   }
   function applyTavernFloatStyle(el, kind) {
@@ -4141,6 +4167,13 @@ $(() => {
   function showBar(rect) {
     const bar = ensureBar();
     applyTavernFloatStyle(bar, 'select');
+    const pickBtn = bar.querySelector('.be-pick-btn');
+    const pickDiv = bar.querySelector('.be-pick-div');
+    if (pickBtn) {
+      pickBtn.hidden = !settings.pickEnabled;
+      pickBtn.querySelector('span').textContent = pickPendingStart ? '设为结尾' : '设为开头';
+    }
+    if (pickDiv) pickDiv.hidden = !settings.pickEnabled;
     bar.classList.add('show');
     bar.classList.remove('arrow-bottom');
     bar.style.left = '-9999px';
@@ -4174,42 +4207,29 @@ $(() => {
     if (bar) bar.classList.remove('show');
   }
 
-  // ---------- 两点定位取词（设置里"取词方式"=两点定位时启用）----------
-  // 不是另起一套点坐标的交互：直接复用原生拖选本身已经能选中文字这件事，只是把
-  // "选中就直接划线"拆成两步——先正常拖选一次当开头，点"设为开头"记下这段的起点；
-  // 再拖选一次当结尾，点"设为结尾"用它的终点拼出最终 Range，然后走回平时的 划线/想法/书摘 工具栏。
-  let pickPendingStart = null; // {node, offset}，null 表示还没记开头
-  function ensurePickStepBar() {
-    let bar = mainDoc.getElementById('be-pick-step-bar');
-    if (bar) return bar;
-    bar = mainDoc.createElement('div');
-    bar.id = 'be-pick-step-bar';
-    bar.addEventListener('pointerdown', e => { e.preventDefault(); });
-    mainDoc.body.appendChild(bar);
-    return bar;
-  }
-  function hidePickStepBar() {
-    mainDoc.getElementById('be-pick-step-bar')?.classList.remove('show');
-  }
-  function resetPickPending() {
-    pickPendingStart = null;
-    hidePickStepBar();
+  // ---------- 两点选线（设置里可关，默认开）----------
+  // 划线浮动栏最后一个按钮：拖选一小段后点"设为开头"记下起点；再拖选一小段，按钮变成"设为结尾"，
+  // 点了就把起点到这段末尾拼成一整段选区，重新弹出浮动栏，接着照常划线/想法/书摘。短句直接拖选即可。
+  let pickPendingStart = null; // {node, offset, frame}，null 表示还没记开头
+  function resetPickPending() { pickPendingStart = null; }
+  function frameOrMainSelection(frame) {
+    try { return (frame ? frameSelWin(frame) : mainWin).getSelection(); } catch (e) { return null; }
   }
   function handlePickStepMain() {
     if (!lastRange) return;
     if (!pickPendingStart) {
       pickPendingStart = { node: lastRange.startContainer, offset: lastRange.startOffset, frame: lastRangeFrame };
-      hidePickStepBar();
-      try { (lastRangeFrame ? frameSelWin(lastRangeFrame) : mainWin).getSelection().removeAllRanges(); } catch (e) {}
-      toast('已设置开头，请再选中结尾的词语', 'info');
+      hideBar();
+      try { frameOrMainSelection(lastRangeFrame)?.removeAllRanges(); } catch (e) {}
+      toast('已设开头，请选择结尾', 'info');
       return;
     }
     const endRange = lastRange;
     const endFrame = lastRangeFrame;
-    // 开头和结尾要在同一个文档里（同在聊天正文，或同在一个状态栏 iframe 里）才能拼成一个选区
     if (pickPendingStart.frame !== endFrame) {
-      toast('开头和结尾不在同一段文字里（比如一个在状态栏、一个在正文），请重新开始', 'error');
+      toast('开头和结尾须在同一段内容中', 'error');
       resetPickPending();
+      hideBar();
       return;
     }
     const doc = (pickPendingStart.node && pickPendingStart.node.ownerDocument) || mainDoc;
@@ -4222,62 +4242,23 @@ $(() => {
         range.setEnd(pickPendingStart.node, pickPendingStart.offset);
       }
     } catch (err) {
-      toast('两次选择不在同一段文字里，构造失败，请重新开始', 'error');
+      toast('选区无效，请重新选择开头', 'error');
       resetPickPending();
+      hideBar();
       return;
     }
     resetPickPending();
     const picked = getRangeText(range);
-    if (!picked.text || !picked.text.length) { toast('没选到文字，请重新开始', 'error'); return; }
+    if (!picked.text) { toast('未选中文字', 'error'); hideBar(); return; }
     lastText = picked.text;
     lastRichText = picked.rich;
     lastRange = range.cloneRange();
     lastRangeFrame = endFrame;
+    // 把拼好的整段真正选中，用户能直接看到范围
+    try { const sel = frameOrMainSelection(endFrame); sel.removeAllRanges(); sel.addRange(range.cloneRange()); } catch (e) {}
     const rects = range.getClientRects();
     const rect = rects.length ? rects[rects.length - 1] : range.getBoundingClientRect();
     showBar(endFrame ? translateFrameRect(rect, endFrame) : rect);
-  }
-  function showPickStepBar(rect) {
-    const bar = ensurePickStepBar();
-    const label = pickPendingStart ? '设为结尾' : '设为开头';
-    bar.innerHTML = `
-      <button class="be-fbtn" type="button" data-act="main">${ICONS.underline}<span>${label}</span></button>
-      ${pickPendingStart ? '<span class="be-fbtn-divider"></span><button class="be-fbtn" type="button" data-act="cancel">✕<span>取消</span></button>' : ''}
-    `;
-    applyTavernFloatStyle(bar, 'select');
-    const bindTap = (el, fn) => {
-      const handler = e => { e.stopPropagation(); e.preventDefault(); fn(); };
-      el.addEventListener('click', handler);
-      el.addEventListener('touchend', handler, { passive: false });
-    };
-    bindTap(bar.querySelector('[data-act="main"]'), handlePickStepMain);
-    const cancelBtn = bar.querySelector('[data-act="cancel"]');
-    if (cancelBtn) {
-      bindTap(cancelBtn, () => {
-        resetPickPending();
-        try { mainWin.getSelection().removeAllRanges(); } catch (e) {}
-        toast('已取消，重新选择开头', 'info');
-      });
-    }
-    bar.classList.add('show');
-    bar.classList.remove('arrow-bottom');
-    bar.style.left = '-9999px';
-    bar.style.top = '-9999px';
-    const bw = bar.offsetWidth || 100;
-    const bh = bar.offsetHeight || 40;
-    const vw = mainWin.innerWidth;
-    const vh = mainWin.innerHeight;
-    let left = (rect.left + rect.right) / 2 - bw / 2;
-    let top = rect.bottom + 6;
-    let arrowBottom = false;
-    if (top + bh + 4 > vh) { top = rect.top - bh - 6; arrowBottom = true; }
-    left = Math.max(8, Math.min(left, vw - bw - 8));
-    const arrowLeft = (rect.left + rect.right) / 2 - left;
-    bar.style.setProperty('--arrow-left', `${Math.max(16, Math.min(bw - 16, arrowLeft))}px`);
-    if (top < 8) top = 8;
-    bar.style.left = (left + (mainWin.scrollX || 0)) + 'px';
-    bar.style.top = (top + (mainWin.scrollY || 0)) + 'px';
-    if (arrowBottom) bar.classList.add('arrow-bottom');
   }
 
   // ---------- 卡片正文二次高亮（第13条）----------
@@ -4371,7 +4352,7 @@ $(() => {
       if (act === 'marker') color = settings.markerColor || '#ffdc6e';
       else if (act === 'underline') color = settings.underlineColor || '#95b6d6';
       else if (act === 'fontcolor') color = settings.underlineColor || '#95b6d6';
-      else if (act === 'bold') { style = 'fontcolor'; bold = true; }
+      else if (act === 'bold') { style = 'none'; bold = true; }
       try { wrapCardRange(cardHlRange, style, color, bold); } catch (e) {}
       hideCardHlBar();
       try { mainWin.getSelection().removeAllRanges(); } catch (e) {}
@@ -4440,17 +4421,19 @@ $(() => {
     const col = String(first.dataset.col || '').toLowerCase();
     const bold = first.dataset.bold === '1';
     const initialCustom = first.dataset.col || settings.underlineColor || '#95b6d6';
+    // 第一行：删除 + 样式（线型/字色可点选或再点取消，加粗独立开关）；第二行：颜色
     pop.innerHTML = `
-      <div class="be-hl-row1">
+      <div class="be-hl-row1 be-chl-top">
         <button data-act="del" class="danger">删除划线</button>
+        <span class="be-chl-sts">
+          <button class="be-hl-st ${st==='underline'?'active':''}" data-st="underline" title="下划线"><span class="be-hl-sample sample-underline">A</span></button>
+          <button class="be-hl-st ${st==='wavy'?'active':''}" data-st="wavy" title="波浪线"><span class="be-hl-sample sample-wavy">A</span></button>
+          <button class="be-hl-st ${st==='marker'?'active':''}" data-st="marker" title="荧光笔"><span class="be-hl-sample sample-marker">A</span></button>
+          <button class="be-hl-st ${st==='fontcolor'?'active':''}" data-st="fontcolor" title="字色"><span class="be-hl-sample sample-fontcolor" style="color:${escapeHtml(first.dataset.col || '#e8a0a0')};">A</span></button>
+          <button class="be-hl-st ${bold?'active':''}" data-act="bold" title="加粗"><span class="be-hl-sample sample-bold">B</span></button>
+        </span>
       </div>
       <div class="be-hl-row2 be-hl-row2-scroll">
-        <button class="be-hl-st ${st==='underline'?'active':''}" data-st="underline" title="下划线"><span class="be-hl-sample sample-underline">A</span></button>
-        <button class="be-hl-st ${st==='wavy'?'active':''}" data-st="wavy" title="波浪线"><span class="be-hl-sample sample-wavy">A</span></button>
-        <button class="be-hl-st ${st==='marker'?'active':''}" data-st="marker" title="荧光笔"><span class="be-hl-sample sample-marker">A</span></button>
-        <button class="be-hl-st ${st==='fontcolor'?'active':''}" data-st="fontcolor" title="只改字色"><span class="be-hl-sample sample-fontcolor" style="color:${escapeHtml(first.dataset.col || '#e8a0a0')};">A</span></button>
-        <button class="be-hl-st ${bold?'active':''}" data-act="bold" title="加粗"><span class="be-hl-sample sample-bold">B</span></button>
-        <span class="be-hl-divider"></span>
         ${getPaletteColors().map(c => `<button class="be-hl-col ${col===c.toLowerCase()?'active':''}" data-col="${c}" style="background:${c};"></button>`).join('')}
         <span class="be-hl-col rainbow" title="自定义颜色">
           +
@@ -4461,7 +4444,7 @@ $(() => {
     const applyAll = (nextSt, nextCol, nextBold) => {
       cardHlGroup(gid).forEach(s => applyCardHlStyle(s, nextSt, nextCol, nextBold));
     };
-    pop.querySelector('[data-act="del"]').addEventListener('click', () => {
+    const removeAll = () => {
       cardHlGroup(gid).forEach(s => {
         const parent = s.parentNode;
         if (!parent) return;
@@ -4470,30 +4453,38 @@ $(() => {
         try { parent.normalize(); } catch (e) {}
       });
       closeCardHlPop();
-    });
+    };
+    // 线型和加粗都取消了就什么效果都没有，直接去掉这处高亮
+    const applyOrRemove = (nextSt, nextCol, nextBold) => {
+      if (nextSt === 'none' && !nextBold) { removeAll(); return; }
+      applyAll(nextSt, nextCol, nextBold);
+      renderCardHlPop(pop, gid);
+    };
+    pop.querySelector('[data-act="del"]').addEventListener('click', removeAll);
     pop.querySelectorAll('.be-hl-st[data-st]').forEach(b => {
       b.addEventListener('click', () => {
-        const nextSt = b.getAttribute('data-st');
-        // 从"只改字色"切到画线样式、或反过来时，没选过颜色就给一个该样式的默认色，免得切过去看不见
+        const picked = b.getAttribute('data-st');
+        const curSt = first.dataset.st || 'underline';
+        const nextSt = picked === curSt ? 'none' : picked;
         let nextCol = first.dataset.col;
-        if (!nextCol) nextCol = nextSt === 'marker' ? (settings.markerColor || '#ffdc6e') : (settings.underlineColor || '#95b6d6');
-        applyAll(nextSt, nextCol, first.dataset.bold === '1');
-        renderCardHlPop(pop, gid);
+        if (!nextCol && nextSt !== 'none') nextCol = nextSt === 'marker' ? (settings.markerColor || '#ffdc6e') : (settings.underlineColor || '#95b6d6');
+        applyOrRemove(nextSt, nextCol, first.dataset.bold === '1');
       });
     });
     pop.querySelector('[data-act="bold"]').addEventListener('click', () => {
-      applyAll(first.dataset.st || 'underline', first.dataset.col, first.dataset.bold !== '1');
-      renderCardHlPop(pop, gid);
+      applyOrRemove(first.dataset.st || 'none', first.dataset.col, first.dataset.bold !== '1');
     });
+    // 选颜色时如果当前没有线型（只加粗），颜色按"字色"处理
+    const colorTarget = () => { const s0 = first.dataset.st || 'none'; return s0 === 'none' ? 'fontcolor' : s0; };
     pop.querySelectorAll('.be-hl-col[data-col]').forEach(b => {
       b.addEventListener('click', () => {
-        applyAll(first.dataset.st || 'underline', b.getAttribute('data-col'), first.dataset.bold === '1');
+        applyAll(colorTarget(), b.getAttribute('data-col'), first.dataset.bold === '1');
         renderCardHlPop(pop, gid);
       });
     });
     const customInput = pop.querySelector('.be-hl-col-input');
     if (customInput) {
-      const onChange = () => applyAll(first.dataset.st || 'underline', customInput.value, first.dataset.bold === '1');
+      const onChange = () => applyAll(colorTarget(), customInput.value, first.dataset.bold === '1');
       customInput.addEventListener('input', onChange);
       customInput.addEventListener('change', onChange);
       customInput.addEventListener('pointerdown', e => e.stopPropagation());
@@ -4514,7 +4505,7 @@ $(() => {
       mainDoc.body.appendChild(pop);
     }
     renderCardHlPop(pop, gid);
-    applyTavernFloatStyle(pop, 'h4');
+    applyTavernFloatStyle(pop, 'select');
     const rect = anchor.getBoundingClientRect();
     pop.classList.add('show');
     pop.classList.remove('arrow-bottom');
@@ -4539,10 +4530,10 @@ $(() => {
     setTimeout(() => mainDoc.addEventListener('pointerdown', _cardHlPopCloser, true), 60);
   }
 
-  // 导出前（只动 clone，不碰预览）：把卡片二次高亮逐字拆成单字 span。
-  // html2canvas 给行内元素画背景/边框时用的是整个元素的外接矩形，不按行切片——一段跨两行的高亮，
-  // 荧光笔（linear-gradient 背景）会被画成横跨两行的一整块，下划线（border-bottom）只画在外接框最底下一行。
-  // 拆成单字后每个 span 只占一行，画出来就跟预览一致。只处理 .be-card-hl，别的元素不受影响。
+  // 导出前（只动 clone，不碰预览）：把跨行的卡片二次高亮按"行"拆成多个 span。
+  // html2canvas 给行内元素画背景/边框时用整个元素的外接矩形，不按行切片——跨两行的荧光笔会画成一大块，
+  // 下划线只画在最底一行。按行拆开后每段只占一行，线/底色连续，跟预览一致（逐字拆会在字间留缝、波浪线也画不出来）。
+  // 需要已经排好版（clone 已放进导出用的 iframe、宽度已定）才能量出每个字在哪一行。
   function splitCardHlForExport(root) {
     const doc = root.ownerDocument;
     root.querySelectorAll('.be-card-hl').forEach(span => {
@@ -4552,26 +4543,42 @@ $(() => {
       const texts = [];
       let t;
       while ((t = walker.nextNode())) texts.push(t);
-      const allChars = [];
+      const segs = [];
+      let cur = null;
       texts.forEach(tn => {
-        const frag = doc.createDocumentFragment();
-        for (const ch of Array.from(tn.nodeValue || '')) {
-          const s = doc.createElement('span');
-          s.className = cls;
-          s.setAttribute('style', css);
-          s.style.paddingLeft = '0';
-          s.style.paddingRight = '0';
-          s.textContent = ch;
-          frag.appendChild(s);
-          allChars.push(s);
+        const str = tn.nodeValue || '';
+        let i = 0;
+        while (i < str.length) {
+          const len = str.codePointAt(i) > 0xffff ? 2 : 1;
+          const r = doc.createRange();
+          r.setStart(tn, i); r.setEnd(tn, i + len);
+          const rects = r.getClientRects();
+          const rc = rects.length ? rects[rects.length - 1] : null;
+          const top = rc ? Math.round(rc.top) : (cur ? cur.top : 0);
+          if (cur && cur.node === tn && Math.abs(top - cur.top) <= 2) cur.end = i + len;
+          else { cur = { node: tn, start: i, end: i + len, top }; segs.push(cur); }
+          i += len;
         }
-        tn.parentNode.replaceChild(frag, tn);
       });
-      // 原来整段左右各 1px 内边距，拆开后只保留在首尾字上，保证排版宽度跟预览一模一样
-      if (allChars.length) {
-        allChars[0].style.paddingLeft = '1px';
-        allChars[allChars.length - 1].style.paddingRight = '1px';
+      if (segs.length <= 1) return; // 本来就在一行内，不用拆
+      const wraps = [];
+      for (let k = segs.length - 1; k >= 0; k--) {
+        const sg = segs[k];
+        let target = sg.node;
+        if (sg.end < target.nodeValue.length) target.splitText(sg.end);
+        if (sg.start > 0) target = target.splitText(sg.start);
+        const w = doc.createElement('span');
+        w.className = cls;
+        w.setAttribute('style', css);
+        w.style.paddingLeft = '0';
+        w.style.paddingRight = '0';
+        target.parentNode.insertBefore(w, target);
+        w.appendChild(target);
+        wraps.unshift(w);
       }
+      // 原来整段左右各 1px 内边距，只保留在首尾，排版宽度不变
+      wraps[0].style.paddingLeft = '1px';
+      wraps[wraps.length - 1].style.paddingRight = '1px';
       span.className = '';
       span.removeAttribute('style');
     });
@@ -4946,8 +4953,7 @@ $(() => {
     const rects = range.getClientRects();
     const rect = rects.length ? rects[rects.length - 1] : range.getBoundingClientRect();
     const r2 = translateFrameRect(rect, iframeEl);
-    if (settings.selectMode === 'tap') { hideBar(); showPickStepBar(r2); }
-    else { hidePickStepBar(); showBar(r2); }
+    showBar(r2);
   }
   let frameSelDebounce = null;
   function scheduleFrameCheck(iframeEl, delay = 80) {
@@ -5349,7 +5355,7 @@ $(() => {
       mainDoc.body.appendChild(bar);
     }
     renderHlBar(bar, noteId);
-    applyTavernFloatStyle(bar, 'h4');
+    applyTavernFloatStyle(bar, 'select');
     // 定位（贴近 anchorEl 下方；不够则上方）
     const anchor = anchorEl || mainDoc.querySelector(`.be-highlight[data-be-id="${noteId}"]`);
     // 划线 span 若在状态栏 iframe 里，getBoundingClientRect 是相对 iframe 自身视口的，要换算成 mainDoc 坐标
@@ -6323,14 +6329,16 @@ $(() => {
 
     // 三字段出处（按 sourceScope 可能来自全局设置，也可能是当前角色/角色+聊天各自存的）
     const src = getSourceValues();
-    const userName   = src.sourceUser   || ctx.userName || '';
-    const authorName = src.sourceAuthor || ctx.charName || '';
-    const bookName   = src.showSourceTitle ? (src.sourceTitle || '') : '';
-    const chapter    = src.showSourceChapter ? (src.sourceChapter || '') : '';
+    // 模板预览用固定占位内容（user/char/书名/章名 + 纯色头像），只为看版式
+    const userName   = opts.preview ? 'user' : (src.sourceUser   || ctx.userName || '');
+    const authorName = opts.preview ? 'char' : (src.sourceAuthor || ctx.charName || '');
+    const bookName   = opts.preview ? '书名' : (src.showSourceTitle ? (src.sourceTitle || '') : '');
+    const chapter    = opts.preview ? '章名' : (src.showSourceChapter ? (src.sourceChapter || '') : '');
     const dateText = `摘录于 ${formatDate()}`;
 
     // 头像（按设置选 user / char / custom）
     const avatarUrl = (() => {
+      if (opts.preview) return '';
       if (settings.avatarType === 'custom') {
         return imgUrlSync(settings.customAvatar, () => { if (mainDoc.getElementById('be-card')) renderCard(lastText); });
       }
@@ -6932,8 +6940,6 @@ $(() => {
           });
         }
       } catch (e) {}
-      // 必须在上面按元素顺序配对冻结样式之后再拆（拆完 clone 的元素顺序就跟原卡片对不上了）
-      try { splitCardHlForExport(cardClone); } catch (e) {}
       // 强制导出宽度 = 用户设定宽度（预览容器在窄屏上可能更窄，导出要按设定值）
       cardClone.style.width = cardW + 'px';
       cardClone.style.maxWidth = 'none';
@@ -6965,6 +6971,8 @@ $(() => {
           }
         } catch (e) {}
       }
+      // 跨行高亮按行拆开（要在排好版之后量，且在上面按元素顺序冻结样式之后，拆完元素顺序就对不上了）
+      try { void cardClone.offsetHeight; splitCardHlForExport(cardClone); } catch (e) {}
       // 在 clone 上把头像换成清晰 <img>（不影响主文档预览）
       await processAvatarInClone(cardClone, idoc, dpr);
       // 宽度变化会改变高度，重排后按内容真实高度调整 iframe（h2c 按元素尺寸截，留足空间即可）
@@ -7041,8 +7049,8 @@ $(() => {
           // 避免兜底路径直接截 background-image 头像导致清晰度下降
           const clone = card.cloneNode(true);
           clone.style.cssText += ';position:fixed;left:-99999px;top:0;visibility:hidden;';
-          try { splitCardHlForExport(clone); } catch (e) {}
           mainDoc.body.appendChild(clone);
+          try { void clone.offsetHeight; splitCardHlForExport(clone); } catch (e) {}
           try {
             await processAvatarInClone(clone, mainDoc, dpr);
             await new Promise(r => setTimeout(r, 16));
@@ -7327,9 +7335,12 @@ $(() => {
   // key 跟 settings.template 同格式：默认模板 'classic'，导入模板 'custom-<id>'。
   // templateOrder / templateFavorites / hiddenTemplates 都存 key，默认和导入的一起排序、收藏、隐藏。
   const ICON_DOTS4 = '<svg viewBox="0 0 12 12"><circle cx="3" cy="3" r="1.4"/><circle cx="9" cy="3" r="1.4"/><circle cx="3" cy="9" r="1.4"/><circle cx="9" cy="9" r="1.4"/></svg>';
-  const ICON_EYE = '<svg viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>';
+  const ICON_MORE = '<svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>';
+  const ICON_EYE_OFF = '<svg viewBox="0 0 24 24"><path d="M3 3l18 18"/><path d="M10.6 5.2A10.4 10.4 0 0 1 12 5c6.4 0 10 7 10 7a17 17 0 0 1-3.2 4.1M6.6 6.6C3.9 8.4 2 12 2 12s3.6 7 10 7a9.6 9.6 0 0 0 5.4-1.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>';
+  const ICON_EXPORT = '<svg viewBox="0 0 24 24"><path d="M13 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h7"/><path d="M13 3v5h5"/><path d="M15 15h7M19 12l3 3-3 3"/></svg>';
+  const ICON_PENCIL = '<svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16v4z"/><path d="M13.5 6.5l4 4"/></svg>';
+  const ICON_TRASH = '<svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/><path d="M10 11v6M14 11v6"/></svg>';
   let _tplListOpen = false;
-  let _tplOrganize = false;
   let _hiddenTplOpen = false;
   function getAllTemplateEntries() {
     const favSet = new Set(settings.templateFavorites || []);
@@ -7338,13 +7349,20 @@ $(() => {
       ...Object.entries(TEMPLATES).map(([k, v]) => ({ key: k, name: v.name, isDefault: true })),
       ...(settings.customTemplates || []).map(t => ({ key: `custom-${t.id}`, name: t.name || '未命名', isDefault: false, tid: t.id }))
     ];
-    const order = settings.templateOrder || [];
-    const idx = k => { const i = order.indexOf(k); return i < 0 ? Infinity : i; };
-    return natural
-      .map((e, i) => ({ ...e, fav: favSet.has(e.key), hidden: hidden.has(e.key), _n: i }))
-      .sort((a, b) => (idx(a.key) - idx(b.key)) || (a._n - b._n));
+    // 没被手动拖过的：默认模板排在最前、导入模板排在最后（旧版排序里只有导入模板，不能让默认模板因此掉到末尾）
+    const keys = new Set(natural.map(e => e.key));
+    const saved = (settings.templateOrder || []).filter(k => keys.has(k));
+    const full = [
+      ...natural.filter(e => e.isDefault && !saved.includes(e.key)).map(e => e.key),
+      ...saved,
+      ...natural.filter(e => !e.isDefault && !saved.includes(e.key)).map(e => e.key)
+    ];
+    return full.map(k => {
+      const e = natural.find(x => x.key === k);
+      return { ...e, fav: favSet.has(k), hidden: hidden.has(k) };
+    });
   }
-  // 列表/选模板共用的顺序：收藏的排最前，其余按用户排的顺序；隐藏的单独列出
+  // 列表/选模板共用的顺序：收藏的排最前，其余按上面的顺序；隐藏的单独列出
   function getTemplateListEntries() {
     const all = getAllTemplateEntries();
     const shown = all.filter(e => !e.hidden);
@@ -7398,33 +7416,39 @@ $(() => {
     }
   }
   function editCustomTemplate(tid) {
-    // 开发者模式下用可拖动的悬浮CSS编辑窗（能跟卡片预览同屏），否则走普通弹窗
     if (settings.creatorMode) openCssFloatEditor(tid);
     else openImportTemplateDialog(tid);
   }
-  function renderTemplateRow(e, org) {
+  // 行布局（仿酒馆正则列表）：左四点拖动 · 名字 · [开发者模式下导入模板的铅笔] · 收藏 · 更多；
+  // 点"更多"在行内展开 隐藏/导出；导入模板左滑露出删除；点行本身打开预览
+  function renderTemplateRow(e) {
     const active = settings.template === e.key;
+    const dev = !!settings.creatorMode;
     return `
-      <div class="be-tl-row ${active ? 'active' : ''}" data-k="${e.key}">
-        ${org ? `<span class="be-tl-handle" title="按住拖动排序">${ICON_DOTS4}</span>
-                 <button type="button" class="be-tl-fav ${e.fav ? 'on' : ''}" data-fav="${e.key}" title="${e.fav ? '取消收藏' : '收藏'}">${e.fav ? '★' : '☆'}</button>`
-              : (e.fav ? '<span class="be-tl-star">★</span>' : '')}
-        <span class="be-tl-name">${escapeHtml(e.name)}</span>
-        ${e.isDefault ? '<span class="be-tl-tag">默认</span>' : ''}
-        ${org ? `<button type="button" class="be-tl-more" data-more="${e.key}" title="更多操作">⋯</button>`
-              : `<button type="button" class="be-tl-prev" data-prev="${e.key}" title="预览">${ICON_EYE}</button>`}
+      <div class="be-tl-row ${active ? 'active' : ''} ${e.isDefault ? '' : 'swipeable'}" data-k="${e.key}">
+        <div class="be-tl-inner">
+          <span class="be-tl-handle" title="拖动排序">${ICON_DOTS4}</span>
+          <span class="be-tl-name">${escapeHtml(e.name)}</span>
+          ${e.isDefault ? '<span class="be-tl-tag">默认</span>' : ''}
+          <span class="be-tl-extra">
+            <button type="button" class="be-tl-ico" data-hide="${e.key}" title="隐藏">${ICON_EYE_OFF}</button>
+            ${e.isDefault ? '' : `<button type="button" class="be-tl-ico" data-export="${e.tid}" title="导出">${ICON_EXPORT}</button>`}
+          </span>
+          ${(dev && !e.isDefault) ? `<button type="button" class="be-tl-ico" data-edit="${e.tid}" title="编辑CSS">${ICON_PENCIL}</button>` : ''}
+          <button type="button" class="be-tl-ico be-tl-fav ${e.fav ? 'on' : ''}" data-fav="${e.key}" title="${e.fav ? '取消收藏' : '收藏'}">${e.fav ? '★' : '☆'}</button>
+          <button type="button" class="be-tl-ico be-tl-more" data-more="${e.key}" title="更多">${ICON_MORE}</button>
+        </div>
+        ${e.isDefault ? '' : `<button type="button" class="be-tl-del" data-del="${e.tid}" title="删除">${ICON_TRASH}</button>`}
       </div>`;
   }
   function renderTemplateSection() {
     const { favs, rest, hidden } = getTemplateListEntries();
-    const org = _tplOrganize;
-    const open = _tplListOpen || org;
+    const open = _tplListOpen;
     return `
       <div class="be-sec" id="be-tpl-sec">
         <div class="be-sec-head">
           <h4>模板</h4>
           <span class="be-sec-head-btns">
-            <button type="button" class="be-mini-btn ${org ? 'active' : ''}" id="be-tpl-organize">${org ? '完成' : '整理'}</button>
             <button type="button" class="be-mini-btn" id="be-tpl-import">+ 导入</button>
           </span>
         </div>
@@ -7433,10 +7457,9 @@ $(() => {
           <span class="be-caret"></span>
         </div>
         <div class="be-tl-body" ${open ? '' : 'hidden'}>
-          ${org ? '<div class="be-tl-hint">按住左边的四点拖动排序；☆ 收藏（选模板时排最前）；⋯ 里可以隐藏、编辑、导出、删除</div>' : ''}
-          <div class="be-tl-list" data-group="fav">${favs.map(e => renderTemplateRow(e, org)).join('')}</div>
+          <div class="be-tl-list" data-group="fav">${favs.map(renderTemplateRow).join('')}</div>
           ${favs.length && rest.length ? '<div class="be-tl-sep">·</div>' : ''}
-          <div class="be-tl-list" data-group="rest">${rest.map(e => renderTemplateRow(e, org)).join('')}</div>
+          <div class="be-tl-list" data-group="rest">${rest.map(renderTemplateRow).join('')}</div>
           ${hidden.length ? `
           <div class="be-tpl-group ${_hiddenTplOpen ? 'open' : ''}" id="be-hidden-tpl-group">
             <div class="be-tpl-group-head" id="be-hidden-tpl-group-head">
@@ -7446,9 +7469,11 @@ $(() => {
             <div class="be-tpl-group-body">
               ${hidden.map(e => `
                 <div class="be-tl-row be-tl-row-hidden">
-                  <span class="be-tl-name">${escapeHtml(e.name)}</span>
-                  ${e.isDefault ? '<span class="be-tl-tag">默认</span>' : ''}
-                  <button type="button" class="be-mini-btn" data-restore-tpl="${e.key}">恢复</button>
+                  <div class="be-tl-inner">
+                    <span class="be-tl-name">${escapeHtml(e.name)}</span>
+                    ${e.isDefault ? '<span class="be-tl-tag">默认</span>' : ''}
+                    <button type="button" class="be-mini-btn" data-restore-tpl="${e.key}">恢复</button>
+                  </div>
                 </div>`).join('')}
             </div>
           </div>` : ''}
@@ -7461,17 +7486,18 @@ $(() => {
     settings.templateOrder = keys.concat(hiddenKeys);
     saveSettings(settings);
   }
-  // 手指/鼠标拖动排序：用 pointer 事件自己做，不用 HTML5 draggable（那套在手机浏览器上基本拖不动）。
-  // 收藏组和其余组各自内部排，拖动时直接在 DOM 里挪行，松手后按 DOM 顺序落盘。
+  // 拖动排序：pointer 事件 + document 上监听（拖动中挪行会让手柄暂时脱离文档，捕获会丢，所以不用 setPointerCapture）。
+  // 手柄上阻止 touchstart 默认行为和长按菜单，否则手机上按久一点就变成选中文字。
   function bindTemplateDrag(sec) {
-    sec.querySelectorAll('.be-tl-handle').forEach(h => {
+    sec.querySelectorAll('.be-tl-list .be-tl-handle').forEach(h => {
+      h.addEventListener('touchstart', e => e.preventDefault(), { passive: false });
+      h.addEventListener('contextmenu', e => e.preventDefault());
       h.addEventListener('pointerdown', e => {
         e.preventDefault();
+        e.stopPropagation();
         const row = h.closest('.be-tl-row');
         const list = row.parentElement;
         const scroller = sec.closest('#be-p-body') || sec.parentElement;
-        // 不用 setPointerCapture：拖动时要在 DOM 里挪这一行，挪动会让手柄暂时脱离文档，浏览器随之丢掉捕获，
-        // 后续 move/up 就收不到了。直接在 document 上监听，跟指针落在哪个元素上无关。
         const pid = e.pointerId;
         row.classList.add('dragging');
         const onMove = ev => {
@@ -7504,49 +7530,56 @@ $(() => {
       });
     });
   }
-  function closeTplMenu() {
-    mainDoc.getElementById('be-tl-menu')?.classList.remove('show');
+  // 左滑露出删除（只有导入模板有）。行内容区 touch-action: pan-y，竖向滚动照常，横向手势交给这里。
+  const TL_DEL_W = 64;
+  function closeTplSwipes(sec, except) {
+    sec.querySelectorAll('.be-tl-row.swiped').forEach(r => {
+      if (r === except) return;
+      r.classList.remove('swiped');
+      r.querySelector('.be-tl-inner').style.transform = '';
+    });
   }
-  function openTplMenu(key, anchor) {
-    const entry = getAllTemplateEntries().find(e => e.key === key);
-    if (!entry) return;
-    let menu = mainDoc.getElementById('be-tl-menu');
-    if (!menu) {
-      menu = mainDoc.createElement('div');
-      menu.id = 'be-tl-menu';
-      mainDoc.body.appendChild(menu);
-      mainDoc.addEventListener('pointerdown', ev => {
-        const m = mainDoc.getElementById('be-tl-menu');
-        if (m && m.classList.contains('show') && !m.contains(ev.target) && !ev.target.closest('.be-tl-more')) closeTplMenu();
-      }, true);
-    } else if (menu.parentNode !== mainDoc.body || menu.nextSibling) {
-      mainDoc.body.appendChild(menu);
-    }
-    const acts = entry.isDefault
-      ? [['hide', '隐藏']]
-      : [['edit', '编辑CSS'], ['export', '导出'], ['hide', '隐藏'], ['del', '删除']];
-    menu.innerHTML = acts.map(([a, t]) => `<button type="button" data-act="${a}" class="${a === 'del' ? 'danger' : ''}">${t}</button>`).join('');
-    menu.querySelectorAll('button').forEach(b => {
-      b.addEventListener('click', () => {
-        const a = b.getAttribute('data-act');
-        closeTplMenu();
-        if (a === 'hide') hideTemplate(key);
-        else if (a === 'edit') editCustomTemplate(entry.tid);
-        else if (a === 'export') exportCustomTemplate(entry.tid);
-        else if (a === 'del') { if (mainWin.confirm(`删除模板「${entry.name}」？`)) deleteCustomTemplate(entry.tid); }
+  function bindTemplateSwipe(sec) {
+    sec.querySelectorAll('.be-tl-list .be-tl-row.swipeable').forEach(row => {
+      const inner = row.querySelector('.be-tl-inner');
+      inner.addEventListener('pointerdown', e => {
+        if (e.target.closest('button, .be-tl-handle')) return;
+        const sx = e.clientX, sy = e.clientY, pid = e.pointerId;
+        const base = row.classList.contains('swiped') ? -TL_DEL_W : 0;
+        let dx = 0, swiping = false, decided = false;
+        const onMove = ev => {
+          if (ev.pointerId !== pid) return;
+          const mx = ev.clientX - sx, my = ev.clientY - sy;
+          if (!decided && (Math.abs(mx) > 8 || Math.abs(my) > 8)) {
+            decided = true;
+            swiping = Math.abs(mx) > Math.abs(my);
+            if (swiping) { inner.style.transition = 'none'; closeTplSwipes(sec, row); }
+          }
+          if (!swiping) return;
+          ev.preventDefault();
+          dx = Math.max(-TL_DEL_W - 16, Math.min(0, base + mx));
+          inner.style.transform = `translateX(${dx}px)`;
+        };
+        const onUp = ev => {
+          if (ev.pointerId !== pid) return;
+          mainDoc.removeEventListener('pointermove', onMove, true);
+          mainDoc.removeEventListener('pointerup', onUp, true);
+          mainDoc.removeEventListener('pointercancel', onUp, true);
+          if (!swiping) return;
+          row._beSwipedJustNow = true;
+          inner.style.transition = '';
+          const open = dx < -TL_DEL_W / 2;
+          row.classList.toggle('swiped', open);
+          inner.style.transform = open ? `translateX(${-TL_DEL_W}px)` : '';
+        };
+        mainDoc.addEventListener('pointermove', onMove, { capture: true, passive: false });
+        mainDoc.addEventListener('pointerup', onUp, true);
+        mainDoc.addEventListener('pointercancel', onUp, true);
       });
     });
-    menu.classList.add('show');
-    const r = anchor.getBoundingClientRect();
-    const mw = menu.offsetWidth, mh = menu.offsetHeight;
-    let left = Math.min(r.right - mw, mainWin.innerWidth - mw - 8);
-    let top = r.bottom + 4;
-    if (top + mh > mainWin.innerHeight - 8) top = r.top - mh - 4;
-    menu.style.left = (Math.max(8, left) + (mainWin.scrollX || 0)) + 'px';
-    menu.style.top = (Math.max(8, top) + (mainWin.scrollY || 0)) + 'px';
   }
-  // 模板预览：用固定示例文字 + 当前头像/名字，按该模板渲染一张缩小的卡片
-  const PREVIEW_SAMPLE_TEXT = '我们终将走向同一片海。潮水会记住所有被说出口的话，也会原谅那些没来得及说的。';
+  // 模板预览：固定测试文字 + 占位名字/书名/章名 + 纯色头像，按该模板渲染一张缩小的卡片
+  const PREVIEW_SAMPLE_TEXT = '这是一段测试文字，用于预览模板的排版效果，包括字号、行距、字间距与整体版式，无实际含义。';
   function closeTplPreview() {
     mainDoc.getElementById('be-tpl-preview')?.classList.remove('open');
   }
@@ -7562,12 +7595,13 @@ $(() => {
     }
     const cw = Number(settings.cardWidth) || 440;
     const built = buildCardMarkup(PREVIEW_SAMPLE_TEXT, { tplKey: key, preview: true });
+    const isCurrent = settings.template === key;
     mask.innerHTML = `
       <div class="be-tpv-box">
         <div class="be-tpv-head"><span>${escapeHtml(templateNameOf(key))}</span><button type="button" class="be-tpv-close">×</button></div>
         <div class="be-tpv-stage"><div class="be-tpv-scale" style="width:${cw}px;">${built.html}</div></div>
         <div class="be-tpv-foot">
-          <button type="button" class="be-btn primary" id="be-tpv-use">用这个模板</button>
+          <button type="button" class="be-btn primary" id="be-tpv-use" ${isCurrent ? 'disabled' : ''}>${isCurrent ? '当前模板' : '使用此模板'}</button>
         </div>
       </div>`;
     const card = mask.querySelector('.be-card');
@@ -7597,47 +7631,42 @@ $(() => {
     const sec = body.querySelector('#be-tpl-sec');
     if (!sec) return;
     sec.querySelector('#be-tpl-import')?.addEventListener('click', () => openImportTemplateDialog());
-    sec.querySelector('#be-tpl-organize')?.addEventListener('click', () => {
-      _tplOrganize = !_tplOrganize;
-      if (!_tplOrganize) _tplListOpen = true;
-      closeTplMenu();
-      renderSettings();
-    });
     sec.querySelector('#be-tl-toggle')?.addEventListener('click', () => {
-      if (_tplOrganize) return;
       _tplListOpen = !_tplListOpen;
       renderSettings();
     });
     sec.querySelectorAll('.be-tl-list .be-tl-row').forEach(row => {
       row.addEventListener('click', e => {
-        if (_tplOrganize || e.target.closest('button, .be-tl-handle')) return;
-        settings.template = row.getAttribute('data-k');
-        saveSettings(settings);
-        renderSettings();
-        if (mainDoc.getElementById('be-card')) renderCard(lastText);
+        if (e.target.closest('button, .be-tl-handle')) return;
+        if (row._beSwipedJustNow) { row._beSwipedJustNow = false; return; }
+        if (row.classList.contains('swiped')) { closeTplSwipes(sec); return; }
+        openTplPreview(row.getAttribute('data-k'));
       });
     });
-    sec.querySelectorAll('[data-prev]').forEach(b => b.addEventListener('click', e => {
-      e.stopPropagation();
-      openTplPreview(b.getAttribute('data-prev'));
-    }));
-    sec.querySelectorAll('[data-fav]').forEach(b => b.addEventListener('click', e => {
-      e.stopPropagation();
-      toggleTemplateFavorite(b.getAttribute('data-fav'));
-    }));
-    sec.querySelectorAll('[data-more]').forEach(b => b.addEventListener('click', e => {
-      e.stopPropagation();
-      openTplMenu(b.getAttribute('data-more'), b);
-    }));
+    const on = (sel, fn) => sec.querySelectorAll(sel).forEach(b => b.addEventListener('click', e => { e.stopPropagation(); fn(b); }));
+    on('[data-fav]', b => toggleTemplateFavorite(b.getAttribute('data-fav')));
+    on('[data-more]', b => {
+      const row = b.closest('.be-tl-row');
+      const opening = !row.classList.contains('expanded');
+      sec.querySelectorAll('.be-tl-row.expanded').forEach(r => r.classList.remove('expanded'));
+      row.classList.toggle('expanded', opening);
+    });
+    on('[data-hide]', b => hideTemplate(b.getAttribute('data-hide')));
+    on('[data-export]', b => exportCustomTemplate(b.getAttribute('data-export')));
+    on('[data-edit]', b => editCustomTemplate(b.getAttribute('data-edit')));
+    on('.be-tl-del[data-del]', b => {
+      const tid = b.getAttribute('data-del');
+      const name = (settings.customTemplates || []).find(t => t.id === tid)?.name || '';
+      if (mainWin.confirm(`删除模板「${name}」？`)) deleteCustomTemplate(tid);
+      else closeTplSwipes(sec);
+    });
     sec.querySelector('#be-hidden-tpl-group-head')?.addEventListener('click', () => {
       _hiddenTplOpen = !_hiddenTplOpen;
       sec.querySelector('#be-hidden-tpl-group')?.classList.toggle('open', _hiddenTplOpen);
     });
-    sec.querySelectorAll('[data-restore-tpl]').forEach(b => b.addEventListener('click', e => {
-      e.stopPropagation();
-      restoreTemplate(b.getAttribute('data-restore-tpl'));
-    }));
-    if (_tplOrganize) bindTemplateDrag(sec);
+    on('[data-restore-tpl]', b => restoreTemplate(b.getAttribute('data-restore-tpl')));
+    bindTemplateDrag(sec);
+    bindTemplateSwipe(sec);
   }
 
   // 导入自定义字体（名称 + 完整 CSS 片段）
@@ -7950,7 +7979,7 @@ $(() => {
         </div>
         ${dev ? `
         <div class="be-src-field" style="font-size:11px;opacity:0.75;">
-          开发者模式：改动会实时预览（如果当前卡片预览正好用的是这个模板）；未点"保存"前不会真正写入。
+          修改实时应用于使用此模板的卡片预览，保存后生效。
         </div>
         ` : ''}
         <div class="be-src-actions">
@@ -8140,10 +8169,10 @@ $(() => {
           `).join('')}
           <div class="be-color-dot rainbow ${isCustomColor?'active':''}" data-k="custom" title="自定义"></div>
         </div>
-        ${_colorOrganize ? hint('点 × 隐藏默认配色、删除自己存的配色；整理完点「完成」') : ''}
+        ${_colorOrganize ? hint('点 × 隐藏默认配色或删除自定义配色。') : ''}
         ${renderHiddenColorGroup()}
         <div class="be-tpl-group ${(_customColorOpen || isCustomColor) ? 'open' : ''}" id="be-custom-color-group">
-          <div class="be-tpl-group-head" id="be-custom-color-head"><span class="be-caret"></span><span>自定义配色（点彩虹圆圈后可调）</span></div>
+          <div class="be-tpl-group-head" id="be-custom-color-head"><span class="be-caret"></span><span>自定义配色</span></div>
           <div class="be-tpl-group-body">
             <div class="be-row">
               <label style="flex:1;">背景色</label>
@@ -8157,7 +8186,7 @@ $(() => {
               </label>
               <input type="color" id="be-custom-fg" value="${escapeHtml(settings.customFg || '#222222')}" ${(isCustomColor && settings.customFgEnabled)?'':'disabled'} style="margin-left:8px;">
             </div>
-            ${hint('关闭"自定义字色"时，按背景明度自动配深/浅字')}
+            ${hint('关闭时按背景明度自动选择深色或浅色文字。')}
             <div class="be-row">
               <button class="be-btn" id="be-save-color" ${isCustomColor?'':'disabled'} style="${isCustomColor?'':'opacity:0.4;'}">保存当前配色，以后一键复用</button>
             </div>
@@ -8210,7 +8239,7 @@ $(() => {
             ${[2, 3, 4, 5].map(v => `<button type="button" class="be-radio-opt ${expScale===v?'active':''}" data-v="${v}">${v}x</button>`).join('')}
           </div>
         </div>
-        ${hint('倍率越高保存的图越清晰，但生成更慢、文件更大；跟卡片编辑页「字号」里的是同一个设置')}
+        ${hint('倍率越高图片越清晰，生成越慢、文件越大。')}
       </div>
 
       <div class="be-sec">
@@ -8265,7 +8294,7 @@ $(() => {
           ${textInput('be-src-in-chapter', srcVals.sourceChapter, '章名（部分模板会显示在书名/作者旁）')}
         </div>
         <div class="be-row" style="margin-top:4px;">
-          <label style="flex:1;">出处按什么区分</label>
+          <label style="flex:1;">出处生效范围</label>
         </div>
         <div class="be-row">
           <div class="be-radio-group" id="be-source-scope-group" style="width:100%;">
@@ -8274,7 +8303,7 @@ $(() => {
             <button type="button" class="be-radio-opt ${settings.sourceScope==='chat'?'active':''}" data-v="chat">按角色+聊天</button>
           </div>
         </div>
-        ${hint('选"按角色"/"按角色+聊天"后，上面填的出处只属于当前角色/聊天；切回"全局统一"就用回全局那一份')}
+        ${hint('按角色或按聊天时，出处仅对当前角色或聊天生效。')}
 
         <div class="be-subh">水印</div>
         <div class="be-row">
@@ -8312,7 +8341,7 @@ $(() => {
             ${toggleHtml('be-mask-char', settings.maskChar !== false)}
           </div>
           <div class="be-row">
-            <label style="flex:1;">同时打码出处里的用户名/作者</label>
+            <label style="flex:1;">打码出处中的名字</label>
             ${toggleHtml('be-mask-source', !!settings.maskSource)}
           </div>
           <div class="be-row be-row-stack">
@@ -8341,15 +8370,12 @@ $(() => {
           <label style="flex:1;">关闭划线功能</label>
           ${toggleHtml('be-highlight-disabled', !!settings.highlightDisabled)}
         </div>
-        ${hint('只影响"选中文字弹出划线小工具栏"这一步，已有的划线、笔记本、书摘卡片都不受影响')}
-        <div class="be-row" style="margin-top:6px;">
-          <label style="flex:1;">取词方式</label>
-          <div class="be-radio-group" id="be-selectmode-group">
-            <button type="button" class="be-radio-opt ${(settings.selectMode||'drag')==='drag'?'active':''}" data-v="drag">拖选</button>
-            <button type="button" class="be-radio-opt ${settings.selectMode==='tap'?'active':''}" data-v="tap">两点定位</button>
-          </div>
+        ${hint('仅停用选中文字后的浮动栏，已有划线与笔记不受影响。')}
+        <div class="be-row">
+          <label style="flex:1;">两点选线</label>
+          ${toggleHtml('be-pick-enabled', settings.pickEnabled !== false)}
         </div>
-        ${hint('两点定位：拖选一小段当开头点"设为开头"，再拖选一小段当结尾点"设为结尾"，两段之间全部选中——适合手机端长文本')}
+        ${hint('浮动栏增加“设为开头/设为结尾”，用于选取长句。')}
       </div>
 
       <div class="be-sec">
@@ -8405,7 +8431,7 @@ $(() => {
           <label style="flex:1;">跟随酒馆主题</label>
           ${toggleHtml('be-follow-tavern-theme', !!settings.followTavernTheme)}
         </div>
-        ${hint('开启后：划线时弹出的小工具条仿酒馆下拉框、点划线弹出的工具栏仿酒馆 h4 标题（含美化主题的贴图/边框/字色）；关闭则是默认深色。不影响设置面板和笔记本')}
+        ${hint('划线相关浮动栏采用酒馆下拉框样式。不影响设置面板与笔记本。')}
       </div>
 
       <div class="be-sec">
@@ -8414,7 +8440,7 @@ $(() => {
           <label style="flex:1;">把不连续的几句话拼成一条书摘</label>
           ${toggleHtml('be-merge-enabled', !!settings.mergeEnabled)}
         </div>
-        ${hint('开启后：点已有划线可"加入合并"，笔记本里也能勾选加入；关闭后界面完全不变')}
+        ${hint('可将多条划线合并为一条书摘。')}
         <div id="be-merge-opts-block" style="${settings.mergeEnabled ? '' : 'display:none;'}">
           <div class="be-row" style="margin-top:8px;">
             <label style="flex:1;">合并完成后</label>
@@ -8448,7 +8474,7 @@ $(() => {
           <label style="flex:1;">主题色</label>
           <input type="color" id="be-theme-color" value="${escapeHtml(settings.themeColor || '#95b6d6')}">
         </div>
-        ${hint('设置面板、笔记本、悬浮按钮等插件界面的强调色；不影响卡片本身的配色')}
+        ${hint('插件界面的强调色，不影响卡片配色。')}
       </div>
 
       <div class="be-sec">
@@ -8459,7 +8485,7 @@ $(() => {
             <button type="button" class="be-radio-opt ${settings.saveMode==='popup'?'active':''}" data-v="popup">弹图长按</button>
           </div>
         </div>
-        ${hint('下载没反应的内嵌浏览器可以换「弹图长按」')}
+        ${hint('下载无响应时可改用弹图长按。')}
       </div>
 
       <div class="be-sec">
@@ -8475,7 +8501,7 @@ $(() => {
           <button class="be-btn" id="be-export-bundle">打包导出</button>
           <button class="be-btn" id="be-import-bundle">批量导入</button>
         </div>
-        ${hint('打包的是所有导入的模板、字体和自己存的配色，不含笔记')}
+        ${hint('包含导入的模板、字体和保存的配色，不含笔记。')}
       </div>
 
       <div class="be-sec">
@@ -8484,13 +8510,13 @@ $(() => {
           <label style="flex:1;">开发者模式</label>
           ${toggleHtml('be-creator-mode', !!settings.creatorMode)}
         </div>
-        ${hint('开启后，模板「整理」里的"编辑CSS"会打开可拖动缩放的悬浮编辑窗，跟卡片预览同屏实时看效果，还带类名查询器')}
-        ${IS_EXTENSION ? `
+        ${hint('模板列表显示编辑按钮，CSS 在悬浮窗中实时预览。')}
+        ${(IS_EXTENSION && FREEFORM_RELEASED) ? `
         <div class="be-row" style="margin-top:6px;">
           <label style="flex:1;">自由排版（实验功能）</label>
           ${toggleHtml('be-freeform-enabled', !!settings.freeformEnabled)}
         </div>
-        ${hint('开启后扩展菜单会多一个"自由排版"入口；关闭后入口消失，不影响已存的草稿')}
+        ${hint('在扩展菜单中增加自由排版入口。')}
         ` : ''}
       </div>
 
@@ -8867,13 +8893,10 @@ $(() => {
       if (settings.highlightDisabled) { hideBar(); resetPickPending(); }
       refreshStyle(); // 状态栏"允许选字"那段样式跟着划线开关走
     });
-    body.querySelectorAll('#be-selectmode-group .be-radio-opt').forEach(btn => {
-      btn.addEventListener('click', () => {
-        settings.selectMode = btn.getAttribute('data-v') === 'tap' ? 'tap' : 'drag';
-        saveSettings(settings);
-        resetPickPending();
-        body.querySelectorAll('#be-selectmode-group .be-radio-opt').forEach(b => b.classList.toggle('active', b === btn));
-      });
+    body.querySelector('#be-pick-enabled')?.addEventListener('change', e => {
+      settings.pickEnabled = e.target.checked;
+      saveSettings(settings);
+      resetPickPending();
     });
     body.querySelector('#be-merge-enabled')?.addEventListener('change', e => {
       settings.mergeEnabled = e.target.checked;
@@ -11313,7 +11336,7 @@ $(() => {
         menu.appendChild(div);
       }
       // 自由排版入口：仅扩展形态 + 设置里开着才出现，关掉就撤掉，不留痕迹
-      const wantFreeform = IS_EXTENSION && settings.freeformEnabled;
+      const wantFreeform = IS_EXTENSION && FREEFORM_RELEASED && settings.freeformEnabled;
       const oldFc = mainDoc.getElementById('be-menu-entry-freeform');
       if (!wantFreeform) {
         if (oldFc) { try { oldFc.remove(); } catch (e) {} }
@@ -11338,8 +11361,8 @@ $(() => {
   $(window).on('pagehide', () => {
     ['be-float-bar', 'be-mask', 'be-thought-mask', 'be-source-mask', 'be-panel', 'be-style', 'be-menu-entry',
      'be-hl-bar', 'be-viewer-mask', 'be-imgpop', 'be-merge-badge', 'be-merge-sheet', 'be-merge-target-mask',
-     'be-menu-entry-freeform', 'be-fc-mask', 'be-pick-step-bar', 'be-card-hl-bar', 'be-css-float',
-     'be-card-hl-pop', 'be-slot-chooser', 'be-tl-menu', 'be-tpl-preview'].forEach(id => {
+     'be-menu-entry-freeform', 'be-fc-mask', 'be-card-hl-bar', 'be-css-float',
+     'be-card-hl-pop', 'be-slot-chooser', 'be-tpl-preview'].forEach(id => {
       mainDoc.getElementById(id)?.remove();
     });
   });
