@@ -4,7 +4,7 @@ $(() => {
 
   const SCRIPT_ID = 'book-excerpt';
   const SCRIPT_NAME = '书摘';
-  const VERSION = '1.5.1';
+  const VERSION = '1.5.0';
   const LS_SETTINGS = `${SCRIPT_ID}:settings`;
   const LS_NOTES = `${SCRIPT_ID}:notes`;
   const LS_CANVASES = `${SCRIPT_ID}:canvases`;
@@ -16,11 +16,11 @@ $(() => {
   // 自由排版依赖的两个 vendor 库本地地址，同样只能靠扩展构建 patch 注入（import.meta.url），
   // 脚本形态下永远是空字符串——反正 IS_EXTENSION=false 时功能入口本身就不可达，这两个值不会被用到。
   let LOCAL_INTERACT_URL = '';
-    try { LOCAL_INTERACT_URL = new URL('./lib/interact.min.js', import.meta.url).href; } catch (e) {}
-    let LOCAL_CROPPER_URL = '';
-    try { LOCAL_CROPPER_URL = new URL('./lib/cropper.min.js', import.meta.url).href; } catch (e) {}
-    let LOCAL_CROPPER_CSS_URL = '';
-    try { LOCAL_CROPPER_CSS_URL = new URL('./lib/cropper.min.css', import.meta.url).href; } catch (e) {}
+  try { LOCAL_INTERACT_URL = new URL('./lib/interact.min.js', import.meta.url).href; } catch (e) {}
+  let LOCAL_CROPPER_URL = '';
+  try { LOCAL_CROPPER_URL = new URL('./lib/cropper.min.js', import.meta.url).href; } catch (e) {}
+  let LOCAL_CROPPER_CSS_URL = '';
+  try { LOCAL_CROPPER_CSS_URL = new URL('./lib/cropper.min.css', import.meta.url).href; } catch (e) {}
   // 本次脚本实例的代号。酒馆助手可能在不刷新页面的情况下重建脚本 iframe（热更新/切聊天等），
   // 旧 iframe realm 一死，父文档里常驻 UI 绑的旧监听器就会静默失效（闭包里的 setTimeout 永远不回调）。
   // 所有常驻父文档的 UI 都打上 data-be-gen 标记：发现标记不是本实例就拆掉重建，杜绝"僵尸监听器"。
@@ -39,6 +39,8 @@ $(() => {
     palette: 'macaron',            // 划线色系：morandi/macaron/mondrian/memphis/matisse
     avatarType: 'user',            // 头像类型：user / char / custom
     customAvatar: '',              // 自定义头像 dataURL（avatarType==='custom' 时使用）
+    avatarQuality: 'standard',     // 自定义头像清晰度：standard(320px，省空间) / high(900px)
+    exportScale: 2,                // 保存图片时传给 html2canvas 的 scale 倍率，不再跟随 devicePixelRatio 封顶（2~5，用户可调；1x太糊已去掉）
     font: 'follow_theme',
     quoteFontSize: 19,             // 正文字号 px（11~22）
     quoteLineHeight: 2.05,         // 正文行距（1.5~2.3）
@@ -56,8 +58,12 @@ $(() => {
     maskSource: false,             // 是否同时打码出处显示的用户名/作者
     highlightStyle: 'underline',   // underline | marker
     stripStyle: true,
+    selectMode: 'drag',            // 取词方式：drag 原生拖选（默认）/ tap 两点定位（先点起点再点终点，供手机端长文本精确取词）
     underlineColor: '#95b6d6',
     markerColor: '#ffdc6e',
+    themeColor: '#95b6d6',         // 插件自身UI主题色（--be-accent），跟 underlineColor 解耦，默认值保持一致避免老用户升级视觉跳变
+    followTavernTheme: false,      // 开启后划线时弹出的浮动工具条背景/字色跟随酒馆当前主题，不影响设置面板/笔记本/主题色
+    creatorMode: false,            // 开发者模式：开启后自定义模板编辑支持CSS实时预览 + 类名查询器
     thoughtLineColor: '#ffdc6e',  // 只想法虚线颜色
     thoughtBoost: true,            // 有想法的划线提升明度
     showAvatar: true,
@@ -68,6 +74,8 @@ $(() => {
     sourceAuthor: '',              // 作者（留空用 {{char}}）
     sourceTitle: '',               // 书名
     sourceChapter: '',             // 章名
+    sourceScope: 'global',         // 出处设定的生效范围：global(全局，默认，跟旧版一致) / character(按角色区分) / chat(按角色+聊天区分)
+    sourceByChar: {},              // sourceScope!=='global' 时才用到：{[charKey]: {...出处字段}} 或 {[charKey]: {[chatId]: {...}}}（chat 模式再嵌一层）
     customTemplates: [],           // 用户导入的自定义模板 [{id, name, css}]
     customFonts: [],               // 用户导入的自定义字体 [{id, name, css, fontFamily}]
     lastStyle: '',                 // 上次实际用的划线样式（空=回退到 highlightStyle）
@@ -81,7 +89,11 @@ $(() => {
     freeformEnabled: false,        // 自由排版总开关（默认关，只在扩展形态下才可能出现入口；仅 Tavern Helper 脚本形态下这个字段永远不会被用到）
     // 自由排版存的版式模板，用独立字段而不是塞进 customTemplates——那个数组被卡片主题抽屉/设置里的
     // "自定义模板"列表/导出弹窗等好几处已有 UI 直接遍历渲染，混进去会在那些地方出现不认识的条目
-    freeformTemplates: []
+    freeformTemplates: [],
+    hiddenTemplates: [],           // 被用户隐藏的内置模板 id 列表（TEMPLATES 的 key）
+    hiddenColorPresets: [],        // 被用户隐藏的内置配色 id 列表（COLOR_PRESETS 的 id）
+    templateOrder: [],             // 自定义模板的自由排序（存 customTemplates 的 id，未出现的按原数组顺序排在后面）
+    templateFavorites: []          // 收藏的自定义模板 id 列表（渲染时置顶）
   };
 
   // ---------- 模板（仅排版，颜色独立）----------
@@ -332,18 +344,26 @@ $(() => {
     it.thoughts = it.thoughts.filter(x => x.id !== thoughtId);
     saveNotes(notes);
   }
-  function addNote(note) {
+  // forceKey：指定笔记要归档到哪个角色桶，不传则用"当前实际激活角色"（原来的行为）。
+  // 合并流程用得到——合并篮子里的条目可能来自笔记本里翻出来的、并非此刻激活角色的历史划线，
+  // 这种情况下要归档回它们各自本来所属的角色，而不是一律塞进"现在活跃的角色"（v1.6.0 修复的 bug）。
+  function addNote(note, forceKey) {
     const notes = loadNotes();
     const ctx = getContext();
-    const key = ctx.charKey || 'unknown';
+    const key = forceKey || ctx.charKey || 'unknown';
+    const isActiveChar = key === (ctx.charKey || 'unknown');
     if (!notes[key]) {
-      notes[key] = { name: ctx.charName || '未知角色', avatar: ctx.charAvatar || '', items: [] };
+      notes[key] = { name: (isActiveChar ? ctx.charName : '') || '未知角色', avatar: (isActiveChar ? ctx.charAvatar : '') || '', items: [] };
     }
-    notes[key].name = ctx.charName || notes[key].name;
-    notes[key].avatar = ctx.charAvatar || notes[key].avatar;
+    // 只有"确实是当前激活角色自己的桶"才用 ctx 里的最新名字/头像去覆盖——
+    // 强制指定成别的角色时，绝不能拿"此刻活跃角色"的名字头像去污染另一个角色的桶
+    if (isActiveChar) {
+      notes[key].name = ctx.charName || notes[key].name;
+      notes[key].avatar = ctx.charAvatar || notes[key].avatar;
+    }
     note.id = note.id || ('n' + Date.now() + Math.random().toString(36).slice(2, 6));
     note.ts = note.ts || Date.now();
-    note.chatId = note.chatId || ctx.chatId || '';   // 存档名
+    note.chatId = note.chatId || (isActiveChar ? ctx.chatId : '') || '';   // 存档名
     notes[key].items.push(note);
     saveNotes(notes);
     return note;
@@ -450,6 +470,27 @@ $(() => {
   function escapeRegExp(s) {
     return String(s == null ? '' : s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
+  // 长按手势：用于默认模板/配色"长按隐藏"这类不需要常驻按钮的次要操作。
+  // 长按触发后当次的 click 会被吞掉，避免误触发"选中这个模板/配色"的主操作。
+  function bindLongPress(el, handler, delay = 500) {
+    let timer = null;
+    let fired = false;
+    const start = () => {
+      fired = false;
+      timer = setTimeout(() => { fired = true; timer = null; handler(); }, delay);
+    };
+    const cancel = () => { if (timer) clearTimeout(timer); timer = null; };
+    el.addEventListener('touchstart', start, { passive: true });
+    el.addEventListener('touchend', cancel);
+    el.addEventListener('touchmove', cancel);
+    el.addEventListener('touchcancel', cancel);
+    el.addEventListener('mousedown', start);
+    el.addEventListener('mouseup', cancel);
+    el.addEventListener('mouseleave', cancel);
+    el.addEventListener('click', e => {
+      if (fired) { e.preventDefault(); e.stopPropagation(); fired = false; }
+    }, true);
+  }
   // ====== 名字打码：分享时隐去角色/用户名 ======
   // 收集要打码的目标词：自动取角色名/用户名（含出处里自定义的名字）+ 额外补充词
   function buildMaskTargets() {
@@ -457,8 +498,9 @@ $(() => {
     const push = n => { const v = (n == null ? '' : String(n)).trim(); if (v) names.push(v); };
     if (settings.maskUser || settings.maskChar) {
       const ctx = getContext();
-      if (settings.maskUser) { push(ctx.userName); push(settings.sourceUser); }
-      if (settings.maskChar) { push(ctx.charName); push(settings.sourceAuthor); }
+      const src = getSourceValues();
+      if (settings.maskUser) { push(ctx.userName); push(src.sourceUser); }
+      if (settings.maskChar) { push(ctx.charName); push(src.sourceAuthor); }
     }
     String(settings.maskExtra || '').split(/[,，、;；\s]+/)
       .forEach(w => { const v = w.trim(); if (v) names.push(v); });
@@ -595,6 +637,41 @@ $(() => {
     });
   }
 
+  // 通用图片压缩：不裁方形，按最长边等比缩放——用于模板背景图槽位（头像用上面那个居中裁方形的）
+  function fileToCompressedImage(file, maxDim = 1600, quality = 0.85) {
+    return new Promise((resolve, reject) => {
+      if (!file || !/^image\//.test(file.type)) {
+        reject(new Error('请选择图片文件'));
+        return;
+      }
+      const fr = new FileReader();
+      fr.onerror = () => reject(new Error('读取文件失败'));
+      fr.onload = () => {
+        const img = new Image();
+        img.onerror = () => reject(new Error('图片解码失败'));
+        img.onload = () => {
+          try {
+            const w0 = img.naturalWidth, h0 = img.naturalHeight;
+            if (!w0 || !h0) { reject(new Error('图片尺寸无效')); return; }
+            const scale = Math.min(1, maxDim / Math.max(w0, h0));
+            const outW = Math.max(1, Math.round(w0 * scale));
+            const outH = Math.max(1, Math.round(h0 * scale));
+            const canvas = mainDoc.createElement('canvas');
+            canvas.width = outW; canvas.height = outH;
+            const ctx = canvas.getContext('2d');
+            ctx.imageSmoothingQuality = 'high';
+            ctx.drawImage(img, 0, 0, outW, outH);
+            const hasAlpha = /\/png$|\/webp$|\/gif$/i.test(file.type);
+            const mime = hasAlpha ? 'image/png' : 'image/jpeg';
+            resolve(canvas.toDataURL(mime, quality));
+          } catch (e) { reject(e); }
+        };
+        img.src = String(fr.result || '');
+      };
+      fr.readAsDataURL(file);
+    });
+  }
+
   // 把图片 url 转 data URL（避免截图时 CORS 把头像变 [object Event]）
   const _avatarCache = new Map();
   async function urlToDataUrl(url) {
@@ -642,6 +719,40 @@ $(() => {
     return { charName, userName, charAvatar, userAvatar, charKey, chatId };
   }
 
+  const SOURCE_FIELDS = ['sourceUser', 'sourceAuthor', 'sourceTitle', 'sourceChapter', 'showSourceTitle', 'showSourceChapter'];
+  // 出处设置默认是全局单一值（sourceScope==='global'，完全不变旧行为）；打开"按角色"/"按角色+聊天"
+  // 区分后，读写改走 settings.sourceByChar，形状照抄 book-excerpt:notes 按角色分桶的既有模式。
+  // 所有读"出处"字段的地方都要改成调 getSourceValues()，不能再直接读 settings.sourceXxx。
+  function getSourceValues() {
+    if (settings.sourceScope !== 'character' && settings.sourceScope !== 'chat') return settings;
+    const ctx = getContext();
+    const key = ctx.charKey || 'unknown';
+    const charBucket = (settings.sourceByChar || {})[key] || {};
+    if (settings.sourceScope === 'chat') {
+      const chatKey = ctx.chatId || 'unknown';
+      return charBucket[chatKey] || {};
+    }
+    return charBucket;
+  }
+  function setSourceValues(patch) {
+    if (settings.sourceScope !== 'character' && settings.sourceScope !== 'chat') {
+      Object.assign(settings, patch);
+      saveSettings(settings);
+      return;
+    }
+    const ctx = getContext();
+    const key = ctx.charKey || 'unknown';
+    if (!settings.sourceByChar) settings.sourceByChar = {};
+    if (settings.sourceScope === 'chat') {
+      if (!settings.sourceByChar[key]) settings.sourceByChar[key] = {};
+      const chatKey = ctx.chatId || 'unknown';
+      settings.sourceByChar[key][chatKey] = { ...(settings.sourceByChar[key][chatKey] || {}), ...patch };
+    } else {
+      settings.sourceByChar[key] = { ...(settings.sourceByChar[key] || {}), ...patch };
+    }
+    saveSettings(settings);
+  }
+
   // ---------- 样式 ----------
   // 生成 SVG dataURI（波浪线、虚线），颜色由 settings 决定
   function wavyDataUri(color) {
@@ -658,12 +769,20 @@ $(() => {
   }
 
   // 通过 :root 注入主题强调色 / 划线色 / 荧光色变量，配色全部跟随设置
+  // 注意：--be-accent 只驱动"插件自己UI"（设置面板/笔记本/悬浮按钮等），跟卡片本身的配色方案完全独立；
+  // 之前这里直接读 underlineColor 导致"改划线颜色"意外带着把插件UI主题色也改了，现在拆成独立的 themeColor 字段。
   function buildStyle() {
-    const accent  = settings.underlineColor || '#95b6d6';
+    const accent = settings.themeColor || '#95b6d6';
     const marker  = settings.markerColor || '#ffdc6e';
     const thoughtLine = settings.thoughtLineColor || marker;
     const wavyUri = wavyDataUri(accent);
     const dashUri = dashDataUri(thoughtLine);
+    // 「跟随酒馆主题」范围收窄：只影响划线时弹出的浮动工具条（#be-float-bar/#be-hl-bar/...）的背景和字色，
+    // 不影响 --be-accent（设置面板/笔记本不跟着变）。直接用 var(...) 引用酒馆自己的变量，交给浏览器实时解析，
+    // 酒馆换主题这边也会跟着变，不用额外监听——ST 的输入框/下拉框背景本来就是 --black30a 这个半透明叠加值。
+    const floatBg = settings.followTavernTheme ? 'var(--black30a, #2b2b2b)' : '#2b2b2b';
+    const floatFg = settings.followTavernTheme ? 'var(--SmartThemeBodyColor, #f0f0f0)' : '#f0f0f0';
+    const floatDivider = settings.followTavernTheme ? 'var(--SmartThemeBorderColor, rgba(255,255,255,0.12))' : 'rgba(255,255,255,0.12)';
     return `
     :root {
       --be-accent: ${accent};
@@ -671,6 +790,9 @@ $(() => {
       --be-marker: ${marker};
       --be-marker-soft: ${hexA(marker, 0.55)};
       --be-thought-line: ${thoughtLine};
+      --be-float-bg: ${floatBg};
+      --be-float-fg: ${floatFg};
+      --be-float-divider: ${floatDivider};
     }
 
     /* 主题感知：跟随 SillyTavern 主题。当外层判定为日间（浅色）时，
@@ -721,12 +843,14 @@ $(() => {
     }
 
     /* ===== 浮动工具栏（仿微信阅读 · 紧凑版） ===== */
-    #be-float-bar {
+    /* --be-float-bg/--be-float-fg：默认写死深色；"跟随酒馆主题"开着时在 buildStyle() 里改成
+       var(--black30a)/var(--SmartThemeBodyColor)，只影响这几条选区弹出的浮动工具条，不影响设置面板/笔记本 */
+    #be-float-bar, #be-card-hl-bar, #be-pick-step-bar {
       /* absolute + scrollY 偏移：Firefox 在 body 有 transform 时 fixed 会被重 anchor 到 body 而非视口，
          导致 bar 出现在屏幕外、并撑大 body 触发滚动条跳动。absolute 各浏览器表现一致。 */
       position: absolute; z-index: 2147483600;
       display: none;
-      background: #2b2b2b;
+      background: var(--be-float-bg, #2b2b2b);
       border-radius: 10px;
       box-shadow: 0 4px 18px rgba(0,0,0,0.45), 0 1px 2px rgba(0,0,0,0.3);
       padding: 3px 2px;
@@ -734,25 +858,25 @@ $(() => {
       user-select: none;
       gap: 0;
     }
-    #be-float-bar.show { display: flex; }
+    #be-float-bar.show, #be-card-hl-bar.show, #be-pick-step-bar.show { display: flex; }
     /* 默认：工具栏在选区下方时，箭头在工具栏顶部、朝上指向文字 */
-    #be-float-bar::after {
+    #be-float-bar::after, #be-card-hl-bar::after, #be-pick-step-bar::after {
       content: ''; position: absolute;
       top: -5px; left: var(--arrow-left, 50%); transform: translateX(-50%);
       width: 0; height: 0;
       border-left: 5px solid transparent;
       border-right: 5px solid transparent;
-      border-bottom: 5px solid #2b2b2b;
+      border-bottom: 5px solid var(--be-float-bg, #2b2b2b);
     }
     /* 在选区上方时，箭头在工具栏底部、朝下指向文字 */
-    #be-float-bar.arrow-bottom::after {
+    #be-float-bar.arrow-bottom::after, #be-card-hl-bar.arrow-bottom::after, #be-pick-step-bar.arrow-bottom::after {
       top: auto; bottom: -5px;
       border-bottom: none;
-      border-top: 5px solid #2b2b2b;
+      border-top: 5px solid var(--be-float-bg, #2b2b2b);
     }
-    #be-float-bar .be-fbtn {
+    #be-float-bar .be-fbtn, #be-card-hl-bar .be-fbtn, #be-pick-step-bar .be-fbtn {
       background: transparent; border: none;
-      color: #f0f0f0;
+      color: var(--be-float-fg, #f0f0f0);
       display: flex; flex-direction: column;
       align-items: center; justify-content: center;
       gap: 2px;
@@ -766,25 +890,28 @@ $(() => {
       -webkit-tap-highlight-color: transparent;
       touch-action: manipulation;
     }
-    #be-float-bar .be-fbtn:hover,
-    #be-float-bar .be-fbtn:active {
-      background: rgba(255,255,255,0.10);
+    #be-float-bar .be-fbtn:hover, #be-card-hl-bar .be-fbtn:hover, #be-pick-step-bar .be-fbtn:hover,
+    #be-float-bar .be-fbtn:active, #be-card-hl-bar .be-fbtn:active, #be-pick-step-bar .be-fbtn:active {
+      background: rgba(128,128,128,0.18);
     }
-    #be-float-bar .be-fbtn svg {
+    #be-float-bar .be-fbtn svg, #be-card-hl-bar .be-fbtn svg, #be-pick-step-bar .be-fbtn svg {
       width: 15px; height: 15px;
       stroke: currentColor; fill: none;
       stroke-width: 1.6;
       stroke-linecap: round; stroke-linejoin: round;
     }
-    #be-float-bar .be-fbtn-divider {
-      width: 1px; background: rgba(255,255,255,0.12);
+    /* 卡片二次高亮的工具条要浮在 #be-mask（书摘卡片弹窗，z-index 2147483630）之上才能点到，
+       之前跟 #be-float-bar 共用同一个较低的 z-index，导致弹窗一直挡住它、点了没反应 */
+    #be-card-hl-bar { z-index: 2147483640; }
+    #be-float-bar .be-fbtn-divider, #be-card-hl-bar .be-fbtn-divider, #be-pick-step-bar .be-fbtn-divider {
+      width: 1px; background: var(--be-float-divider, rgba(128,128,128,0.25));
       margin: 6px 0;
     }
     /* ===== 点击划线弹出的改样式工具栏 ===== */
     #be-hl-bar {
       position: absolute;
       z-index: 2147483601;
-      background: #2b2b2b;
+      background: var(--be-float-bg, #2b2b2b);
       border-radius: 12px;
       padding: 8px 6px;
       box-shadow: 0 8px 24px rgba(0,0,0,0.5);
@@ -800,12 +927,14 @@ $(() => {
       width: 0; height: 0;
       border-left: 5px solid transparent;
       border-right: 5px solid transparent;
-      border-bottom: 5px solid #2b2b2b;
+      border-bottom: 5px solid var(--be-float-bg, #2b2b2b);
     }
     #be-hl-bar.arrow-bottom::after {
       top: auto; bottom: -5px;
-      border-top: 5px solid #2b2b2b; border-bottom: none;
+      border-top: 5px solid var(--be-float-bg, #2b2b2b); border-bottom: none;
     }
+    /* row1 是"复制/删除划线/写想法/..."这一排菜单式操作，视觉上当一个小标题栏处理：跟随酒馆主题时
+       底部分隔线也换成酒馆自己的描边色，看起来更像酒馆原生的分组标题而不是一整块纯黑工具条 */
     .be-hl-row1 {
       display: flex; align-items: center; gap: 0;
       flex-wrap: nowrap;
@@ -813,12 +942,12 @@ $(() => {
       -webkit-overflow-scrolling: touch;
       scrollbar-width: none;
       padding: 0 4px 6px;
-      border-bottom: 1px solid rgba(255,255,255,0.12);
+      border-bottom: 1px solid var(--be-float-divider, rgba(255,255,255,0.12));
       margin-bottom: 6px;
     }
     .be-hl-row1::-webkit-scrollbar { display: none; }
     .be-hl-row1 button {
-      background: transparent; border: none; color: #f0f0f0;
+      background: transparent; border: none; color: var(--be-float-fg, #f0f0f0);
       padding: 6px 10px; font-size: 12px;
       cursor: pointer; font-family: inherit;
       white-space: nowrap;
@@ -1865,6 +1994,12 @@ $(() => {
       letter-spacing: 0.05em;
       white-space: nowrap;
     }
+    #be-drawer .be-drawer-sep {
+      flex: 0 0 auto;
+      display: flex; align-items: center;
+      color: var(--be-panel-sub); opacity: 0.5;
+      padding: 0 2px;
+    }
     #be-drawer .be-drawer-chip.active {
       border-color: var(--be-accent);
       color: var(--be-accent);
@@ -1948,6 +2083,7 @@ $(() => {
       color: #fff;
     }
     #be-actions .be-btn:hover { background: rgba(255,255,255,0.28); }
+    #be-actions .be-btn.active { background: var(--be-accent); color: #1a1a1a; border-color: var(--be-accent); }
     #be-actions .be-btn.primary {
       background: var(--be-accent); color: #1a1a1a; border-color: var(--be-accent);
     }
@@ -2195,6 +2331,75 @@ $(() => {
       color: var(--be-panel-sub); font-size: 11px;
     }
     .be-tpl-card.be-tpl-import:hover { border-color: var(--be-accent); color: var(--be-accent); }
+    .be-tpl-slot { cursor: pointer; position: relative; }
+    .be-inspect-hl { outline: 2px solid #ff5050 !important; outline-offset: -1px; }
+    #be-inspect-tip {
+      position: fixed; z-index: 2147483647;
+      background: rgba(0,0,0,0.85); color: #fff;
+      font-size: 11px; padding: 3px 7px; border-radius: 5px;
+      pointer-events: none; display: none; max-width: 70vw;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    #be-inspect-tip.show { display: block; }
+    /* 开发者模式：可拖动/缩放的悬浮CSS编辑小窗 */
+    #be-css-float {
+      position: absolute; z-index: 2147483644;
+      display: none; flex-direction: column;
+      background: #232323; color: #eee;
+      border-radius: 10px; overflow: hidden;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.55);
+      min-width: 220px; min-height: 160px;
+      font-family: -apple-system, "PingFang SC", sans-serif;
+    }
+    #be-css-float.show { display: flex; }
+    #be-css-float .be-css-float-head {
+      display: flex; align-items: center; gap: 4px;
+      padding: 8px 10px; background: #2f2f2f; cursor: move;
+      font-size: 12px; letter-spacing: 0.04em; user-select: none;
+      touch-action: none;
+    }
+    #be-css-float .be-css-float-head button {
+      background: transparent; border: none; color: #ccc;
+      font-size: 15px; cursor: pointer; line-height: 1; padding: 2px 4px;
+      border-radius: 4px;
+    }
+    #be-css-float .be-css-float-head button:hover { background: rgba(255,255,255,0.1); }
+    #be-css-float .be-css-float-head button.active { background: var(--be-accent); color: #1a1a1a; }
+    #be-css-float textarea {
+      flex: 1; resize: none; border: none; outline: none;
+      background: #1c1c1c; color: #d8d8d8;
+      font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+      font-size: 12px; padding: 8px; line-height: 1.5;
+    }
+    #be-css-float .be-css-float-foot {
+      display: flex; gap: 8px; padding: 6px 8px; background: #2a2a2a;
+    }
+    #be-css-float .be-css-float-foot .be-btn { flex: 1; padding: 6px; font-size: 12px; }
+    .be-css-resize {
+      position: absolute; width: 18px; height: 18px;
+      touch-action: none;
+    }
+    .be-css-resize-se { right: 0; bottom: 0; cursor: se-resize; }
+    .be-css-resize-sw { left: 0; bottom: 0; cursor: sw-resize; }
+    .be-css-resize-ne { right: 0; top: 0; cursor: ne-resize; }
+    .be-css-resize-nw { left: 0; top: 0; cursor: nw-resize; }
+    .be-tpl-slot:hover::after {
+      content: '点击更换图片';
+      position: absolute; inset: 0;
+      background: rgba(0,0,0,0.4); color: #fff;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 12px; letter-spacing: 0.04em; text-align: center;
+      pointer-events: none; border-radius: inherit;
+    }
+    .be-avatar-clickable { cursor: pointer; position: relative; }
+    .be-avatar-clickable:hover::after {
+      content: '换图';
+      position: absolute; inset: 0;
+      background: rgba(0,0,0,0.4); color: #fff;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 10px; letter-spacing: 0.04em;
+      pointer-events: none; border-radius: inherit;
+    }
 
     .be-tpl-group { margin-top: 10px; }
     .be-tpl-group-head {
@@ -2245,6 +2450,12 @@ $(() => {
       padding: 2px 6px; font-size: 12px; opacity: 0.6;
     }
     .be-tpl-custom-row button:hover, .be-font-custom-row button:hover { opacity: 1; color: #ff9b9b; }
+    .be-tpl-drag-handle { cursor: grab; opacity: 0.35; padding: 0 4px; display: inline-flex; align-items: center; flex: 0 0 auto; }
+    .be-tpl-drag-handle svg { width: 11px; height: 11px; fill: currentColor; }
+    .be-tpl-custom-row.dragover { outline: 2px dashed var(--be-accent); outline-offset: -2px; }
+    .be-tpl-custom-row button.be-tpl-fav { opacity: 0.5; }
+    .be-tpl-custom-row button.be-tpl-fav:hover { opacity: 1; color: #ffb400; }
+    .be-tpl-custom-row button.be-tpl-fav.active { opacity: 1; color: #ffb400; }
     .be-font-custom-row {
       display: flex; align-items: center; gap: 6px;
       padding: 8px 10px; border-radius: 12px;
@@ -2933,6 +3144,73 @@ $(() => {
     injectStyle();
   }
 
+  // ---------- 自定义模板图片槽：自动扫描 CSS 里的 background-image:url(...) 引用 ----------
+  // 简化版 CSS 解析：按花括号配对切规则块，不处理嵌套 @media（模板 CSS 一般不会嵌套）
+  function extractBgImageSlots(css) {
+    const slots = [];
+    const seen = new Set();
+    const ruleRe = /([^{}]+)\{([^{}]*)\}/g;
+    let m;
+    while ((m = ruleRe.exec(css || ''))) {
+      const selector = m[1].trim();
+      const body = m[2];
+      if (!selector || selector.startsWith('@')) continue;
+      if (/background(?:-image)?\s*:[^;}]*url\(/i.test(body) && !seen.has(selector)) {
+        seen.add(selector);
+        slots.push(selector);
+      }
+    }
+    return slots;
+  }
+  // 渲染完卡片后调用：给自定义模板里探测到的图片槽加上可点击上传的标记 + 应用已存的替换图
+  function applyTemplateSlotImages(wrap) {
+    if (!wrap) return;
+    const isCustomTpl = String(settings.template || '').startsWith('custom-');
+    if (!isCustomTpl) return;
+    const tid = settings.template.slice(7);
+    const tpl = (settings.customTemplates || []).find(t => t.id === tid);
+    if (!tpl) return;
+    const slots = extractBgImageSlots(tpl.css || '');
+    const stored = tpl.slotImages || {};
+    slots.forEach(sel => {
+      let els;
+      try { els = mainDoc.querySelectorAll(sel); } catch (e) { return; }
+      els.forEach(el => {
+        el.classList.add('be-tpl-slot');
+        el.setAttribute('data-be-slot', sel);
+        if (stored[sel]) {
+          el.style.backgroundImage = `url("${stored[sel]}")`;
+        }
+      });
+    });
+  }
+  async function handleTemplateSlotUpload(sel) {
+    if (!sel) return;
+    const isCustomTpl = String(settings.template || '').startsWith('custom-');
+    if (!isCustomTpl) return;
+    const tid = settings.template.slice(7);
+    const tpl = (settings.customTemplates || []).find(t => t.id === tid);
+    if (!tpl) return;
+    const input = mainDoc.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.addEventListener('change', async e => {
+      const f = e.target.files && e.target.files[0];
+      if (!f) return;
+      try {
+        const dataUrl = await fileToCompressedImage(f);
+        tpl.slotImages = tpl.slotImages || {};
+        tpl.slotImages[sel] = dataUrl;
+        saveSettings(settings);
+        if (mainDoc.getElementById('be-card')) renderCard(lastText);
+        toast('已替换图片', 'success');
+      } catch (err) {
+        toast('上传失败：' + (err?.message || err), 'error');
+      }
+    });
+    input.click();
+  }
+
   // 根据 ST 主题背景亮度判断当前是日间/夜间，给 body 加上 .be-light-theme
   function detectAndApplyTheme() {
     try {
@@ -3056,11 +3334,14 @@ $(() => {
     lastRangeFrame = null;
     const rects = range.getClientRects();
     const rect = rects.length ? rects[rects.length - 1] : range.getBoundingClientRect();
-    showBar(rect);
+    // 两点定位模式：正常拖选（比如长按拖出选区）先记开头/结尾，拼出最终 Range 后才弹平时那条 划线/想法/书摘 工具栏，
+    // 不是另开一套点按坐标的机制——原生选区本来就能用，问题只出在"选太长/太短不好调"，所以复用选区本身分两步做就够了
+    if (settings.selectMode === 'tap') { hideBar(); showPickStepBar(rect); }
+    else { hidePickStepBar(); showBar(rect); }
   }
   function scheduleCheck(delay = 80) {
     if (selDebounce) clearTimeout(selDebounce);
-    selDebounce = setTimeout(checkSelection, delay);
+    selDebounce = setTimeout(dispatchSelectionCheck, delay);
   }
 
   // SVG 图标
@@ -3275,6 +3556,250 @@ $(() => {
     if (bar) bar.classList.remove('show');
   }
 
+  // ---------- 两点定位取词（设置里"取词方式"=两点定位时启用）----------
+  // 不是另起一套点坐标的交互：直接复用原生拖选本身已经能选中文字这件事，只是把
+  // "选中就直接划线"拆成两步——先正常拖选一次当开头，点"设为开头"记下这段的起点；
+  // 再拖选一次当结尾，点"设为结尾"用它的终点拼出最终 Range，然后走回平时的 划线/想法/书摘 工具栏。
+  let pickPendingStart = null; // {node, offset}，null 表示还没记开头
+  function ensurePickStepBar() {
+    let bar = mainDoc.getElementById('be-pick-step-bar');
+    if (bar) return bar;
+    bar = mainDoc.createElement('div');
+    bar.id = 'be-pick-step-bar';
+    bar.addEventListener('pointerdown', e => { e.preventDefault(); });
+    mainDoc.body.appendChild(bar);
+    return bar;
+  }
+  function hidePickStepBar() {
+    mainDoc.getElementById('be-pick-step-bar')?.classList.remove('show');
+  }
+  function resetPickPending() {
+    pickPendingStart = null;
+    hidePickStepBar();
+  }
+  function handlePickStepMain() {
+    if (!lastRange) return;
+    if (!pickPendingStart) {
+      pickPendingStart = { node: lastRange.startContainer, offset: lastRange.startOffset };
+      hidePickStepBar();
+      try { mainWin.getSelection().removeAllRanges(); } catch (e) {}
+      toast('已设置开头，请再选中结尾的词语', 'info');
+      return;
+    }
+    const endRange = lastRange;
+    const range = mainDoc.createRange();
+    try {
+      range.setStart(pickPendingStart.node, pickPendingStart.offset);
+      range.setEnd(endRange.endContainer, endRange.endOffset);
+      if (range.collapsed) {
+        range.setStart(endRange.startContainer, endRange.startOffset);
+        range.setEnd(pickPendingStart.node, pickPendingStart.offset);
+      }
+    } catch (err) {
+      toast('两次选择不在同一段文字里，构造失败，请重新开始', 'error');
+      resetPickPending();
+      return;
+    }
+    resetPickPending();
+    const picked = getRangeText(range);
+    if (!picked.text || !picked.text.length) { toast('没选到文字，请重新开始', 'error'); return; }
+    lastText = picked.text;
+    lastRichText = picked.rich;
+    lastRange = range.cloneRange();
+    lastRangeFrame = null;
+    const rects = range.getClientRects();
+    const rect = rects.length ? rects[rects.length - 1] : range.getBoundingClientRect();
+    showBar(rect);
+  }
+  function showPickStepBar(rect) {
+    const bar = ensurePickStepBar();
+    const label = pickPendingStart ? '设为结尾' : '设为开头';
+    bar.innerHTML = `
+      <button class="be-fbtn" type="button" data-act="main">${ICONS.underline}<span>${label}</span></button>
+      ${pickPendingStart ? '<span class="be-fbtn-divider"></span><button class="be-fbtn" type="button" data-act="cancel">✕<span>取消</span></button>' : ''}
+    `;
+    const bindTap = (el, fn) => {
+      const handler = e => { e.stopPropagation(); e.preventDefault(); fn(); };
+      el.addEventListener('click', handler);
+      el.addEventListener('touchend', handler, { passive: false });
+    };
+    bindTap(bar.querySelector('[data-act="main"]'), handlePickStepMain);
+    const cancelBtn = bar.querySelector('[data-act="cancel"]');
+    if (cancelBtn) {
+      bindTap(cancelBtn, () => {
+        resetPickPending();
+        try { mainWin.getSelection().removeAllRanges(); } catch (e) {}
+        toast('已取消，重新选择开头', 'info');
+      });
+    }
+    bar.classList.add('show');
+    bar.classList.remove('arrow-bottom');
+    bar.style.left = '-9999px';
+    bar.style.top = '-9999px';
+    const bw = bar.offsetWidth || 100;
+    const bh = bar.offsetHeight || 40;
+    const vw = mainWin.innerWidth;
+    const vh = mainWin.innerHeight;
+    let left = (rect.left + rect.right) / 2 - bw / 2;
+    let top = rect.bottom + 6;
+    let arrowBottom = false;
+    if (top + bh + 4 > vh) { top = rect.top - bh - 6; arrowBottom = true; }
+    left = Math.max(8, Math.min(left, vw - bw - 8));
+    const arrowLeft = (rect.left + rect.right) / 2 - left;
+    bar.style.setProperty('--arrow-left', `${Math.max(16, Math.min(bw - 16, arrowLeft))}px`);
+    if (top < 8) top = 8;
+    bar.style.left = (left + (mainWin.scrollX || 0)) + 'px';
+    bar.style.top = (top + (mainWin.scrollY || 0)) + 'px';
+    if (arrowBottom) bar.classList.add('arrow-bottom');
+  }
+
+  // ---------- 卡片正文二次高亮（第13条）----------
+  // 跟聊天记录划线是两套完全独立的机制：这里选中的是已经生成好的书摘卡片正文（.be-quote），
+  // 高亮效果只加在这次弹窗的实时 DOM 上，不创建 note、不落盘——跟"编辑正文"关闭弹窗即丢弃是同一个设计。
+  let cardHlRange = null;
+  function wrapCardRange(range, style, color) {
+    const doc = (range.startContainer && range.startContainer.ownerDocument) || mainDoc;
+    const className = `be-highlight style-${style} be-card-hl`;
+    const makeSpan = () => {
+      const span = doc.createElement('span');
+      span.className = className;
+      applySpanColor(span, style, color);
+      // 卡片内的二次高亮没有笔记本那套合并/删除面板：再点一下直接原地取消，符合"临时效果"的定位
+      span.addEventListener('click', e => {
+        e.stopPropagation();
+        const parent = span.parentNode;
+        if (!parent) return;
+        while (span.firstChild) parent.insertBefore(span.firstChild, span);
+        parent.removeChild(span);
+        try { parent.normalize(); } catch (err) {}
+      });
+      return span;
+    };
+    try {
+      const span = makeSpan();
+      range.surroundContents(span);
+      return [span];
+    } catch (e) {}
+    // 跨节点兜底：逐 text node 分段包裹（跟 wrapRange 同一套 TreeWalker 逻辑，只是不挂 data-be-id/笔记联动）
+    const spans = [];
+    const startNode = range.startContainer, startOffset = range.startOffset;
+    const endNode = range.endContainer, endOffset = range.endOffset;
+    const root = range.commonAncestorContainer;
+    const walker = doc.createTreeWalker(
+      root.nodeType === 1 ? root : root.parentNode,
+      NodeFilter.SHOW_TEXT,
+      { acceptNode(node) {
+          if (!node.nodeValue) return NodeFilter.FILTER_REJECT;
+          if (!range.intersectsNode(node)) return NodeFilter.FILTER_REJECT;
+          if (node.parentElement && node.parentElement.closest('.be-highlight')) return NodeFilter.FILTER_REJECT;
+          return NodeFilter.FILTER_ACCEPT;
+        } }
+    );
+    let n; const textNodes = [];
+    while ((n = walker.nextNode())) textNodes.push(n);
+    for (const node of textNodes) {
+      let from = 0, to = node.nodeValue.length;
+      if (node === startNode && startNode.nodeType === 3) from = startOffset;
+      if (node === endNode && endNode.nodeType === 3) to = endOffset;
+      if (to <= from) continue;
+      const seg = node.nodeValue.slice(from, to);
+      if (!seg.replace(/\s/g, '')) continue;
+      let target = node;
+      if (from > 0) { target = target.splitText(from); to -= from; }
+      if (to < target.nodeValue.length) target.splitText(to);
+      const span = makeSpan();
+      target.parentNode.insertBefore(span, target);
+      span.appendChild(target);
+      spans.push(span);
+    }
+    return spans;
+  }
+  function ensureCardHlBar() {
+    let bar = mainDoc.getElementById('be-card-hl-bar');
+    if (bar) return bar;
+    bar = mainDoc.createElement('div');
+    bar.id = 'be-card-hl-bar';
+    bar.innerHTML = `
+      <button class="be-fbtn" data-act="underline" type="button">${ICONS.underline}<span>下划线</span></button>
+      <span class="be-fbtn-divider"></span>
+      <button class="be-fbtn" data-act="marker" type="button">${ICONS.underline}<span>荧光笔</span></button>
+    `;
+    bar.addEventListener('pointerdown', e => { e.preventDefault(); });
+    const fireAction = (act) => {
+      if (!cardHlRange) return;
+      const color = act === 'marker' ? (settings.markerColor || '#ffdc6e') : (settings.underlineColor || '#95b6d6');
+      try { wrapCardRange(cardHlRange, act, color); } catch (e) {}
+      hideCardHlBar();
+      try { mainWin.getSelection().removeAllRanges(); } catch (e) {}
+    };
+    bar.querySelectorAll('.be-fbtn').forEach(b => {
+      const handler = (e) => {
+        e.stopPropagation(); e.preventDefault();
+        if (b._beBusy) return;
+        b._beBusy = true;
+        setTimeout(() => { b._beBusy = false; }, 300);
+        fireAction(b.getAttribute('data-act'));
+      };
+      b.addEventListener('click', handler);
+      b.addEventListener('touchend', handler, { passive: false });
+    });
+    mainDoc.body.appendChild(bar);
+    return bar;
+  }
+  function showCardHlBar(rect) {
+    const bar = ensureCardHlBar();
+    bar.classList.add('show');
+    bar.classList.remove('arrow-bottom');
+    bar.style.left = '-9999px';
+    bar.style.top = '-9999px';
+    const bw = bar.offsetWidth || 120;
+    const bh = bar.offsetHeight || 40;
+    const vw = mainWin.innerWidth;
+    const vh = mainWin.innerHeight;
+    let left = (rect.left + rect.right) / 2 - bw / 2;
+    let top = rect.bottom + 6;
+    let arrowBottom = false;
+    if (top + bh + 4 > vh) { top = rect.top - bh - 6; arrowBottom = true; }
+    left = Math.max(8, Math.min(left, vw - bw - 8));
+    const arrowLeft = (rect.left + rect.right) / 2 - left;
+    bar.style.setProperty('--arrow-left', `${Math.max(16, Math.min(bw - 16, arrowLeft))}px`);
+    if (top < 8) top = 8;
+    bar.style.left = (left + (mainWin.scrollX || 0)) + 'px';
+    bar.style.top = (top + (mainWin.scrollY || 0)) + 'px';
+    if (arrowBottom) bar.classList.add('arrow-bottom');
+  }
+  function hideCardHlBar() {
+    mainDoc.getElementById('be-card-hl-bar')?.classList.remove('show');
+    cardHlRange = null;
+  }
+  function checkCardSelection(range) {
+    const picked = getRangeText(range);
+    if (!picked.text || !picked.text.length) { hideCardHlBar(); return; }
+    cardHlRange = range.cloneRange();
+    const rects = range.getClientRects();
+    const rect = rects.length ? rects[rects.length - 1] : range.getBoundingClientRect();
+    showCardHlBar(rect);
+  }
+  // 选区分流：卡片正文（.be-quote，且不在"编辑正文"模式下，避免跟改字光标冲突）走二次高亮，
+  // 其它一律沿用原有的聊天划线判定（checkSelection 内部自己会用 isInsideChat 再筛一遍）
+  function dispatchSelectionCheck() {
+    const sel = mainWin.getSelection();
+    if (sel && sel.rangeCount && !sel.isCollapsed && !currentEditable) {
+      let range = null;
+      try { range = sel.getRangeAt(0); } catch (e) {}
+      if (range) {
+        const quote = mainDoc.querySelector('#be-card .be-quote');
+        if (quote && quote.contains(range.commonAncestorContainer)) {
+          hideBar();
+          checkCardSelection(range);
+          return;
+        }
+      }
+    }
+    hideCardHlBar();
+    checkSelection();
+  }
+
   // ---------- 划线合并篮子（settings.mergeEnabled 关时功能完全不触发）----------
   // 篮子本身不落盘：纯粹是"导出前临时拼接"，不产生新的持久化数据结构，
   // iframe 被酒馆助手重建（热更新/切聊天）会随实例一起清空，属于可接受的边界情况。
@@ -3293,7 +3818,9 @@ $(() => {
       text: item.text,
       rich: item.rich || '',
       source: item.source || 'sel',
-      noteId: item.noteId || ''
+      noteId: item.noteId || '',
+      charKey: item.charKey || '',   // 这条高亮本来属于哪个角色——合并存笔记时按这个归档，不是按"当前激活角色"
+      chatId: item.chatId || ''
     });
     updateMergeBadge();
     toast(`已加入合并（${mergeBasket.length}）`, 'success');
@@ -3394,7 +3921,7 @@ $(() => {
   function finalizeMergeFlow() {
     if (mergeBasket.length < 1) return;
     const target = settings.mergeDefaultTarget;
-    if (target === 'note' || target === 'card') {
+    if (target === 'note' || target === 'card' || target === 'both') {
       proceedToDeleteOriginalStep(target);
     } else {
       openMergeTargetChooser();
@@ -3419,9 +3946,11 @@ $(() => {
     clearMergeBasket();
     mainDoc.getElementById('be-merge-sheet')?.classList.remove('open');
     mainDoc.getElementById('be-merge-target-mask')?.classList.remove('open');
-    if (target === 'note') {
-      addNote({ type: 'highlight', text: mergedText, thoughts: [], merged: true, mergedCount: count, style: settings.lastStyle || settings.highlightStyle });
-    } else {
+    let splitCount = 0;
+    if (target === 'note' || target === 'both') {
+      splitCount = saveMergedAsNotes(items);
+    }
+    if (target === 'card' || target === 'both') {
       lastText = mergedText;
       openExcerptModal(mergedText, { richText: mergedRich, editable: true });
     }
@@ -3433,9 +3962,31 @@ $(() => {
         unwrapHighlightSpans(it.noteId);
       });
     }
-    const doneMsg = target === 'note' ? '已存为笔记' : '已生成书摘';
+    const doneMsg = target === 'both' ? '已存为笔记并生成书摘' : (target === 'note' ? '已存为笔记' : '已生成书摘');
     toast(deleteOriginal ? `${doneMsg}，原有 ${count} 条划线已删除` : doneMsg, 'success');
+    if (splitCount > 1) toast(`合并的划线来自 ${splitCount} 个不同角色，已自动拆成 ${splitCount} 条笔记分别归档`, 'info');
     if (panelView === 'char') fillCharNotes();
+  }
+  // 按来源角色分组分别存成笔记，不再一律存进"当前实际激活角色"的桶——合并篮子里的条目可能是从
+  // 笔记本翻出来的、属于别的角色（甚至没有激活角色，归到 unknown）的历史划线，混在一起合并时
+  // 要按各自本来所属的角色拆开保存。返回实际拆出的笔记条数（用于提示用户是否发生了拆分）。
+  function saveMergedAsNotes(items) {
+    const ctx = getContext();
+    const groups = new Map(); // charKey -> items[]
+    items.forEach(it => {
+      const key = it.charKey || ctx.charKey || 'unknown';
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(it);
+    });
+    groups.forEach((groupItems, key) => {
+      const text = groupItems.map(x => x.text).join('\n\n');
+      addNote({
+        type: 'highlight', text, thoughts: [], merged: true, mergedCount: groupItems.length,
+        style: settings.lastStyle || settings.highlightStyle,
+        chatId: groupItems[0]?.chatId || ''
+      }, key);
+    });
+    return groups.size;
   }
   function openMergeTargetChooser() {
     let mask = mainDoc.getElementById('be-merge-target-mask');
@@ -3457,6 +4008,9 @@ $(() => {
           <button class="be-btn" id="be-merge-to-note">存为笔记</button>
           <button class="be-btn primary" id="be-merge-to-card">生成书摘</button>
         </div>
+        <div class="be-merge-target-opts" style="margin-top:6px;">
+          <button class="be-btn" id="be-merge-to-both">两者都要</button>
+        </div>
         <div class="be-merge-hint">可在设置中更改</div>
         <label class="be-merge-remember-row">
           <button type="button" class="be-merge-remember-dot" id="be-merge-remember-dot"></button>
@@ -3473,6 +4027,10 @@ $(() => {
     mask.querySelector('#be-merge-to-card').addEventListener('click', () => {
       if (dot.classList.contains('checked')) { settings.mergeDefaultTarget = 'card'; saveSettings(settings); }
       proceedToDeleteOriginalStep('card');
+    });
+    mask.querySelector('#be-merge-to-both').addEventListener('click', () => {
+      if (dot.classList.contains('checked')) { settings.mergeDefaultTarget = 'both'; saveSettings(settings); }
+      proceedToDeleteOriginalStep('both');
     });
     mask.classList.add('open');
   }
@@ -4074,7 +4632,10 @@ $(() => {
         } else if (act === 'merge') {
           // 不关闭工具条：允许连续点几条划线快速加入同一个篮子
           if (isInMergeBasket(noteId)) removeFromMergeBasket('note:' + noteId);
-          else addToMergeBasket({ text: fresh.text, source: 'note', noteId });
+          else {
+            const mCtx = getContext();
+            addToMergeBasket({ text: fresh.text, source: 'note', noteId, charKey: mCtx.charKey, chatId: mCtx.chatId });
+          }
           renderHlBar(bar, noteId);
         }
       });
@@ -4357,14 +4918,15 @@ $(() => {
     }
     detectAndApplyTheme();
     const ctx = getContext();
-    mask.querySelector('#be-src-user').value = settings.sourceUser || '';
+    const src = getSourceValues();
+    mask.querySelector('#be-src-user').value = src.sourceUser || '';
     mask.querySelector('#be-src-user').placeholder = ctx.userName || '{{user}}';
-    mask.querySelector('#be-src-author').value = settings.sourceAuthor || '';
+    mask.querySelector('#be-src-author').value = src.sourceAuthor || '';
     mask.querySelector('#be-src-author').placeholder = ctx.charName || '{{char}}';
-    mask.querySelector('#be-src-title').value = settings.sourceTitle || '';
-    mask.querySelector('#be-src-showtitle').checked = !!settings.showSourceTitle;
-    mask.querySelector('#be-src-chapter').value = settings.sourceChapter || '';
-    mask.querySelector('#be-src-showchapter').checked = !!settings.showSourceChapter;
+    mask.querySelector('#be-src-title').value = src.sourceTitle || '';
+    mask.querySelector('#be-src-showtitle').checked = !!src.showSourceTitle;
+    mask.querySelector('#be-src-chapter').value = src.sourceChapter || '';
+    mask.querySelector('#be-src-showchapter').checked = !!src.showSourceChapter;
     mask.querySelector('#be-src-showwm').checked = settings.showWatermark !== false;
     mask.querySelector('#be-src-wmtext').value = settings.watermarkText || '';
     // 打码字段回显
@@ -4393,8 +4955,8 @@ $(() => {
     // 同步折叠区初始展开状态
     mask.querySelector('#be-src-avatar-wrap').classList.toggle('open', (settings.avatarType || 'user') === 'custom');
     mask.querySelector('#be-src-mask-wrap').classList.toggle('open', !!settings.maskOn);
-    mask.querySelector('#be-src-title-wrap').classList.toggle('open', !!settings.showSourceTitle);
-    mask.querySelector('#be-src-chapter-wrap').classList.toggle('open', !!settings.showSourceChapter);
+    mask.querySelector('#be-src-title-wrap').classList.toggle('open', !!src.showSourceTitle);
+    mask.querySelector('#be-src-chapter-wrap').classList.toggle('open', !!src.showSourceChapter);
     mask.querySelector('#be-src-wm-wrap').classList.toggle('open', settings.showWatermark !== false);
 
     // 头像预览回显
@@ -4458,7 +5020,8 @@ $(() => {
         const f = ev.target.files && ev.target.files[0];
         if (!f) return;
         try {
-          const dataUrl = await fileToCompressedAvatar(f);
+          const maxSize = settings.avatarQuality === 'high' ? 900 : 320;
+          const dataUrl = await fileToCompressedAvatar(f, maxSize);
           settings.customAvatar = dataUrl;
           // 一旦上传过头像，没切到 custom 类型时也提示用户去切
           saveSettings(settings);
@@ -4480,12 +5043,15 @@ $(() => {
       if (mainDoc.getElementById('be-card')) renderCard(lastText);
     });
     reNew('#be-src-save', () => {
-      settings.sourceUser  = mask.querySelector('#be-src-user').value.trim();
-      settings.sourceAuthor = mask.querySelector('#be-src-author').value.trim();
-      settings.sourceTitle = mask.querySelector('#be-src-title').value.trim();
-      settings.showSourceTitle = mask.querySelector('#be-src-showtitle').checked;
-      settings.sourceChapter = mask.querySelector('#be-src-chapter').value.trim();
-      settings.showSourceChapter = mask.querySelector('#be-src-showchapter').checked;
+      // 出处这几个字段按 sourceScope 走（全局/按角色/按角色+聊天），其它设置维持全局不变
+      setSourceValues({
+        sourceUser: mask.querySelector('#be-src-user').value.trim(),
+        sourceAuthor: mask.querySelector('#be-src-author').value.trim(),
+        sourceTitle: mask.querySelector('#be-src-title').value.trim(),
+        showSourceTitle: mask.querySelector('#be-src-showtitle').checked,
+        sourceChapter: mask.querySelector('#be-src-chapter').value.trim(),
+        showSourceChapter: mask.querySelector('#be-src-showchapter').checked
+      });
       settings.showWatermark = mask.querySelector('#be-src-showwm').checked;
       settings.watermarkText = mask.querySelector('#be-src-wmtext').value;
       settings.maskOn = mask.querySelector('#be-src-mask').checked;
@@ -4531,19 +5097,28 @@ $(() => {
   }
 
   function renderDrawer(drawer) {
-    const list = Array.isArray(settings.customTemplates) ? settings.customTemplates : [];
+    const list = getOrderedCustomTemplates();
     drawer.innerHTML = `
       <div class="be-drawer-handle"></div>
       <div class="be-sec">
         <h4>主题</h4>
         <div class="be-drawer-row" id="be-drawer-tpl">
-          ${Object.entries(TEMPLATES).map(([k, v]) => `
+          ${Object.entries(TEMPLATES).filter(([k]) => !(settings.hiddenTemplates||[]).includes(k)).map(([k, v]) => `
             <div class="be-drawer-chip ${settings.template===k?'active':''}" data-k="${k}">${v.name}</div>
           `).join('')}
-          ${list.map(t => {
-            const id = `custom-${t.id}`;
-            return `<div class="be-drawer-chip ${settings.template===id?'active':''}" data-k="${id}">${escapeHtml(t.name)}</div>`;
-          }).join('')}
+          ${(() => {
+            const favSet = new Set(settings.templateFavorites || []);
+            const favs = list.filter(t => favSet.has(t.id));
+            const rest = list.filter(t => !favSet.has(t.id));
+            const chip = t => {
+              const id = `custom-${t.id}`;
+              return `<div class="be-drawer-chip ${settings.template===id?'active':''}" data-k="${id}">${favSet.has(t.id)?'★ ':''}${escapeHtml(t.name)}</div>`;
+            };
+            const parts = favs.map(chip);
+            if (favs.length && rest.length) parts.push('<span class="be-drawer-sep">·</span>');
+            parts.push(...rest.map(chip));
+            return parts.join('');
+          })()}
         </div>
       </div>
       <div class="be-sec">
@@ -4629,6 +5204,7 @@ $(() => {
     const lh = Number(settings.quoteLineHeight) || 2.05;
     const ls = isFinite(Number(settings.quoteLetterSpacing)) ? Number(settings.quoteLetterSpacing) : 0.04;
     const cw = Number(settings.cardWidth) || 440;
+    const scale = Math.max(2, Math.min(5, Number(settings.exportScale) || 2));
     sheet.innerHTML = `
       <div class="be-drawer-handle"></div>
       <div class="be-sec">
@@ -4657,6 +5233,18 @@ $(() => {
           <span class="be-dt-ico" style="font-size:12px;">宽</span>
           <span class="be-dt-val" id="be-ts-width-val">${cw}px</span>
         </div>
+        <div class="be-row" style="margin-top:6px;">
+          <label style="flex:1;">保存清晰度</label>
+          <div class="be-radio-group" id="be-ts-scale-group">
+            <button type="button" class="be-radio-opt ${scale===2?'active':''}" data-v="2">2x</button>
+            <button type="button" class="be-radio-opt ${scale===3?'active':''}" data-v="3">3x</button>
+            <button type="button" class="be-radio-opt ${scale===4?'active':''}" data-v="4">4x</button>
+            <button type="button" class="be-radio-opt ${scale===5?'active':''}" data-v="5">5x</button>
+          </div>
+        </div>
+        <div class="be-row" style="font-size:11px;opacity:0.7;">
+          <span>倍率越高保存出来的图越清晰，但生成更慢、文件更大；手机屏幕一般 2x/3x 够用，想放大看细节可以选 4x/5x</span>
+        </div>
       </div>
       <button class="be-drawer-confirm" id="be-ts-confirm">确定</button>
     `;
@@ -4684,6 +5272,13 @@ $(() => {
     // 松手(change)立即落盘一次，兜住防抖未触发就关闭的情况
     ['#be-ts-qsize', '#be-ts-qlh', '#be-ts-qls', '#be-ts-width'].forEach(id => {
       sheet.querySelector(id)?.addEventListener('change', () => saveSettings(settings));
+    });
+    sheet.querySelectorAll('#be-ts-scale-group .be-radio-opt').forEach(btn => {
+      btn.addEventListener('click', () => {
+        settings.exportScale = Number(btn.getAttribute('data-v')) || 2;
+        saveSettings(settings);
+        sheet.querySelectorAll('#be-ts-scale-group .be-radio-opt').forEach(b => b.classList.toggle('active', b === btn));
+      });
     });
 
     sheet.classList.add('show');
@@ -4717,6 +5312,14 @@ $(() => {
     renderCard(text);
     if (currentEditable) toast('可直接点击文字进行修改，例如调整连接词', 'info');
     warmupForSave().catch(() => {});
+  }
+
+  // 单条书摘默认只读展示；点"编辑正文"手动开关，避免默认可编辑时不小心碰到光标误改内容。
+  // 合并书摘默认已经是可编辑的（见 openExcerptModal 里 editable:true），这个按钮同样能把它关掉。
+  function toggleQuoteEdit() {
+    currentEditable = !currentEditable;
+    renderCard(lastText);
+    toast(currentEditable ? '已开启编辑，可直接点文字修改' : '已关闭编辑', 'info');
   }
 
   // 预热（modal 打开时立刻做）：拉 lib、等字体、把头像转 data URL
@@ -4757,6 +5360,7 @@ $(() => {
     currentThoughtText = '';
     currentRichText = '';
     currentEditable = false;
+    hideCardHlBar();
     clearWarmup();
   }
   function ensureMask() {
@@ -4775,6 +5379,7 @@ $(() => {
           <button class="be-btn" id="be-edit-source">编辑出处</button>
           <button class="be-btn" id="be-open-settings">⚙ 模板</button>
           <button class="be-btn" id="be-open-typo">字号</button>
+          <button class="be-btn" id="be-toggle-edit">✎ 编辑正文</button>
           <button class="be-btn primary" id="be-save">保存图片</button>
         </div>
       </div>
@@ -4785,6 +5390,7 @@ $(() => {
     mainDoc.getElementById('be-save').addEventListener('click', saveAsImage);
     mainDoc.getElementById('be-open-settings').addEventListener('click', openTemplateDrawer);
     mainDoc.getElementById('be-open-typo').addEventListener('click', openTypoSheet);
+    mainDoc.getElementById('be-toggle-edit').addEventListener('click', toggleQuoteEdit);
     mainDoc.getElementById('be-edit-source').addEventListener('click', openSourceEditor);
     return mask;
   }
@@ -4900,11 +5506,12 @@ $(() => {
     const font = { css: _fontCss };
     const ctx = getContext();
 
-    // 三字段出处
-    const userName   = settings.sourceUser   || ctx.userName || '';
-    const authorName = settings.sourceAuthor || ctx.charName || '';
-    const bookName   = settings.showSourceTitle ? (settings.sourceTitle || '') : '';
-    const chapter    = settings.showSourceChapter ? (settings.sourceChapter || '') : '';
+    // 三字段出处（按 sourceScope 可能来自全局设置，也可能是当前角色/角色+聊天各自存的）
+    const src = getSourceValues();
+    const userName   = src.sourceUser   || ctx.userName || '';
+    const authorName = src.sourceAuthor || ctx.charName || '';
+    const bookName   = src.showSourceTitle ? (src.sourceTitle || '') : '';
+    const chapter    = src.showSourceChapter ? (src.sourceChapter || '') : '';
     const dateText = `摘录于 ${formatDate()}`;
 
     // 头像（按设置选 user / char / custom）
@@ -5133,6 +5740,8 @@ $(() => {
       // 所以编辑时要把最新文字同步回 lastText，让"重建"重建出的还是编辑后的版本。
       quoteEl.contentEditable = currentEditable ? 'true' : 'false';
       quoteEl.classList.toggle('be-quote-editable', currentEditable);
+      const editBtn = mainDoc.getElementById('be-toggle-edit');
+      if (editBtn) editBtn.classList.toggle('active', currentEditable);
       if (currentEditable) {
         quoteEl.addEventListener('input', () => {
           if (_quoteEditT) mainWin.clearTimeout(_quoteEditT);
@@ -5143,6 +5752,44 @@ $(() => {
         });
       }
     }
+    // 自定义模板图片槽：自动识别 CSS 里的背景图引用，标记为可点击上传/替换
+    applyTemplateSlotImages(wrap);
+    wrap.querySelectorAll('.be-tpl-slot').forEach(el => {
+      el.addEventListener('click', e => {
+        e.stopPropagation();
+        handleTemplateSlotUpload(el.getAttribute('data-be-slot'));
+      });
+    });
+    // 头像区域：不分内置/自定义模板，点一下都能直接换图（等价于设置里"自定义头像"上传，只是从预览触发更直接）
+    wrap.querySelectorAll('.be-avatar, .be-pt-avatar, .be-ls-avatar, .be-char-avatar').forEach(el => {
+      el.classList.add('be-avatar-clickable');
+      el.addEventListener('click', e => {
+        e.stopPropagation();
+        handleAvatarClickUpload();
+      });
+    });
+  }
+  function handleAvatarClickUpload() {
+    const input = mainDoc.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.addEventListener('change', async e => {
+      const f = e.target.files && e.target.files[0];
+      if (!f) return;
+      try {
+        const maxSize = settings.avatarQuality === 'high' ? 900 : 320;
+        const dataUrl = await fileToCompressedAvatar(f, maxSize);
+        settings.avatarType = 'custom';
+        settings.customAvatar = dataUrl;
+        saveSettings(settings);
+        if (mainDoc.getElementById('be-panel')?.classList.contains('open')) renderSettings();
+        if (mainDoc.getElementById('be-card')) renderCard(lastText);
+        toast('已更换头像', 'success');
+      } catch (err) {
+        toast('上传失败：' + (err?.message || err), 'error');
+      }
+    });
+    input.click();
   }
 
   // ---------- 截图（纯 html2canvas，CN 镜像优先） ----------
@@ -5358,20 +6005,22 @@ $(() => {
   // 头像处理：放弃 background-image，改用 <img>
   // dataURL natural size = CSS 尺寸 × dpr，正好等于 h2c 最终输出像素数，让 1024 原图一次缩放到位（无二次降采样）
   // 同时处理多种头像类（经典 .be-avatar / 人像 .be-pt-avatar / 横幅 .be-ls-avatar）
-  async function processAvatarInClone(cardClone, idoc) {
-    const avs = cardClone.querySelectorAll('.be-avatar, .be-pt-avatar, .be-ls-avatar, .be-char-avatar');
+  async function processAvatarInClone(cardClone, idoc, exportScale) {
+    const avs = cardClone.querySelectorAll('.be-avatar, .be-pt-avatar, .be-ls-avatar, .be-char-avatar, .be-tpl-slot');
     for (const av of avs) {
-      try { await processOneAvatar(av, idoc); } catch (e) {}
+      try { await processOneAvatar(av, idoc, exportScale); } catch (e) {}
     }
   }
-  async function processOneAvatar(av, idoc) {
+  async function processOneAvatar(av, idoc, exportScale) {
     if (!av || !av.style || !av.style.backgroundImage) return;
     const m = av.style.backgroundImage.match(/url\(["']?([^"')]+)["']?\)/);
     if (!m || !m[1]) return;
     const url = m[1];
     const cssW = av.offsetWidth || (av.classList.contains('be-pt-avatar') ? 84 : av.classList.contains('be-ls-avatar') ? 72 : 44);
     const cssH = av.offsetHeight || cssW;
-    const dpr = Math.min(mainWin.devicePixelRatio || 1, 2);
+    // 头像预渲染的清晰度要跟最终导出倍率对齐——不然 html2canvas 把整卡放大 exportScale 倍时，
+    // 头像这张只按旧的固定 2x 预渲染的位图会被二次放大糊掉，跟卡片其它文字的清晰度对不上
+    const dpr = Math.max(2, Math.min(5, Number(exportScale) || 2));
     const sizeW = Math.round(cssW * dpr);
     const sizeH = Math.round(cssH * dpr);
     // 圆形/方形保持，但 dataURL 都是矩形
@@ -5448,9 +6097,12 @@ $(() => {
       // 这里把预览里【已算好】的 字距 / 行距 / 字号 px 值冻结成内联样式带进沙箱，
       // 导出就和预览一致，不依赖沙箱 CSS 是否完整生效。
       try {
-        const FREEZE_SEL = '.be-quote, .be-quote p, .be-thought-main, .be-quote-orig, .be-quote-orig p';
-        const srcEls = card.querySelectorAll(FREEZE_SEL);
-        const dstEls = cardClone.querySelectorAll(FREEZE_SEL);
+        // 原来只冻结固定的几个正文选择器（.be-quote 等），标题/日期/出处/水印这些装饰性文字的
+        // letter-spacing 没被覆盖到，同样的沙箱问题只是文字短不容易被注意到。改成覆盖卡片内
+        // 全部元素（含卡片自身），一劳永逸，不用每加一个模板/新元素就要再补一次这份名单。
+        // card/cardClone 是同一份结构 cloneNode(true) 出来的，querySelectorAll('*') 的顺序完全一致。
+        const srcEls = [card, ...card.querySelectorAll('*')];
+        const dstEls = [cardClone, ...cardClone.querySelectorAll('*')];
         for (let i = 0; i < srcEls.length && i < dstEls.length; i++) {
           const cs = mainWin.getComputedStyle(srcEls[i]);
           ['fontSize', 'lineHeight', 'letterSpacing'].forEach(p => {
@@ -5491,7 +6143,7 @@ $(() => {
         } catch (e) {}
       }
       // 在 clone 上把头像换成清晰 <img>（不影响主文档预览）
-      await processAvatarInClone(cardClone, idoc);
+      await processAvatarInClone(cardClone, idoc, dpr);
       // 宽度变化会改变高度，重排后按内容真实高度调整 iframe（h2c 按元素尺寸截，留足空间即可）
       // 设备卡顿/长文本下 16ms 不一定够一次真实重排，适当加长
       await new Promise(r => setTimeout(r, 32));
@@ -5550,7 +6202,9 @@ $(() => {
       const ts = new Date();
       const fname = `书摘_${ts.getFullYear()}${String(ts.getMonth()+1).padStart(2,'0')}${String(ts.getDate()).padStart(2,'0')}_${String(ts.getHours()).padStart(2,'0')}${String(ts.getMinutes()).padStart(2,'0')}.png`;
       try { await withTimeout(warmupForSave(), 3000, '预热'); } catch (e) {}
-      const dpr = Math.min(mainWin.devicePixelRatio || 1, 2);
+      // 导出清晰度不再跟随 devicePixelRatio 封顶在 2x——很多手机 dpr>=3，旧逻辑白白扔掉三分之一分辨率，
+      // 改成纯粹的用户可选倍率（「字号」抽屉里的"清晰度"），默认 2 跟旧逻辑大多数场景观感一致
+      const dpr = Math.max(2, Math.min(5, Number(settings.exportScale) || 2));
 
       try {
         const h2c = await withTimeout(loadH2C(), 8000, '加载截图库');
@@ -5566,7 +6220,7 @@ $(() => {
           clone.style.cssText += ';position:fixed;left:-99999px;top:0;visibility:hidden;';
           mainDoc.body.appendChild(clone);
           try {
-            await processAvatarInClone(clone, mainDoc);
+            await processAvatarInClone(clone, mainDoc, dpr);
             await new Promise(r => setTimeout(r, 16));
             canvas = await withTimeout(h2c(clone, {
               backgroundColor: tplBg,
@@ -5715,6 +6369,41 @@ $(() => {
     renderSettings();
     if (mainDoc.getElementById('be-card')) renderCard(lastText);
   }
+  function hideColorPreset(pid) {
+    const hidden = new Set(settings.hiddenColorPresets || []);
+    hidden.add(pid);
+    settings.hiddenColorPresets = Array.from(hidden);
+    if (settings.colorPreset === pid) settings.colorPreset = 'paper-warm';
+    saveSettings(settings);
+    renderSettings();
+    if (mainDoc.getElementById('be-card')) renderCard(lastText);
+  }
+  function restoreColorPreset(pid) {
+    settings.hiddenColorPresets = (settings.hiddenColorPresets || []).filter(k => k !== pid);
+    saveSettings(settings);
+    renderSettings();
+  }
+  let _hiddenColorOpen = false;
+  function renderHiddenColorGroup() {
+    const hidden = (settings.hiddenColorPresets || []).map(id => COLOR_PRESETS.find(p => p.id === id)).filter(Boolean);
+    if (!hidden.length) return '';
+    return `
+      <div class="be-tpl-group ${_hiddenColorOpen ? 'open' : ''}" id="be-hidden-color-group">
+        <div class="be-tpl-group-head" id="be-hidden-color-group-head">
+          <span class="be-caret"></span>
+          <span>已隐藏的默认配色（${hidden.length}）</span>
+        </div>
+        <div class="be-tpl-group-body">
+          ${hidden.map(p => `
+            <div class="be-tpl-custom-row" data-k="">
+              <span class="be-tpl-custom-name">${escapeHtml(p.name)}</span>
+              <button data-restore-color="${p.id}" title="恢复显示">↺ 恢复</button>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+  }
   function openSaveColorDialog() {
     const MASK_ID = 'be-save-color-mask';
     let mask = mainDoc.getElementById(MASK_ID);
@@ -5810,9 +6499,42 @@ $(() => {
 
   // 渲染"自定义模板"折叠区
   let _customTplOpen = false;
+  // 自定义模板：按 templateOrder 排序，收藏的置顶（稳定排序，未记录顺序的按原数组顺序排在后面）
+  function getOrderedCustomTemplates() {
+    const list = Array.isArray(settings.customTemplates) ? settings.customTemplates.slice() : [];
+    const order = settings.templateOrder || [];
+    const favSet = new Set(settings.templateFavorites || []);
+    const idx = id => { const i = order.indexOf(id); return i < 0 ? Infinity : i; };
+    list.sort((a, b) => idx(a.id) - idx(b.id));
+    const favs = list.filter(t => favSet.has(t.id));
+    const rest = list.filter(t => !favSet.has(t.id));
+    return favs.concat(rest);
+  }
+  function toggleTemplateFavorite(tid) {
+    const favs = new Set(settings.templateFavorites || []);
+    if (favs.has(tid)) favs.delete(tid); else favs.add(tid);
+    settings.templateFavorites = Array.from(favs);
+    saveSettings(settings);
+    renderSettings();
+  }
+  let _tplDragId = null;
+  function reorderCustomTemplate(dragId, targetId, insertBefore) {
+    if (!dragId || dragId === targetId) return;
+    const list = getOrderedCustomTemplates();
+    const fromIdx = list.findIndex(t => t.id === dragId);
+    const toIdx = list.findIndex(t => t.id === targetId);
+    if (fromIdx < 0 || toIdx < 0) return;
+    const [moved] = list.splice(fromIdx, 1);
+    const insertIdx = list.findIndex(t => t.id === targetId);
+    list.splice(insertBefore ? insertIdx : insertIdx + 1, 0, moved);
+    settings.templateOrder = list.map(t => t.id);
+    saveSettings(settings);
+    renderSettings();
+  }
   function renderCustomTemplateGroup() {
-    const list = Array.isArray(settings.customTemplates) ? settings.customTemplates : [];
+    const list = getOrderedCustomTemplates();
     if (!list.length) return '';
+    const favSet = new Set(settings.templateFavorites || []);
     return `
       <div class="be-tpl-group ${_customTplOpen ? 'open' : ''}" id="be-tpl-group">
         <div class="be-tpl-group-head" id="be-tpl-group-head">
@@ -5823,9 +6545,13 @@ $(() => {
           ${list.map(t => {
             const id = `custom-${t.id}`;
             const active = settings.template === id;
+            const isFav = favSet.has(t.id);
             return `
-              <div class="be-tpl-custom-row ${active?'active':''}" data-k="${id}">
+              <div class="be-tpl-custom-row ${active?'active':''}" draggable="true" data-k="${id}" data-tid="${t.id}">
+                <span class="be-tpl-drag-handle" title="拖动排序"><svg viewBox="0 0 12 12"><circle cx="3" cy="3" r="1.4"/><circle cx="9" cy="3" r="1.4"/><circle cx="3" cy="9" r="1.4"/><circle cx="9" cy="9" r="1.4"/></svg></span>
                 <span class="be-tpl-custom-name">${escapeHtml(t.name || '未命名')}</span>
+                <button data-fav="${t.id}" class="be-tpl-fav ${isFav?'active':''}" title="${isFav?'取消收藏':'收藏'}">${isFav?'★':'☆'}</button>
+                <button data-edit="${t.id}" title="编辑CSS">✎</button>
                 <button data-export="${t.id}" title="导出为 JSON">⬇</button>
                 <button data-del="${t.id}" title="删除">×</button>
               </div>
@@ -5905,53 +6631,284 @@ $(() => {
   }
 
   // 导入自定义模板（名称 + CSS）
-  function openImportTemplateDialog() {
+  // 开发者模式：CSS 实时编辑用的临时预览 <style>，跟 #be-custom-style（已保存的）分开，取消/保存后都会清掉
+  function clearTplLivePreview() {
+    mainDoc.getElementById('be-tpl-live-preview')?.remove();
+  }
+  function applyTplLivePreview(id, rawCss) {
+    let el = mainDoc.getElementById('be-tpl-live-preview');
+    if (!el) {
+      el = mainDoc.createElement('style');
+      el.id = 'be-tpl-live-preview';
+      mainDoc.head.appendChild(el);
+    }
+    const selector = `.be-card.tpl-custom-${id}`;
+    el.textContent = String(rawCss || '').replace(/\.be-card\.be-custom\b/g, selector);
+  }
+  // 类名查询器：开发者模式下的检查工具，悬停高亮 + 显示类名，点击复制
+  let _inspectorActive = false;
+  function inspectorHoverHandler(e) {
+    const card = mainDoc.getElementById('be-card');
+    if (!card) return;
+    const el = e.target;
+    if (!el || !card.contains(el)) return;
+    mainDoc.querySelectorAll('.be-inspect-hl').forEach(x => x.classList.remove('be-inspect-hl'));
+    el.classList.add('be-inspect-hl');
+    let tip = mainDoc.getElementById('be-inspect-tip');
+    if (!tip) { tip = mainDoc.createElement('div'); tip.id = 'be-inspect-tip'; mainDoc.body.appendChild(tip); }
+    const cls = Array.from(el.classList).filter(c => c !== 'be-inspect-hl').join('.');
+    tip.textContent = el.tagName.toLowerCase() + (cls ? '.' + cls : '') + '（点击复制）';
+    const rect = el.getBoundingClientRect();
+    tip.style.left = Math.max(4, rect.left) + 'px';
+    tip.style.top = Math.max(4, rect.top - 24) + 'px';
+    tip.classList.add('show');
+  }
+  function inspectorClickHandler(e) {
+    const card = mainDoc.getElementById('be-card');
+    if (!card || !card.contains(e.target)) return;
+    e.preventDefault(); e.stopPropagation();
+    const el = e.target;
+    const cls = Array.from(el.classList).filter(c => c !== 'be-inspect-hl').join('.');
+    const full = el.tagName.toLowerCase() + (cls ? '.' + cls : '');
+    try { mainWin.navigator.clipboard.writeText(full); toast('已复制：' + full, 'success'); }
+    catch (err) { toast(full, 'success'); }
+  }
+  function enableClassInspector() {
+    if (_inspectorActive) return;
+    _inspectorActive = true;
+    mainDoc.addEventListener('mouseover', inspectorHoverHandler, true);
+    mainDoc.addEventListener('click', inspectorClickHandler, true);
+  }
+  function disableClassInspector() {
+    if (!_inspectorActive) return;
+    _inspectorActive = false;
+    mainDoc.removeEventListener('mouseover', inspectorHoverHandler, true);
+    mainDoc.removeEventListener('click', inspectorClickHandler, true);
+    mainDoc.querySelectorAll('.be-inspect-hl').forEach(x => x.classList.remove('be-inspect-hl'));
+    mainDoc.getElementById('be-inspect-tip')?.classList.remove('show');
+  }
+
+  // ---------- 开发者模式：可拖动/缩放的悬浮 CSS 编辑小窗（编辑已有自定义模板时用，代替原来的整页弹窗） ----------
+  // 好处是能跟书摘卡片预览（#be-mask）同屏出现：小窗挡住哪块就拖开，边改边看实时效果，不用两个弹窗来回切
+  function bindCssFloatDrag(win) {
+    const handle = win.querySelector('#be-css-float-drag');
+    let sx = 0, sy = 0, ox = 0, oy = 0, dragging = false;
+    const start = (e) => {
+      if (e.target.closest('button')) return;
+      dragging = true;
+      const p = e.touches ? e.touches[0] : e;
+      sx = p.clientX; sy = p.clientY;
+      const rect = win.getBoundingClientRect();
+      ox = rect.left; oy = rect.top;
+      e.preventDefault();
+    };
+    const move = (e) => {
+      if (!dragging) return;
+      const p = e.touches ? e.touches[0] : e;
+      const dx = p.clientX - sx, dy = p.clientY - sy;
+      const vw = mainWin.innerWidth, vh = mainWin.innerHeight;
+      const left = Math.max(0, Math.min(ox + dx, vw - 40));
+      const top = Math.max(0, Math.min(oy + dy, vh - 40));
+      win.style.left = (left + (mainWin.scrollX || 0)) + 'px';
+      win.style.top = (top + (mainWin.scrollY || 0)) + 'px';
+      e.preventDefault();
+    };
+    const end = () => { dragging = false; };
+    handle.addEventListener('mousedown', start);
+    handle.addEventListener('touchstart', start, { passive: false });
+    mainDoc.addEventListener('mousemove', move);
+    mainDoc.addEventListener('touchmove', move, { passive: false });
+    mainDoc.addEventListener('mouseup', end);
+    mainDoc.addEventListener('touchend', end);
+  }
+  function bindCssFloatResize(win) {
+    const dirs = { se: [1, 1], sw: [-1, 1], ne: [1, -1], nw: [-1, -1] };
+    Object.keys(dirs).forEach(dir => {
+      const handle = win.querySelector('.be-css-resize-' + dir);
+      if (!handle) return;
+      const [dx0, dy0] = dirs[dir];
+      let sx = 0, sy = 0, sw = 0, sh = 0, sl = 0, st = 0, active = false;
+      const start = (e) => {
+        active = true;
+        const p = e.touches ? e.touches[0] : e;
+        sx = p.clientX; sy = p.clientY;
+        const rect = win.getBoundingClientRect();
+        sw = rect.width; sh = rect.height; sl = rect.left; st = rect.top;
+        e.preventDefault(); e.stopPropagation();
+      };
+      const move = (e) => {
+        if (!active) return;
+        const p = e.touches ? e.touches[0] : e;
+        const dx = (p.clientX - sx) * dx0;
+        const dy = (p.clientY - sy) * dy0;
+        const newW = Math.max(220, sw + dx);
+        const newH = Math.max(160, sh + dy);
+        win.style.width = newW + 'px';
+        win.style.height = newH + 'px';
+        // 往左/往上拖大时要同步挪 left/top，不然窗口看起来像从右下角长出来的
+        if (dx0 < 0) win.style.left = (sl - (newW - sw) + (mainWin.scrollX || 0)) + 'px';
+        if (dy0 < 0) win.style.top = (st - (newH - sh) + (mainWin.scrollY || 0)) + 'px';
+        e.preventDefault();
+      };
+      const end = () => { active = false; };
+      handle.addEventListener('mousedown', start);
+      handle.addEventListener('touchstart', start, { passive: false });
+      mainDoc.addEventListener('mousemove', move);
+      mainDoc.addEventListener('touchmove', move, { passive: false });
+      mainDoc.addEventListener('mouseup', end);
+      mainDoc.addEventListener('touchend', end);
+    });
+  }
+  function closeCssFloatEditor() {
+    clearTplLivePreview();
+    disableClassInspector();
+    mainDoc.getElementById('be-css-float')?.classList.remove('show');
+  }
+  function openCssFloatEditor(tplId) {
+    const tpl = (settings.customTemplates || []).find(t => t.id === tplId);
+    if (!tpl) { toast('找不到这个模板', 'error'); return; }
+    // 要有卡片可看才叫"实时预览"：切到这个模板，没有摘录文本时先垫一段示例文字
+    settings.template = `custom-${tplId}`;
+    saveSettings(settings);
+    if (!lastText) lastText = '这是一段示例文字，用来看模板效果——字号、颜色、行距、边距都会实时更新在卡片上。';
+    openExcerptModal(lastText);
+
+    let win = mainDoc.getElementById('be-css-float');
+    if (!win) {
+      win = mainDoc.createElement('div');
+      win.id = 'be-css-float';
+      win.innerHTML = `
+        <div class="be-css-float-head" id="be-css-float-drag">
+          <span>实时改CSS</span>
+          <span style="flex:1;"></span>
+          <button type="button" id="be-css-float-inspect" title="类名查询器：点开后在卡片上悬停/点击可查看类名">🔍</button>
+          <button type="button" id="be-css-float-close" title="关闭">×</button>
+        </div>
+        <textarea id="be-css-float-textarea" spellcheck="false"></textarea>
+        <div class="be-css-float-foot">
+          <button class="be-btn" id="be-css-float-cancel">取消</button>
+          <button class="be-btn primary" id="be-css-float-save">保存</button>
+        </div>
+        <div class="be-css-resize be-css-resize-se"></div>
+        <div class="be-css-resize be-css-resize-sw"></div>
+        <div class="be-css-resize be-css-resize-ne"></div>
+        <div class="be-css-resize be-css-resize-nw"></div>
+      `;
+      mainDoc.body.appendChild(win);
+      bindCssFloatDrag(win);
+      bindCssFloatResize(win);
+      win.querySelector('#be-css-float-inspect').addEventListener('click', e => {
+        if (_inspectorActive) { disableClassInspector(); e.currentTarget.classList.remove('active'); }
+        else { enableClassInspector(); e.currentTarget.classList.add('active'); }
+      });
+      win.querySelector('#be-css-float-close').addEventListener('click', closeCssFloatEditor);
+      win.querySelector('#be-css-float-cancel').addEventListener('click', closeCssFloatEditor);
+    } else if (win.parentNode !== mainDoc.body || win.nextSibling) {
+      mainDoc.body.appendChild(win);
+    }
+    if (!win.style.width) {
+      const vw = mainWin.innerWidth;
+      win.style.width = Math.min(300, vw - 24) + 'px';
+      win.style.height = '320px';
+      win.style.left = Math.max(8, (vw - 300) / 2) + (mainWin.scrollX || 0) + 'px';
+      win.style.top = (72 + (mainWin.scrollY || 0)) + 'px';
+    }
+    const ta = win.querySelector('#be-css-float-textarea');
+    ta.value = tpl.css || '';
+    applyTplLivePreview(tplId, ta.value);
+    win.classList.add('show');
+
+    let liveT = 0;
+    ta.oninput = () => {
+      if (liveT) mainWin.clearTimeout(liveT);
+      liveT = mainWin.setTimeout(() => { liveT = 0; applyTplLivePreview(tplId, ta.value); }, 250);
+    };
+    win.querySelector('#be-css-float-save').onclick = () => {
+      const css = ta.value.trim();
+      if (!css) { toast('CSS 不能为空', 'error'); return; }
+      const idx = (settings.customTemplates || []).findIndex(t => t.id === tplId);
+      if (idx < 0) { toast('模板已被删除', 'error'); return; }
+      settings.customTemplates[idx] = { ...settings.customTemplates[idx], css };
+      saveSettings(settings);
+      clearTplLivePreview();
+      injectCustomTemplateStyles();
+      if (mainDoc.getElementById('be-card')) renderCard(lastText);
+      toast('已保存', 'success');
+    };
+  }
+
+  // editId 传入时是"编辑已有自定义模板"，不传是"新建"；开发者模式开着时额外提供CSS实时预览
+  function openImportTemplateDialog(editId) {
+    const editing = !!editId;
+    const existing = editing ? (settings.customTemplates || []).find(t => t.id === editId) : null;
+    if (editing && !existing) { toast('找不到这个模板', 'error'); return; }
+    const dev = !!settings.creatorMode;
     let mask = mainDoc.getElementById('be-import-tpl-mask');
     if (!mask) {
       mask = mainDoc.createElement('div');
       mask.id = 'be-import-tpl-mask';
       mask.className = 'be-import-tpl-mask';
-      mask.innerHTML = `
-        <div class="be-import-tpl-box">
-          <div class="be-src-title">导入自定义模板</div>
-          <div class="be-src-field">
-            <label>模板名称</label>
-            <input type="text" id="be-imp-name" placeholder="例如：我的模板">
-          </div>
-          <div class="be-src-field">
-            <label>CSS（选择器使用 .be-card.tpl-custom-&lt;你的 id&gt; 或 .be-card.be-custom）</label>
-            <textarea id="be-imp-css" rows="10" placeholder=".be-card.be-custom { padding: 40px; }
-.be-card.be-custom .be-quote { font-size: 22px; }"></textarea>
-          </div>
-          <div class="be-src-field" style="font-size:11px;opacity:0.7;">
-            可用结构：.be-head / .be-avatar / .be-name / .be-date / .be-date-cn / .be-quote / .be-source .title / .be-source .chapter / .be-source .author / .be-watermark
-          </div>
-          <div class="be-src-actions">
-            <button class="be-btn" id="be-imp-cancel">取消</button>
-            <button class="be-btn" id="be-imp-file">从文件导入</button>
-            <button class="be-btn primary" id="be-imp-save">保存</button>
-          </div>
-        </div>
-      `;
       mainDoc.body.appendChild(mask);
-      mask.addEventListener('click', e => { if (e.target === mask) mask.classList.remove('open'); });
+      mask.addEventListener('click', e => { if (e.target === mask) mask.querySelector('#be-imp-cancel')?.click(); });
     } else if (mask.parentNode !== mainDoc.body || mask.nextSibling) {
       mainDoc.body.appendChild(mask);
     }
+    // 每次打开都重建内容：开发者模式随时可能被切换，缓存的旧 DOM 不会自动跟着变
+    mask.innerHTML = `
+      <div class="be-import-tpl-box">
+        <div class="be-src-title">${editing ? '编辑自定义模板' : '导入自定义模板'}</div>
+        <div class="be-src-field">
+          <label>模板名称</label>
+          <input type="text" id="be-imp-name" placeholder="例如：我的模板">
+        </div>
+        <div class="be-src-field">
+          <label>CSS（选择器使用 .be-card.tpl-custom-&lt;你的 id&gt; 或 .be-card.be-custom）</label>
+          <textarea id="be-imp-css" rows="10" placeholder=".be-card.be-custom { padding: 40px; }
+.be-card.be-custom .be-quote { font-size: 22px; }"></textarea>
+        </div>
+        <div class="be-src-field" style="font-size:11px;opacity:0.7;">
+          可用结构：.be-head / .be-avatar / .be-name / .be-date / .be-date-cn / .be-quote / .be-source .title / .be-source .chapter / .be-source .author / .be-watermark
+        </div>
+        ${dev ? `
+        <div class="be-src-field" style="font-size:11px;opacity:0.75;">
+          开发者模式：改动会实时预览（如果当前卡片预览正好用的是这个模板）；未点"保存"前不会真正写入。
+        </div>
+        ` : ''}
+        <div class="be-src-actions">
+          <button class="be-btn" id="be-imp-cancel">取消</button>
+          <button class="be-btn" id="be-imp-file">从文件导入</button>
+          <button class="be-btn primary" id="be-imp-save">保存</button>
+        </div>
+      </div>
+    `;
     detectAndApplyTheme();
-    mask.querySelector('#be-imp-name').value = '';
-    mask.querySelector('#be-imp-css').value = '';
+    mask.querySelector('#be-imp-name').value = existing ? (existing.name || '') : '';
+    mask.querySelector('#be-imp-css').value = existing ? (existing.css || '') : '';
     mask.classList.add('open');
+    disableClassInspector();
 
-    const close = () => mask.classList.remove('open');
-    const reNew = (sel, fn) => {
-      const el = mask.querySelector(sel);
-      const clone = el.cloneNode(true);
-      el.parentNode.replaceChild(clone, el);
-      clone.addEventListener('click', fn);
+    const activeId = editing ? editId : ('t' + Date.now() + Math.random().toString(36).slice(2, 5));
+    let liveT = 0;
+    const scheduleLivePreview = () => {
+      if (!dev) return;
+      if (liveT) mainWin.clearTimeout(liveT);
+      liveT = mainWin.setTimeout(() => {
+        liveT = 0;
+        applyTplLivePreview(activeId, mask.querySelector('#be-imp-css').value);
+      }, 250);
     };
-    reNew('#be-imp-cancel', close);
-    reNew('#be-imp-file', () => {
+    if (dev) {
+      mask.querySelector('#be-imp-css').addEventListener('input', scheduleLivePreview);
+      if (editing) applyTplLivePreview(activeId, existing.css || '');
+    }
+
+    const close = () => {
+      mask.classList.remove('open');
+      clearTplLivePreview();
+      disableClassInspector();
+    };
+    mask.querySelector('#be-imp-cancel').addEventListener('click', close);
+    mask.querySelector('#be-imp-file').addEventListener('click', () => {
       const inp = mainDoc.createElement('input');
       inp.type = 'file';
       inp.accept = '.css,.json,text/css,application/json';
@@ -5971,28 +6928,39 @@ $(() => {
           } catch (e) {}
           mask.querySelector('#be-imp-name').value = name;
           mask.querySelector('#be-imp-css').value = css;
+          scheduleLivePreview();
         };
         fr.readAsText(f);
       });
       inp.click();
     });
-    reNew('#be-imp-save', () => {
+    mask.querySelector('#be-imp-save').addEventListener('click', () => {
       const name = mask.querySelector('#be-imp-name').value.trim() || '未命名';
       let css = mask.querySelector('#be-imp-css').value.trim();
       if (!css) { toast('CSS 不能为空', 'error'); return; }
-      const id = 't' + Date.now() + Math.random().toString(36).slice(2, 5);
+      const id = activeId;
       // 把 .be-custom 选择器替换成本模板的实际 id 选择器
       const selector = `.be-card.tpl-custom-${id}`;
       css = css.replace(/\.be-card\.be-custom\b/g, selector);
-      const list = Array.isArray(settings.customTemplates) ? settings.customTemplates : [];
-      list.push({ id, name, css });
+      const list = Array.isArray(settings.customTemplates) ? settings.customTemplates.slice() : [];
+      if (editing) {
+        const idx = list.findIndex(t => t.id === id);
+        const slotImages = list[idx] && list[idx].slotImages;
+        if (idx >= 0) list[idx] = { id, name, css, ...(slotImages ? { slotImages } : {}) };
+        else list.push({ id, name, css });
+      } else {
+        list.push({ id, name, css });
+      }
       settings.customTemplates = list;
       saveSettings(settings);
+      clearTplLivePreview();
       injectCustomTemplateStyles();
       _customTplOpen = true;
-      close();
+      mask.classList.remove('open');
+      disableClassInspector();
       renderSettings();
-      toast('已导入模板', 'success');
+      if (mainDoc.getElementById('be-card')) renderCard(lastText);
+      toast(editing ? '已保存修改' : '已导入模板', 'success');
     });
   }
 
@@ -6005,6 +6973,42 @@ $(() => {
     injectCustomTemplateStyles();
     renderSettings();
     if (mainDoc.getElementById('be-card')) renderCard(lastText);
+  }
+  function hideBuiltinTemplate(tk) {
+    const hidden = new Set(settings.hiddenTemplates || []);
+    hidden.add(tk);
+    settings.hiddenTemplates = Array.from(hidden);
+    // 如果隐藏的是当前选中的，退回经典（经典本身没法被隐藏，见下方渲染逻辑）
+    if (settings.template === tk) settings.template = 'classic';
+    saveSettings(settings);
+    renderSettings();
+    if (mainDoc.getElementById('be-card')) renderCard(lastText);
+  }
+  function restoreBuiltinTemplate(tk) {
+    settings.hiddenTemplates = (settings.hiddenTemplates || []).filter(k => k !== tk);
+    saveSettings(settings);
+    renderSettings();
+  }
+  let _hiddenTplOpen = false;
+  function renderHiddenTemplateGroup() {
+    const hidden = (settings.hiddenTemplates || []).filter(k => TEMPLATES[k]);
+    if (!hidden.length) return '';
+    return `
+      <div class="be-tpl-group ${_hiddenTplOpen ? 'open' : ''}" id="be-hidden-tpl-group">
+        <div class="be-tpl-group-head" id="be-hidden-tpl-group-head">
+          <span class="be-caret"></span>
+          <span>已隐藏的默认模板（${hidden.length}）</span>
+        </div>
+        <div class="be-tpl-group-body">
+          ${hidden.map(k => `
+            <div class="be-tpl-custom-row" data-k="">
+              <span class="be-tpl-custom-name">${escapeHtml(TEMPLATES[k].name)}</span>
+              <button data-restore-tpl="${k}" title="恢复显示">↺ 恢复</button>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
   }
 
   // 设置面板分两层：壳层（Tab 条，只建一次，切分组时不重建、不参与动画）+ 内容层（真正随分组变化的部分）。
@@ -6047,25 +7051,61 @@ $(() => {
   function renderSettingsGroupContent(container) {
     const body = container; // 下面沿用原来 body.querySelector(...) 的写法，body 现在指内容容器而不是 #be-p-body
     const isCustomColor = settings.colorPreset === 'custom';
+    const srcVals = getSourceValues();
 
     body.innerHTML = `
       ${settingsGroup === 'appearance' ? `
       <div class="be-sec">
         <h4>模板（排版）</h4>
         <div class="be-tpl-grid">
-          ${Object.entries(TEMPLATES).map(([k, v]) => `
-            <div class="be-tpl-card ${settings.template===k?'active':''}" data-k="${k}">${v.name}</div>
+          ${Object.entries(TEMPLATES).filter(([k]) => !(settings.hiddenTemplates||[]).includes(k)).map(([k, v]) => `
+            <div class="be-tpl-card" data-k="${k}" data-thide="${k}">${v.name}</div>
           `).join('')}
           <div class="be-tpl-card be-tpl-import" id="be-tpl-import">+ 导入</div>
         </div>
+        <div class="be-row" style="font-size:11px;opacity:0.7;">
+          <span>长按默认模板可以隐藏它（自定义模板用旁边的 × 删除）</span>
+        </div>
         ${renderCustomTemplateGroup()}
+        ${renderHiddenTemplateGroup()}
+        <div class="be-row" style="margin-top:8px;">
+          <label style="flex:1;">开发者模式</label>
+          <label class="be-toggle">
+            <input type="checkbox" id="be-creator-mode" ${settings.creatorMode?'checked':''}>
+            <span class="be-slider"></span>
+          </label>
+        </div>
+        <div class="be-row" style="font-size:11px;opacity:0.7;">
+          <span>开启后点自定义模板的 ✎ 会打开一个可拖动缩放的悬浮CSS编辑窗，跟卡片预览同屏、边改边看效果，还带类名查询器</span>
+        </div>
+      </div>
+
+      <div class="be-sec">
+        <h4>插件主题色</h4>
+        <div class="be-row">
+          <label style="flex:1;">主题色</label>
+          <input type="color" id="be-theme-color" value="${escapeHtml(settings.themeColor || '#95b6d6')}">
+        </div>
+        <div class="be-row" style="font-size:11px;opacity:0.7;">
+          <span>只影响插件自己的界面（设置面板/笔记本/悬浮按钮等），不影响下面"颜色"里卡片本身的配色方案</span>
+        </div>
+        <div class="be-row" style="margin-top:8px;">
+          <label style="flex:1;">划线工具条跟随酒馆主题</label>
+          <label class="be-toggle">
+            <input type="checkbox" id="be-follow-tavern-theme" ${settings.followTavernTheme?'checked':''}>
+            <span class="be-slider"></span>
+          </label>
+        </div>
+        <div class="be-row" style="font-size:11px;opacity:0.7;">
+          <span>只影响划线时弹出的那条小工具条（划线/想法/书摘）的背景和字色，跟酒馆当前主题的输入框颜色保持一致；不影响设置面板/笔记本，也不影响上面的主题色和卡片配色</span>
+        </div>
       </div>
 
       <div class="be-sec">
         <h4>颜色</h4>
         <div class="be-color-grid">
-          ${COLOR_PRESETS.map(p => `
-            <div class="be-color-dot ${settings.colorPreset===p.id?'active':''}" data-k="${p.id}"
+          ${COLOR_PRESETS.filter(p => !(settings.hiddenColorPresets||[]).includes(p.id)).map(p => `
+            <div class="be-color-dot ${settings.colorPreset===p.id?'active':''}" data-k="${p.id}" data-chide="${p.id}"
                  title="${escapeHtml(p.name)}"
                  style="background:${p.bg};color:${p.fg};">A</div>
           `).join('')}
@@ -6082,6 +7122,10 @@ $(() => {
           }).join('')}
           <div class="be-color-dot rainbow ${isCustomColor?'active':''}" data-k="custom" title="自定义"></div>
         </div>
+        <div class="be-row" style="font-size:11px;opacity:0.7;">
+          <span>长按默认配色可以隐藏它（自定义配色用旁边的 × 删除）</span>
+        </div>
+        ${renderHiddenColorGroup()}
         <div class="be-row" style="margin-top:10px;">
           <label style="flex:1;">自定义背景</label>
           <input type="color" id="be-custom-bg" value="${escapeHtml(settings.customBg || '#f5f1e8')}" ${isCustomColor?'':'disabled'}>
@@ -6168,6 +7212,16 @@ $(() => {
             <button class="be-btn" id="be-avatar-clear" ${settings.customAvatar?'':'disabled'}>清除</button>
           </div>
         </div>
+        <div class="be-row" id="be-avatar-quality-row" style="${settings.avatarType==='custom'?'':'display:none;'}">
+          <label style="flex:1;">头像清晰度</label>
+          <div class="be-radio-group" id="be-avatar-quality-group">
+            <button class="be-radio-opt ${(settings.avatarQuality||'standard')==='standard'?'active':''}" data-v="standard">标准</button>
+            <button class="be-radio-opt ${settings.avatarQuality==='high'?'active':''}" data-v="high">高清</button>
+          </div>
+        </div>
+        <div class="be-row" id="be-avatar-quality-hint" style="${settings.avatarType==='custom'?'':'display:none;'}font-size:11px;opacity:0.7;">
+          <span>高清占用存储空间更大，重新上传才会按新档位压缩；已上传的头像不会自动变清晰</span>
+        </div>
         <div class="be-row">
           <label style="flex:1;">显示日期</label>
           <label class="be-toggle">
@@ -6178,7 +7232,7 @@ $(() => {
         <div class="be-row">
           <label style="flex:1;">显示书名（需在「编辑出处」里填写）</label>
           <label class="be-toggle">
-            <input type="checkbox" id="be-show-booktitle" ${settings.showSourceTitle?'checked':''}>
+            <input type="checkbox" id="be-show-booktitle" ${srcVals.showSourceTitle?'checked':''}>
             <span class="be-slider"></span>
           </label>
         </div>
@@ -6203,16 +7257,29 @@ $(() => {
           </label>
         </div>
         <div class="be-row" style="font-size:12px;opacity:0.8;margin-top:8px;">
-          <span style="flex:1;">用户名：${escapeHtml(settings.sourceUser || '（默认：{{user}}）')}</span>
+          <span style="flex:1;">用户名：${escapeHtml(srcVals.sourceUser || '（默认：{{user}}）')}</span>
         </div>
         <div class="be-row" style="font-size:12px;opacity:0.8;">
-          <span style="flex:1;">作者：${escapeHtml(settings.sourceAuthor || '（默认：{{char}}）')}</span>
+          <span style="flex:1;">作者：${escapeHtml(srcVals.sourceAuthor || '（默认：{{char}}）')}</span>
         </div>
         <div class="be-row" style="font-size:12px;opacity:0.8;">
-          <span style="flex:1;">书名：${escapeHtml(settings.sourceTitle || '（未填，不显示）')}</span>
+          <span style="flex:1;">书名：${escapeHtml(srcVals.sourceTitle || '（未填，不显示）')}</span>
         </div>
         <div class="be-row" style="gap:6px;">
           <button class="be-btn" id="be-edit-source-btn">编辑出处</button>
+        </div>
+        <div class="be-row" style="margin-top:8px;">
+          <label style="flex:1;">出处生效范围</label>
+        </div>
+        <div class="be-row">
+          <div class="be-radio-group" id="be-source-scope-group" style="width:100%;">
+            <button type="button" class="be-radio-opt ${(settings.sourceScope||'global')==='global'?'active':''}" data-v="global">全局统一</button>
+            <button type="button" class="be-radio-opt ${settings.sourceScope==='character'?'active':''}" data-v="character">按角色区分</button>
+            <button type="button" class="be-radio-opt ${settings.sourceScope==='chat'?'active':''}" data-v="chat">按角色+聊天区分</button>
+          </div>
+        </div>
+        <div class="be-row" style="font-size:11px;opacity:0.7;">
+          <span>切换范围后"编辑出处"改的是当前角色/聊天各自的一份设定，互不影响；切回"全局统一"会恢复用回全局那一份</span>
         </div>
       </div>
       ` : ''}
@@ -6229,6 +7296,19 @@ $(() => {
         </div>
         <div class="be-row" style="font-size:11px;opacity:0.7;">
           <span>只影响"选中文字弹出划线小工具栏"这一步，已有的划线、笔记本、书摘卡片都不受影响</span>
+        </div>
+      </div>
+
+      <div class="be-sec">
+        <h4>取词方式</h4>
+        <div class="be-row">
+          <div class="be-radio-group" id="be-selectmode-group">
+            <button type="button" class="be-radio-opt ${(settings.selectMode||'drag')==='drag'?'active':''}" data-v="drag">拖选（默认）</button>
+            <button type="button" class="be-radio-opt ${settings.selectMode==='tap'?'active':''}" data-v="tap">两点定位</button>
+          </div>
+        </div>
+        <div class="be-row" style="font-size:11px;opacity:0.7;">
+          <span>两点定位：正常拖选一小段当开头，点弹出的"设为开头"；再拖选一小段当结尾，点"设为结尾"，两段之间的全部文字就会被选中——适合手机端长文本一次性拖选不准的情况</span>
         </div>
       </div>
 
@@ -6308,6 +7388,7 @@ $(() => {
               <button type="button" class="be-radio-opt ${!settings.mergeDefaultTarget?'active':''}" data-v="">每次询问</button>
               <button type="button" class="be-radio-opt ${settings.mergeDefaultTarget==='note'?'active':''}" data-v="note">存为笔记</button>
               <button type="button" class="be-radio-opt ${settings.mergeDefaultTarget==='card'?'active':''}" data-v="card">生成书摘</button>
+              <button type="button" class="be-radio-opt ${settings.mergeDefaultTarget==='both'?'active':''}" data-v="both">两者都要</button>
             </div>
           </div>
           <div class="be-row" style="margin-top:8px;">
@@ -6329,6 +7410,13 @@ $(() => {
           <button class="be-btn" id="be-export-all">导出全部</button>
           <button class="be-btn" id="be-import-all">导入</button>
           <button class="be-btn danger" id="be-clear-all">清空</button>
+        </div>
+        <div class="be-row" style="gap:6px;margin-top:8px;">
+          <button class="be-btn" id="be-export-bundle">导出模板/字体/颜色</button>
+          <button class="be-btn" id="be-import-bundle">批量导入</button>
+        </div>
+        <div class="be-row" style="font-size:11px;opacity:0.7;">
+          <span>打包导出/导入所有自定义模板、字体、配色（不含笔记，笔记数据用上面「导出全部/导入」）</span>
         </div>
       </div>
 
@@ -6370,7 +7458,7 @@ $(() => {
     // 绑定
     body.querySelectorAll('.be-tpl-card').forEach(el => {
       if (el.id === 'be-tpl-import') {
-        el.addEventListener('click', openImportTemplateDialog);
+        el.addEventListener('click', () => openImportTemplateDialog());
         return;
       }
       el.addEventListener('click', () => {
@@ -6384,21 +7472,65 @@ $(() => {
       _customTplOpen = !_customTplOpen;
       body.querySelector('#be-tpl-group')?.classList.toggle('open', _customTplOpen);
     });
-    body.querySelectorAll('.be-tpl-custom-row').forEach(row => {
+    body.querySelectorAll('#be-tpl-group .be-tpl-custom-row').forEach(row => {
       row.addEventListener('click', e => {
-        if (e.target.closest('button[data-del]')) return;
+        if (e.target.closest('button')) return;
         settings.template = row.getAttribute('data-k');
         saveSettings(settings);
         renderSettings();
         if (mainDoc.getElementById('be-card')) renderCard(lastText);
       });
+      row.addEventListener('dragstart', e => {
+        _tplDragId = row.getAttribute('data-tid');
+        e.dataTransfer && (e.dataTransfer.effectAllowed = 'move');
+      });
+      row.addEventListener('dragover', e => { e.preventDefault(); row.classList.add('dragover'); });
+      row.addEventListener('dragleave', () => row.classList.remove('dragover'));
+      row.addEventListener('drop', e => {
+        e.preventDefault();
+        row.classList.remove('dragover');
+        const targetId = row.getAttribute('data-tid');
+        if (!_tplDragId || _tplDragId === targetId) return;
+        const rect = row.getBoundingClientRect();
+        const insertBefore = (e.clientY - rect.top) < rect.height / 2;
+        reorderCustomTemplate(_tplDragId, targetId, insertBefore);
+        _tplDragId = null;
+      });
     });
-    body.querySelectorAll('.be-tpl-custom-row button[data-del]').forEach(b => {
+    body.querySelectorAll('#be-tpl-group .be-tpl-custom-row button[data-fav]').forEach(b => {
+      b.addEventListener('click', e => {
+        e.stopPropagation();
+        toggleTemplateFavorite(b.getAttribute('data-fav'));
+      });
+    });
+    body.querySelectorAll('#be-tpl-group .be-tpl-custom-row button[data-del]').forEach(b => {
       b.addEventListener('click', e => {
         e.stopPropagation();
         const tid = b.getAttribute('data-del');
         if (!mainWin.confirm('删除这个自定义模板？')) return;
         deleteCustomTemplate(tid);
+      });
+    });
+    body.querySelector('#be-hidden-tpl-group-head')?.addEventListener('click', () => {
+      _hiddenTplOpen = !_hiddenTplOpen;
+      body.querySelector('#be-hidden-tpl-group')?.classList.toggle('open', _hiddenTplOpen);
+    });
+    body.querySelectorAll('#be-hidden-tpl-group button[data-restore-tpl]').forEach(b => {
+      b.addEventListener('click', e => {
+        e.stopPropagation();
+        restoreBuiltinTemplate(b.getAttribute('data-restore-tpl'));
+      });
+    });
+    body.querySelectorAll('.be-tpl-card[data-thide]').forEach(el => {
+      bindLongPress(el, () => hideBuiltinTemplate(el.getAttribute('data-thide')));
+    });
+    body.querySelectorAll('.be-tpl-custom-row button[data-edit]').forEach(b => {
+      b.addEventListener('click', e => {
+        e.stopPropagation();
+        const tid = b.getAttribute('data-edit');
+        // 开发者模式下用可拖动的悬浮CSS编辑窗（能跟卡片预览同屏），否则走普通弹窗
+        if (settings.creatorMode) openCssFloatEditor(tid);
+        else openImportTemplateDialog(tid);
       });
     });
     body.querySelectorAll('.be-tpl-custom-row button[data-export]').forEach(b => {
@@ -6434,10 +7566,23 @@ $(() => {
         if (mainDoc.getElementById('be-card')) renderCard(lastText);
       });
     });
-    body.querySelectorAll('.be-color-del').forEach(el => {
+    body.querySelectorAll('.be-color-del[data-cdel]').forEach(el => {
       el.addEventListener('click', e => {
         e.stopPropagation();
         deleteCustomColor(el.getAttribute('data-cdel'));
+      });
+    });
+    body.querySelectorAll('.be-color-dot[data-chide]').forEach(el => {
+      bindLongPress(el, () => hideColorPreset(el.getAttribute('data-chide')));
+    });
+    body.querySelector('#be-hidden-color-group-head')?.addEventListener('click', () => {
+      _hiddenColorOpen = !_hiddenColorOpen;
+      body.querySelector('#be-hidden-color-group')?.classList.toggle('open', _hiddenColorOpen);
+    });
+    body.querySelectorAll('#be-hidden-color-group button[data-restore-color]').forEach(b => {
+      b.addEventListener('click', e => {
+        e.stopPropagation();
+        restoreColorPreset(b.getAttribute('data-restore-color'));
       });
     });
     body.querySelector('#be-save-color')?.addEventListener('click', () => {
@@ -6520,6 +7665,22 @@ $(() => {
       settings.underlineColor = DEFAULT_SETTINGS.underlineColor;
       saveSettings(settings); refreshStyle(); renderSettings();
     });
+    body.querySelector('#be-theme-color')?.addEventListener('input', e => {
+      settings.themeColor = e.target.value;
+      saveSettings(settings);
+      refreshStyle();
+    });
+    body.querySelector('#be-follow-tavern-theme')?.addEventListener('change', e => {
+      settings.followTavernTheme = e.target.checked;
+      saveSettings(settings);
+      refreshStyle();
+      renderSettings();
+    });
+    body.querySelector('#be-creator-mode')?.addEventListener('change', e => {
+      settings.creatorMode = e.target.checked;
+      saveSettings(settings);
+      renderSettings();
+    });
     body.querySelector('#be-color-marker')?.addEventListener('input', e => {
       settings.markerColor = e.target.value;
       saveSettings(settings); refreshStyle();
@@ -6553,7 +7714,18 @@ $(() => {
         body.querySelectorAll('#be-avatar-type-group .be-radio-opt').forEach(b => b.classList.toggle('active', b === btn));
         const row = body.querySelector('#be-custom-avatar-row');
         if (row) row.style.display = settings.avatarType === 'custom' ? '' : 'none';
+        const qRow = body.querySelector('#be-avatar-quality-row');
+        if (qRow) qRow.style.display = settings.avatarType === 'custom' ? '' : 'none';
+        const qHint = body.querySelector('#be-avatar-quality-hint');
+        if (qHint) qHint.style.display = settings.avatarType === 'custom' ? '' : 'none';
         if (mainDoc.getElementById('be-card')) renderCard(lastText);
+      });
+    });
+    body.querySelectorAll('#be-avatar-quality-group .be-radio-opt').forEach(btn => {
+      btn.addEventListener('click', () => {
+        settings.avatarQuality = btn.getAttribute('data-v');
+        saveSettings(settings);
+        body.querySelectorAll('#be-avatar-quality-group .be-radio-opt').forEach(b => b.classList.toggle('active', b === btn));
       });
     });
     body.querySelectorAll('#be-savemode-group .be-radio-opt').forEach(btn => {
@@ -6576,7 +7748,8 @@ $(() => {
         const f = ev.target.files && ev.target.files[0];
         if (!f) return;
         try {
-          const dataUrl = await fileToCompressedAvatar(f);
+          const maxSize = settings.avatarQuality === 'high' ? 900 : 320;
+          const dataUrl = await fileToCompressedAvatar(f, maxSize);
           settings.customAvatar = dataUrl;
           saveSettings(settings);
           const prev = body.querySelector('#be-avatar-preview');
@@ -6684,14 +7857,21 @@ $(() => {
       if (mainDoc.getElementById('be-card')) renderCard(lastText);
     });
     body.querySelector('#be-show-booktitle')?.addEventListener('change', e => {
-      settings.showSourceTitle = e.target.checked;
-      saveSettings(settings);
+      setSourceValues({ showSourceTitle: e.target.checked });
       if (mainDoc.getElementById('be-card')) renderCard(lastText);
     });
     body.querySelector('#be-highlight-disabled')?.addEventListener('change', e => {
       settings.highlightDisabled = e.target.checked;
       saveSettings(settings);
-      if (settings.highlightDisabled) hideBar();
+      if (settings.highlightDisabled) { hideBar(); resetPickPending(); }
+    });
+    body.querySelectorAll('#be-selectmode-group .be-radio-opt').forEach(btn => {
+      btn.addEventListener('click', () => {
+        settings.selectMode = btn.getAttribute('data-v') === 'tap' ? 'tap' : 'drag';
+        saveSettings(settings);
+        resetPickPending();
+        body.querySelectorAll('#be-selectmode-group .be-radio-opt').forEach(b => b.classList.toggle('active', b === btn));
+      });
     });
     body.querySelector('#be-merge-enabled')?.addEventListener('change', e => {
       settings.mergeEnabled = e.target.checked;
@@ -6716,6 +7896,15 @@ $(() => {
         body.querySelectorAll('#be-merge-delorig-group .be-radio-opt').forEach(b => b.classList.toggle('active', b === btn));
       });
     });
+    body.querySelectorAll('#be-source-scope-group .be-radio-opt').forEach(btn => {
+      btn.addEventListener('click', () => {
+        settings.sourceScope = btn.getAttribute('data-v');
+        saveSettings(settings);
+        body.querySelectorAll('#be-source-scope-group .be-radio-opt').forEach(b => b.classList.toggle('active', b === btn));
+        renderSettingsGroupContent(body); // 范围一变，预览文本要立刻换成对应角色/聊天那份
+        if (mainDoc.getElementById('be-card')) renderCard(lastText);
+      });
+    });
     body.querySelector('#be-edit-source-btn')?.addEventListener('click', () => {
       // 关掉/不关 panel 无所谓——出处对话框 z-index 比 panel 高
       openSourceEditor();
@@ -6730,6 +7919,8 @@ $(() => {
     });
     body.querySelector('#be-export-all')?.addEventListener('click', exportNotes);
     body.querySelector('#be-import-all')?.addEventListener('click', importNotes);
+    body.querySelector('#be-export-bundle')?.addEventListener('click', exportTemplateBundle);
+    body.querySelector('#be-import-bundle')?.addEventListener('click', importTemplateBundle);
     body.querySelector('#be-clear-all')?.addEventListener('click', () => {
       if (!mainWin.confirm('确定清空所有笔记？此操作不可恢复。')) return;
       mainWin.localStorage.removeItem(LS_NOTES);
@@ -6965,7 +8156,7 @@ $(() => {
             removeFromMergeBasket('note:' + id);
           } else {
             const it = allItems.find(x => x.id === id);
-            if (it) addToMergeBasket({ text: it.text, source: 'note', noteId: id });
+            if (it) addToMergeBasket({ text: it.text, source: 'note', noteId: id, charKey: currentCharKey, chatId: it.chatId || '' });
           }
           fillCharNotes();
           return;
@@ -7069,6 +8260,65 @@ $(() => {
       onChange && onChange();
       close();
     });
+  }
+
+  // ---------- 模板/字体/颜色 批量导入导出（打包一份 JSON，跟"导出全部"笔记数据完全独立）----------
+  function templateToPortable(t) {
+    const idEsc = String(t.id).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const cssOut = (t.css || '').replace(new RegExp('\\.be-card\\.tpl-custom-' + idEsc, 'g'), '.be-card.be-custom');
+    return { name: t.name || '未命名', css: cssOut };
+  }
+  function portableToTemplate(p) {
+    const id = 't' + Date.now() + Math.random().toString(36).slice(2, 5);
+    const css = (p.css || '').replace(/\.be-card\.be-custom\b/g, `.be-card.tpl-custom-${id}`);
+    return { id, name: p.name || '未命名', css };
+  }
+  function exportTemplateBundle() {
+    const payload = {
+      type: 'book-excerpt-bundle',
+      version: 1,
+      templates: (settings.customTemplates || []).map(templateToPortable),
+      fonts: (settings.customFonts || []).map(f => ({ name: f.name || '未命名', css: f.css || '', fontFamily: f.fontFamily || '' })),
+      colors: (settings.customColors || []).map(c => ({ name: c.name || '自定义配色', bg: c.bg, fg: c.fg, fgEnabled: !!c.fgEnabled }))
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' });
+    triggerDownload(blob, `书摘模板包_${formatDate().replace(/\//g, '')}.json`);
+    toast('已导出', 'success');
+  }
+  function importTemplateBundle() {
+    const input = mainDoc.createElement('input');
+    input.type = 'file'; input.accept = 'application/json';
+    input.addEventListener('change', e => {
+      const f = e.target.files[0]; if (!f) return;
+      const fr = new FileReader();
+      fr.onload = () => {
+        try {
+          const obj = JSON.parse(fr.result);
+          if (!obj || typeof obj !== 'object') throw new Error('格式错误');
+          const tpls = Array.isArray(obj.templates) ? obj.templates : [];
+          const fonts = Array.isArray(obj.fonts) ? obj.fonts : [];
+          const colors = Array.isArray(obj.colors) ? obj.colors : [];
+          const newTpls = tpls.map(portableToTemplate);
+          const newFonts = fonts.map(fo => ({
+            id: 'f' + Date.now() + Math.random().toString(36).slice(2, 5),
+            name: fo.name || '未命名', css: fo.css || '', fontFamily: fo.fontFamily || 'sans-serif'
+          }));
+          const newColors = colors.map(c => ({
+            id: 'c' + Date.now() + Math.random().toString(36).slice(2, 5),
+            name: c.name || '自定义配色', bg: c.bg, fg: c.fg, fgEnabled: !!c.fgEnabled
+          }));
+          settings.customTemplates = (settings.customTemplates || []).concat(newTpls);
+          settings.customFonts = (settings.customFonts || []).concat(newFonts);
+          settings.customColors = (settings.customColors || []).concat(newColors);
+          saveSettings(settings);
+          injectCustomTemplateStyles();
+          renderSettings();
+          toast(`已导入：模板 ${newTpls.length} / 字体 ${newFonts.length} / 配色 ${newColors.length}`, 'success');
+        } catch (err) { toast('导入失败：' + (err?.message || err), 'error'); }
+      };
+      fr.readAsText(f);
+    });
+    input.click();
   }
 
   function exportNotes() {
@@ -9098,7 +10348,7 @@ $(() => {
   $(window).on('pagehide', () => {
     ['be-float-bar', 'be-mask', 'be-thought-mask', 'be-source-mask', 'be-panel', 'be-style', 'be-menu-entry',
      'be-hl-bar', 'be-viewer-mask', 'be-imgpop', 'be-merge-badge', 'be-merge-sheet', 'be-merge-target-mask',
-     'be-menu-entry-freeform', 'be-fc-mask'].forEach(id => {
+     'be-menu-entry-freeform', 'be-fc-mask', 'be-pick-step-bar', 'be-card-hl-bar', 'be-css-float'].forEach(id => {
       mainDoc.getElementById(id)?.remove();
     });
   });
