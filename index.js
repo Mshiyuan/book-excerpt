@@ -38,9 +38,8 @@ $(() => {
     customColors: [],              // 用户保存的自定义配色列表 [{id, name, bg, fg, fgEnabled}]
     palette: 'macaron',            // 划线色系：morandi/macaron/mondrian/memphis/matisse
     avatarType: 'user',            // 头像类型：user / char / custom
-    customAvatar: '',              // 自定义头像 dataURL（avatarType==='custom' 时使用）
-    avatarQuality: 'standard',     // 自定义头像清晰度：standard(320px，省空间) / high(900px)
-    exportScale: 2,                // 保存图片时传给 html2canvas 的 scale 倍率，不再跟随 devicePixelRatio 封顶（2~5，用户可调；1x太糊已去掉）
+    customAvatar: '',              // 自定义头像：'idb:<key>'（图片本体在 IndexedDB）；旧版是 dataURL，启动时自动迁移
+    exportScale: 3,                // 保存图片时传给 html2canvas 的 scale 倍率（2~5，用户可调；1x太糊已去掉）
     font: 'follow_theme',
     quoteFontSize: 19,             // 正文字号 px（11~22）
     quoteLineHeight: 2.05,         // 正文行距（1.5~2.3）
@@ -93,7 +92,7 @@ $(() => {
     hiddenTemplates: [],           // 被用户隐藏的内置模板 id 列表（TEMPLATES 的 key）
     hiddenColorPresets: [],        // 被用户隐藏的内置配色 id 列表（COLOR_PRESETS 的 id）
     templateOrder: [],             // 自定义模板的自由排序（存 customTemplates 的 id，未出现的按原数组顺序排在后面）
-    templateFavorites: []          // 收藏的自定义模板 id 列表（渲染时置顶）
+    templateFavorites: []          // 收藏的模板 key 列表（跟 settings.template 同格式：'classic' / 'custom-<id>'），选模板时排在最前
   };
 
   // ---------- 模板（仅排版，颜色独立）----------
@@ -262,11 +261,33 @@ $(() => {
         s.maskUser = s.maskChar = (parsed.maskAuto !== false);
       }
       delete s.maskAuto;
+      // v1.5.0：保存清晰度默认 2x→3x。老存档里的 2 基本都是当初整份设置落盘时顺带存进去的默认值，
+      // 只在第一次升级时提到 3；之后用户自己改回 2 不会再被覆盖
+      if (!parsed._scaleDefault3) {
+        if (!(Number(s.exportScale) > 2)) s.exportScale = 3;
+        s._scaleDefault3 = true;
+      }
+      // 收藏改成跟 settings.template 同一套 key（'classic' / 'custom-<id>'），默认模板以后也能收藏
+      if (Array.isArray(s.templateFavorites)) {
+        s.templateFavorites = s.templateFavorites.map(f => (TEMPLATES[f] || String(f).startsWith('custom-')) ? f : `custom-${f}`);
+      }
+      delete s.avatarQuality;
       return s;
     } catch { return JSON.parse(JSON.stringify(DEFAULT_SETTINGS)); }
   }
+  // 写失败不能再静默吞掉：之前图片塞在 settings 里撑爆 5MB 后，之后所有设置改动都悄悄存不进去
+  let _settingsSaveWarned = false;
   function saveSettings(s) {
-    try { mainWin.localStorage.setItem(LS_SETTINGS, JSON.stringify(s)); } catch (e) {}
+    try {
+      mainWin.localStorage.setItem(LS_SETTINGS, JSON.stringify(s));
+      _settingsSaveWarned = false;
+    } catch (e) {
+      console.warn('[BookExcerpt] 设置保存失败', e);
+      if (!_settingsSaveWarned) {
+        _settingsSaveWarned = true;
+        try { toast('设置没能保存：浏览器存储空间不足或被禁用', 'error'); } catch (e2) {}
+      }
+    }
   }
   let settings = loadSettings();
 
@@ -598,78 +619,193 @@ $(() => {
     return '';
   }
 
-  // 把上传的图片文件压缩到 ≤320px 方形 JPEG dataURL（避免 localStorage 5MB 上限）
-  // 上传后调用：const dataUrl = await fileToCompressedAvatar(file);
-  function fileToCompressedAvatar(file, maxSize = 320, quality = 0.85) {
+  // ---------- 用户上传图片的存储（IndexedDB）----------
+  // 以前头像/模板图片压成 dataURL 塞进 settings（localStorage 总共才 5MB），多传几张就超额，
+  // 而 saveSettings 吞掉了写入异常——表现就是"有的图传不上/刷新后没了"，甚至连带之后所有设置都存不进去。
+  // 现在图片本体放 IndexedDB（没有这个量级的上限），settings 里只存 'idb:<key>' 引用；
+  // 也不再为了省空间硬压到 320/900/1600px + JPEG 0.85（那是"上传后变糊"的原因），尽量保留原图，
+  // 导出时再按用户选的倍率去缩放，清晰度自然跟着倍率走。
+  const IMG_DB_NAME = 'book-excerpt-images';
+  const IMG_STORE = 'images';
+  let _imgDbP = null;
+  function imgDb() {
+    if (_imgDbP) return _imgDbP;
+    _imgDbP = new Promise((resolve, reject) => {
+      let req;
+      try { req = mainWin.indexedDB.open(IMG_DB_NAME, 1); } catch (e) { reject(e); return; }
+      req.onupgradeneeded = () => { try { req.result.createObjectStore(IMG_STORE); } catch (e) {} };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error || new Error('IndexedDB 打开失败'));
+    });
+    _imgDbP.catch(() => { _imgDbP = null; });
+    return _imgDbP;
+  }
+  function imgTx(mode, fn) {
+    return imgDb().then(db => new Promise((resolve, reject) => {
+      const tx = db.transaction(IMG_STORE, mode);
+      const store = tx.objectStore(IMG_STORE);
+      let result;
+      const req = fn(store);
+      if (req) req.onsuccess = () => { result = req.result; };
+      tx.oncomplete = () => resolve(result);
+      tx.onerror = () => reject(tx.error || new Error('IndexedDB 写入失败'));
+      tx.onabort = () => reject(tx.error || new Error('IndexedDB 写入被中止'));
+    }));
+  }
+  // 存 {type, data:ArrayBuffer} 而不是 Blob：脚本形态跑在助手 iframe 里，跨 realm 的 Blob 容易出怪问题，
+  // 取出来时统一用 mainWin.Blob + mainWin.URL 在主文档 realm 里重建（见 [[project_blob_download_realm_bug]]）
+  const imgPut = (key, rec) => imgTx('readwrite', s => s.put(rec, key));
+  const imgGet = (key) => imgTx('readonly', s => s.get(key));
+  const imgDel = (key) => imgTx('readwrite', s => s.delete(key)).catch(() => {});
+  const _imgUrlCache = new Map();
+  const _imgLoading = new Map();
+  function imgRefKey(ref) {
+    return (typeof ref === 'string' && ref.startsWith('idb:')) ? ref.slice(4) : '';
+  }
+  // 同步取可显示的 URL：旧数据(dataURL/普通URL)原样返回；idb 引用已加载就返回 blob URL，
+  // 没加载就先返回空串并异步加载，加载好后调 onReady 让调用方重渲染一次
+  function imgUrlSync(ref, onReady) {
+    if (!ref) return '';
+    const key = imgRefKey(ref);
+    if (!key) return ref;
+    if (_imgUrlCache.has(key)) return _imgUrlCache.get(key);
+    if (!_imgLoading.has(key)) {
+      const p = imgGet(key).then(rec => {
+        if (rec && rec.data) {
+          const blob = new mainWin.Blob([rec.data], { type: rec.type || 'image/png' });
+          _imgUrlCache.set(key, mainWin.URL.createObjectURL(blob));
+        }
+      }).catch(e => console.warn('[BookExcerpt] 读取图片失败', key, e));
+      _imgLoading.set(key, p);
+      p.finally(() => _imgLoading.delete(key));
+    }
+    if (onReady) _imgLoading.get(key).then(() => { if (_imgUrlCache.has(key)) onReady(); });
+    return '';
+  }
+  function imgForget(ref) {
+    const key = imgRefKey(ref);
+    if (!key) return;
+    const url = _imgUrlCache.get(key);
+    if (url) { try { mainWin.URL.revokeObjectURL(url); } catch (e) {} }
+    _imgUrlCache.delete(key);
+    imgDel(key);
+  }
+  function isImageFile(file) {
+    if (!file) return false;
+    if (/^image\//.test(file.type || '')) return true;
+    return /\.(jpe?g|png|webp|gif|bmp|avif)$/i.test(file.name || '');
+  }
+  function decodeImageFile(file) {
     return new Promise((resolve, reject) => {
-      if (!file || !/^image\//.test(file.type)) {
-        reject(new Error('请选择图片文件'));
-        return;
-      }
-      const fr = new FileReader();
-      fr.onerror = () => reject(new Error('读取文件失败'));
-      fr.onload = () => {
-        const img = new Image();
-        img.onerror = () => reject(new Error('图片解码失败'));
-        img.onload = () => {
-          try {
-            const w0 = img.naturalWidth, h0 = img.naturalHeight;
-            if (!w0 || !h0) { reject(new Error('图片尺寸无效')); return; }
-            // 居中裁成方形再缩放
-            const side = Math.min(w0, h0);
-            const sx = (w0 - side) / 2, sy = (h0 - side) / 2;
-            const out = Math.min(maxSize, side);
-            const canvas = mainDoc.createElement('canvas');
-            canvas.width = out; canvas.height = out;
-            const ctx = canvas.getContext('2d');
-            ctx.imageSmoothingQuality = 'high';
-            ctx.drawImage(img, sx, sy, side, side, 0, 0, out, out);
-            // 透明图（png）用透明 webp 退到 png，否则 jpeg
-            const hasAlpha = /\/png$|\/webp$|\/gif$/i.test(file.type);
-            const mime = hasAlpha ? 'image/png' : 'image/jpeg';
-            const dataUrl = canvas.toDataURL(mime, quality);
-            resolve(dataUrl);
-          } catch (e) { reject(e); }
-        };
-        img.src = String(fr.result || '');
+      const url = mainWin.URL.createObjectURL(file);
+      const img = new mainWin.Image();
+      img.onload = () => resolve({ img, url });
+      img.onerror = () => {
+        try { mainWin.URL.revokeObjectURL(url); } catch (e) {}
+        const heic = /heic|heif/i.test(file.type || '') || /\.(heic|heif)$/i.test(file.name || '');
+        reject(new Error(heic ? '浏览器不支持 HEIC 格式，请先转成 JPG/PNG 再上传' : '图片解码失败（格式不受支持或文件已损坏）'));
       };
-      fr.readAsDataURL(file);
+      img.src = url;
     });
   }
-
-  // 通用图片压缩：不裁方形，按最长边等比缩放——用于模板背景图槽位（头像用上面那个居中裁方形的）
-  function fileToCompressedImage(file, maxDim = 1600, quality = 0.85) {
+  function canvasToBlob(canvas, mime, quality) {
     return new Promise((resolve, reject) => {
-      if (!file || !/^image\//.test(file.type)) {
-        reject(new Error('请选择图片文件'));
-        return;
-      }
-      const fr = new FileReader();
-      fr.onerror = () => reject(new Error('读取文件失败'));
-      fr.onload = () => {
-        const img = new Image();
-        img.onerror = () => reject(new Error('图片解码失败'));
-        img.onload = () => {
-          try {
-            const w0 = img.naturalWidth, h0 = img.naturalHeight;
-            if (!w0 || !h0) { reject(new Error('图片尺寸无效')); return; }
-            const scale = Math.min(1, maxDim / Math.max(w0, h0));
-            const outW = Math.max(1, Math.round(w0 * scale));
-            const outH = Math.max(1, Math.round(h0 * scale));
-            const canvas = mainDoc.createElement('canvas');
-            canvas.width = outW; canvas.height = outH;
-            const ctx = canvas.getContext('2d');
-            ctx.imageSmoothingQuality = 'high';
-            ctx.drawImage(img, 0, 0, outW, outH);
-            const hasAlpha = /\/png$|\/webp$|\/gif$/i.test(file.type);
-            const mime = hasAlpha ? 'image/png' : 'image/jpeg';
-            resolve(canvas.toDataURL(mime, quality));
-          } catch (e) { reject(e); }
-        };
-        img.src = String(fr.result || '');
-      };
-      fr.readAsDataURL(file);
+      try {
+        canvas.toBlob(b => b ? resolve(b) : reject(new Error('图片编码失败')), mime, quality);
+      } catch (e) { reject(e); }
     });
+  }
+  // kind='avatar'：居中裁方形，边长最多 1024（头像显示最大约 84px，5x 导出也才 420px，1024 绰绰有余）；
+  // kind='slot'：不裁剪；原图 ≤3MB 且最长边 ≤3200 直接原样保存（零损失），否则等比缩到 3200 再高质量编码
+  async function saveImageFile(file, kind) {
+    if (!isImageFile(file)) throw new Error('请选择图片文件');
+    const { img, url } = await decodeImageFile(file);
+    try {
+      const w0 = img.naturalWidth, h0 = img.naturalHeight;
+      if (!w0 || !h0) throw new Error('图片尺寸无效');
+      const hasAlpha = /png|webp|gif|avif/i.test(file.type || '') || /\.(png|webp|gif|avif)$/i.test(file.name || '');
+      let blob;
+      if (kind === 'slot' && file.size <= 3 * 1024 * 1024 && Math.max(w0, h0) <= 3200 && /^image\/(jpeg|png|webp|gif)$/i.test(file.type || '')) {
+        blob = file;
+      } else {
+        const canvas = mainDoc.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        if (kind === 'avatar') {
+          const side = Math.min(w0, h0);
+          const out = Math.min(1024, side);
+          canvas.width = out; canvas.height = out;
+          ctx.drawImage(img, (w0 - side) / 2, (h0 - side) / 2, side, side, 0, 0, out, out);
+        } else {
+          const scale = Math.min(1, 3200 / Math.max(w0, h0));
+          canvas.width = Math.max(1, Math.round(w0 * scale));
+          canvas.height = Math.max(1, Math.round(h0 * scale));
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        }
+        blob = await canvasToBlob(canvas, hasAlpha ? 'image/png' : 'image/jpeg', 0.95);
+        canvas.width = canvas.height = 0;
+      }
+      const data = await blob.arrayBuffer();
+      const key = `${kind}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+      await imgPut(key, { type: blob.type || (hasAlpha ? 'image/png' : 'image/jpeg'), data });
+      _imgUrlCache.set(key, mainWin.URL.createObjectURL(new mainWin.Blob([data], { type: blob.type || 'image/png' })));
+      return 'idb:' + key;
+    } finally {
+      try { mainWin.URL.revokeObjectURL(url); } catch (e) {}
+    }
+  }
+  // 旧版存在 settings 里的 dataURL（头像、模板图片）搬进 IndexedDB，给 localStorage 腾空间
+  async function dataUrlToIdb(dataUrl, kind) {
+    const m = String(dataUrl).match(/^data:([^;,]+)(;base64)?,(.*)$/s);
+    if (!m) return '';
+    const bin = m[2] ? mainWin.atob(m[3]) : decodeURIComponent(m[3]);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const key = `${kind}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+    await imgPut(key, { type: m[1], data: bytes.buffer });
+    return 'idb:' + key;
+  }
+  async function setCustomAvatarFromFile(file) {
+    const ref = await saveImageFile(file, 'avatar');
+    const old = settings.customAvatar;
+    settings.customAvatar = ref;
+    if (old && old !== ref) imgForget(old);
+    saveSettings(settings);
+    return ref;
+  }
+  function clearCustomAvatar() {
+    imgForget(settings.customAvatar);
+    settings.customAvatar = '';
+    saveSettings(settings);
+  }
+  // 启动时一次性：把旧版塞在 settings 里的 dataURL 图片搬到 IndexedDB，并把 slotImages 的 key 换成新格式
+  async function migrateImagesToIdb() {
+    let changed = false;
+    try {
+      if (typeof settings.customAvatar === 'string' && settings.customAvatar.startsWith('data:')) {
+        settings.customAvatar = await dataUrlToIdb(settings.customAvatar, 'avatar');
+        changed = true;
+      }
+      for (const tpl of (settings.customTemplates || [])) {
+        if (!tpl.slotImages) continue;
+        if (migrateSlotKeys(tpl)) changed = true;
+        for (const k of Object.keys(tpl.slotImages)) {
+          const v = tpl.slotImages[k];
+          if (typeof v === 'string' && v.startsWith('data:')) {
+            tpl.slotImages[k] = await dataUrlToIdb(v, 'slot');
+            changed = true;
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[BookExcerpt] 旧图片迁移到 IndexedDB 失败，继续沿用 dataURL', e);
+    }
+    if (changed) {
+      saveSettings(settings);
+      injectCustomTemplateStyles();
+      if (mainDoc.getElementById('be-card')) renderCard(lastText);
+    }
   }
 
   // 把图片 url 转 data URL（避免截图时 CORS 把头像变 [object Event]）
@@ -777,12 +913,11 @@ $(() => {
     const thoughtLine = settings.thoughtLineColor || marker;
     const wavyUri = wavyDataUri(accent);
     const dashUri = dashDataUri(thoughtLine);
-    // 「跟随酒馆主题」范围收窄：只影响划线时弹出的浮动工具条（#be-float-bar/#be-hl-bar/...）的背景和字色，
-    // 不影响 --be-accent（设置面板/笔记本不跟着变）。直接用 var(...) 引用酒馆自己的变量，交给浏览器实时解析，
-    // 酒馆换主题这边也会跟着变，不用额外监听——ST 的输入框/下拉框背景本来就是 --black30a 这个半透明叠加值。
-    const floatBg = settings.followTavernTheme ? 'var(--black30a, #2b2b2b)' : '#2b2b2b';
-    const floatFg = settings.followTavernTheme ? 'var(--SmartThemeBodyColor, #f0f0f0)' : '#f0f0f0';
-    const floatDivider = settings.followTavernTheme ? 'var(--SmartThemeBorderColor, rgba(255,255,255,0.12))' : 'rgba(255,255,255,0.12)';
+    // 浮动工具条默认深色；「跟随酒馆主题」开着时不在这里改，而是每次弹出时由 applyTavernFloatStyle()
+    // 现场采样酒馆真实的下拉框/h4 元素的计算样式（含美化贴图）写到工具条的内联样式上，覆盖这里的默认值
+    const floatBg = '#2b2b2b';
+    const floatFg = '#f0f0f0';
+    const floatDivider = 'rgba(255,255,255,0.12)';
     return `
     :root {
       --be-accent: ${accent};
@@ -866,13 +1001,13 @@ $(() => {
       width: 0; height: 0;
       border-left: 5px solid transparent;
       border-right: 5px solid transparent;
-      border-bottom: 5px solid var(--be-float-bg, #2b2b2b);
+      border-bottom: 5px solid var(--be-float-arrow, var(--be-float-bg, #2b2b2b));
     }
     /* 在选区上方时，箭头在工具栏底部、朝下指向文字 */
     #be-float-bar.arrow-bottom::after, #be-card-hl-bar.arrow-bottom::after, #be-pick-step-bar.arrow-bottom::after {
       top: auto; bottom: -5px;
       border-bottom: none;
-      border-top: 5px solid var(--be-float-bg, #2b2b2b);
+      border-top: 5px solid var(--be-float-arrow, var(--be-float-bg, #2b2b2b));
     }
     #be-float-bar .be-fbtn, #be-card-hl-bar .be-fbtn, #be-pick-step-bar .be-fbtn {
       background: transparent; border: none;
@@ -908,7 +1043,7 @@ $(() => {
       margin: 6px 0;
     }
     /* ===== 点击划线弹出的改样式工具栏 ===== */
-    #be-hl-bar {
+    #be-hl-bar, #be-card-hl-pop {
       position: absolute;
       z-index: 2147483601;
       background: var(--be-float-bg, #2b2b2b);
@@ -919,20 +1054,28 @@ $(() => {
       font-family: -apple-system, "PingFang SC", sans-serif;
       user-select: none;
       max-width: 92vw;
+      box-sizing: border-box;
     }
-    #be-hl-bar.show { display: block; }
-    #be-hl-bar::after {
+    /* 卡片二次高亮的样式弹窗开在书摘弹窗（#be-mask, 2147483630）里，要压在它上面 */
+    #be-card-hl-pop { z-index: 2147483641; }
+    #be-hl-bar.show, #be-card-hl-pop.show { display: block; }
+    #be-hl-bar::after, #be-card-hl-pop::after {
       content: ''; position: absolute;
       top: -5px; left: var(--arrow-left, 24px);
       width: 0; height: 0;
       border-left: 5px solid transparent;
       border-right: 5px solid transparent;
-      border-bottom: 5px solid var(--be-float-bg, #2b2b2b);
+      border-bottom: 5px solid var(--be-float-arrow, var(--be-float-bg, #2b2b2b));
     }
-    #be-hl-bar.arrow-bottom::after {
+    #be-hl-bar.arrow-bottom::after, #be-card-hl-pop.arrow-bottom::after {
       top: auto; bottom: -5px;
-      border-top: 5px solid var(--be-float-bg, #2b2b2b); border-bottom: none;
+      border-top: 5px solid var(--be-float-arrow, var(--be-float-bg, #2b2b2b)); border-bottom: none;
     }
+    .be-hl-row2-scroll {
+      overflow-x: auto; -webkit-overflow-scrolling: touch;
+      scrollbar-width: none; padding-bottom: 2px;
+    }
+    .be-hl-row2-scroll::-webkit-scrollbar { display: none; }
     /* row1 是"复制/删除划线/写想法/..."这一排菜单式操作，视觉上当一个小标题栏处理：跟随酒馆主题时
        底部分隔线也换成酒馆自己的描边色，看起来更像酒馆原生的分组标题而不是一整块纯黑工具条 */
     .be-hl-row1 {
@@ -947,6 +1090,7 @@ $(() => {
     }
     .be-hl-row1::-webkit-scrollbar { display: none; }
     .be-hl-row1 button {
+      font-weight: var(--be-float-fw, normal);
       background: transparent; border: none; color: var(--be-float-fg, #f0f0f0);
       padding: 6px 10px; font-size: 12px;
       cursor: pointer; font-family: inherit;
@@ -975,11 +1119,20 @@ $(() => {
     .be-hl-st.active { border-color: var(--be-accent); }
     .be-hl-sample {
       font-size: 13px; font-weight: 600;
-      color: #fff;
+      color: var(--be-float-fg, #fff);
       padding-bottom: 2px;
       line-height: 1;
     }
-    .be-hl-sample.sample-underline { border-bottom: 1.5px solid #fff; }
+    .be-hl-sample.sample-underline { border-bottom: 1.5px solid currentColor; }
+    .be-hl-sample.sample-bold { font-weight: 900; font-size: 14px; }
+    /* 卡片二次高亮的新样式：只改字色，不画线也不铺底 */
+    .be-highlight.style-fontcolor { border-bottom: none; background: none; }
+    /* 卡片选区工具条上的文字图标（下划线/荧光笔/字色/加粗） */
+    .be-chl-ico { display: block; font-size: 14px; font-weight: 600; line-height: 15px; height: 15px; }
+    .be-chl-ico-u { border-bottom: 1.5px solid currentColor; line-height: 13px; }
+    .be-chl-ico-m { background: linear-gradient(to bottom, transparent 55%, rgba(255,220,110,0.7) 55%, rgba(255,220,110,0.7) 95%, transparent 95%); padding: 0 2px; }
+    .be-chl-ico-c { color: #e8a0a0; }
+    .be-chl-ico-b { font-weight: 900; }
     .be-hl-sample.sample-wavy {
       background: transparent url("${wavyDataUri('#ffffff')}") repeat-x 0 100%;
       background-size: 16px 4px;
@@ -991,7 +1144,7 @@ $(() => {
     }
     .be-hl-divider {
       width: 1px; height: 20px;
-      background: rgba(255,255,255,0.15);
+      background: var(--be-float-divider, rgba(255,255,255,0.15));
       margin: 0 8px;
       flex: 0 0 auto;
     }
@@ -2331,7 +2484,6 @@ $(() => {
       color: var(--be-panel-sub); font-size: 11px;
     }
     .be-tpl-card.be-tpl-import:hover { border-color: var(--be-accent); color: var(--be-accent); }
-    .be-tpl-slot { cursor: pointer; position: relative; }
     .be-inspect-hl { outline: 2px solid #ff5050 !important; outline-offset: -1px; }
     #be-inspect-tip {
       position: fixed; z-index: 2147483647;
@@ -2383,22 +2535,30 @@ $(() => {
     .be-css-resize-sw { left: 0; bottom: 0; cursor: sw-resize; }
     .be-css-resize-ne { right: 0; top: 0; cursor: ne-resize; }
     .be-css-resize-nw { left: 0; top: 0; cursor: nw-resize; }
-    .be-tpl-slot:hover::after {
-      content: '点击更换图片';
-      position: absolute; inset: 0;
-      background: rgba(0,0,0,0.4); color: #fff;
-      display: flex; align-items: center; justify-content: center;
-      font-size: 12px; letter-spacing: 0.04em; text-align: center;
-      pointer-events: none; border-radius: inherit;
+    /* 模板图片槽：一个位置有多张图/已换过图时弹的小选择框（在书摘弹窗里，要压在 #be-mask 上面） */
+    #be-slot-chooser {
+      position: absolute; z-index: 2147483642;
+      display: none; flex-direction: column; gap: 6px;
+      min-width: 200px; max-width: 86vw;
+      padding: 10px; border-radius: 12px;
+      background: var(--be-panel-bg, #1b1b1b); color: var(--be-panel-fg, #eee);
+      box-shadow: 0 8px 28px rgba(0,0,0,0.5);
+      font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
     }
-    .be-avatar-clickable { cursor: pointer; position: relative; }
-    .be-avatar-clickable:hover::after {
-      content: '换图';
-      position: absolute; inset: 0;
-      background: rgba(0,0,0,0.4); color: #fff;
-      display: flex; align-items: center; justify-content: center;
-      font-size: 10px; letter-spacing: 0.04em;
-      pointer-events: none; border-radius: inherit;
+    #be-slot-chooser.show { display: flex; }
+    #be-slot-chooser .be-slot-chooser-title { font-size: 12px; opacity: 0.6; letter-spacing: 0.06em; }
+    #be-slot-chooser .be-slot-row { display: flex; align-items: center; gap: 8px; }
+    #be-slot-chooser .be-slot-thumb {
+      width: 36px; height: 36px; border-radius: 6px; flex: 0 0 auto;
+      background: #555 center / cover no-repeat;
+    }
+    #be-slot-chooser .be-slot-name { flex: 1; font-size: 13px; }
+    #be-slot-chooser .be-btn { padding: 4px 10px; font-size: 12px; }
+    /* 可点击换图的提示：不能动 position、不能占用 ::before/::after——模板自己常用它们摆位置/画装饰图，
+       改了会把模板排版和装饰顶掉。只给指针形状 + 桌面端悬停时压一层内阴影变暗。 */
+    .be-avatar-clickable, .be-tpl-slot:not(.be-card) { cursor: pointer; }
+    @media (hover: hover) {
+      .be-avatar-clickable:hover, .be-tpl-slot:not(.be-card):hover { box-shadow: inset 0 0 0 999px rgba(0,0,0,0.25); }
     }
 
     .be-tpl-group { margin-top: 10px; }
@@ -3137,78 +3297,241 @@ $(() => {
       mainDoc.head.appendChild(el);
     }
     const list = Array.isArray(settings.customTemplates) ? settings.customTemplates : [];
-    el.textContent = list.map(t => `\n/* ${(t.name||'').replace(/\*\//g,'')} */\n${t.css || ''}`).join('\n');
+    el.textContent = list.map(t => `\n/* ${(t.name||'').replace(/\*\//g,'')} */\n${applySlotImagesToCss(t, t.css || '')}`).join('\n');
   }
   // 主题色/划线色变了时调用一下，把变量重写
   function refreshStyle() {
     injectStyle();
   }
 
-  // ---------- 自定义模板图片槽：自动扫描 CSS 里的 background-image:url(...) 引用 ----------
-  // 简化版 CSS 解析：按花括号配对切规则块，不处理嵌套 @media（模板 CSS 一般不会嵌套）
-  function extractBgImageSlots(css) {
-    const slots = [];
+  // ---------- 自定义模板图片槽：按 CSS 里引用的图片 URL 来换图 ----------
+  // 旧做法是"找到带背景图的选择器→给元素写内联 background-image"，有三个坑：
+  //  · 模板用 !important 声明背景时，内联样式压不过 → 预览不变，但导出读的是内联值 → 下载成了新图（预览/下载不一致）
+  //  · ::before/::after 上的装饰图（很常见）querySelectorAll 选不中 → 这类图根本点不出上传
+  //  · 一条规则里多张图 / 用 var(--x) 传图 → 只能整条替换或识别不到
+  // 新做法：把"换图"定义为把模板 CSS 里某个 url(...) 换成用户上传的图，注入样式时直接改写 CSS 文本。
+  // 预览和导出（沙箱会复制 #be-custom-style）用的是同一份改写后的 CSS，优先级/伪元素/变量全都天然正确。
+  const CSS_URL_RE = /url\(\s*(?:"([^"]*)"|'([^']*)'|([^)'"]*?))\s*\)/g;
+  function cssUrlRaw(m) { return String(m[1] ?? m[2] ?? m[3] ?? '').trim(); }
+  // 模板 CSS 里所有"图片"URL（跳过 @import 和 @font-face 里的字体链接）
+  function extractTemplateImageUrls(css) {
+    const cleaned = String(css || '')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/@import[^;]*;/gi, '')
+      .replace(/@font-face\s*\{[^}]*\}/gi, '');
+    const out = [];
     const seen = new Set();
-    const ruleRe = /([^{}]+)\{([^{}]*)\}/g;
     let m;
-    while ((m = ruleRe.exec(css || ''))) {
-      const selector = m[1].trim();
-      const body = m[2];
-      if (!selector || selector.startsWith('@')) continue;
-      if (/background(?:-image)?\s*:[^;}]*url\(/i.test(body) && !seen.has(selector)) {
-        seen.add(selector);
-        slots.push(selector);
-      }
+    CSS_URL_RE.lastIndex = 0;
+    while ((m = CSS_URL_RE.exec(cleaned))) {
+      const raw = cssUrlRaw(m);
+      if (!raw || seen.has(raw)) continue;
+      seen.add(raw);
+      out.push(raw);
     }
-    return slots;
+    return out;
   }
-  // 渲染完卡片后调用：给自定义模板里探测到的图片槽加上可点击上传的标记 + 应用已存的替换图
-  function applyTemplateSlotImages(wrap) {
-    if (!wrap) return;
-    const isCustomTpl = String(settings.template || '').startsWith('custom-');
-    if (!isCustomTpl) return;
+  function applySlotImagesToCss(tpl, css) {
+    const map = tpl && tpl.slotImages;
+    if (!map || !Object.keys(map).length) return css;
+    CSS_URL_RE.lastIndex = 0;
+    return String(css).replace(CSS_URL_RE, (whole, a, b, c) => {
+      const raw = String(a ?? b ?? c ?? '').trim();
+      const ref = map[raw];
+      if (!ref) return whole;
+      const url = imgUrlSync(ref, () => {
+        injectCustomTemplateStyles();
+        if (mainDoc.getElementById('be-card')) renderCard(lastText);
+      });
+      return url ? `url("${url}")` : whole;
+    });
+  }
+  function resolveCssUrl(raw) {
+    if (/^(data:|blob:)/i.test(raw)) return raw;
+    try { return new URL(raw, mainDoc.baseURI).href; } catch (e) { return raw; }
+  }
+  function computedUrls(cs) {
+    const out = [];
+    ['backgroundImage', 'borderImageSource', 'maskImage', 'webkitMaskImage', 'listStyleImage', 'content'].forEach(p => {
+      const v = cs && cs[p];
+      if (!v || v === 'none' || v.indexOf('url(') < 0) return;
+      let m;
+      CSS_URL_RE.lastIndex = 0;
+      while ((m = CSS_URL_RE.exec(v))) out.push(cssUrlRaw(m));
+    });
+    return out;
+  }
+  function currentTemplate() {
+    if (!String(settings.template || '').startsWith('custom-')) return null;
     const tid = settings.template.slice(7);
-    const tpl = (settings.customTemplates || []).find(t => t.id === tid);
-    if (!tpl) return;
-    const slots = extractBgImageSlots(tpl.css || '');
-    const stored = tpl.slotImages || {};
-    slots.forEach(sel => {
-      let els;
-      try { els = mainDoc.querySelectorAll(sel); } catch (e) { return; }
-      els.forEach(el => {
+    return (settings.customTemplates || []).find(t => t.id === tid) || null;
+  }
+  // 旧版 slotImages 的 key 是选择器、值是 dataURL；改成以 CSS 里的原始图片 URL 为 key
+  function migrateSlotKeys(tpl) {
+    const map = tpl.slotImages;
+    if (!map) return false;
+    const urls = new Set(extractTemplateImageUrls(tpl.css));
+    let changed = false;
+    const next = {};
+    Object.keys(map).forEach(k => {
+      if (urls.has(k)) { next[k] = map[k]; return; }
+      // 当作选择器：找到这条规则里的第一张图
+      const esc = k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const rule = String(tpl.css || '').match(new RegExp(esc + '\\s*\\{([^}]*)\\}'));
+      let m;
+      CSS_URL_RE.lastIndex = 0;
+      if (rule && (m = CSS_URL_RE.exec(rule[1]))) next[cssUrlRaw(m)] = map[k];
+      changed = true;
+    });
+    if (changed) tpl.slotImages = next;
+    return changed;
+  }
+  // 渲染完卡片后调用：找出卡片里哪些元素（含 ::before/::after）实际显示着模板里的图片，
+  // 记到元素上，点击时据此知道"点的是哪张图"。卡片正文 .be-quote 里的点击留给选字/二次高亮，不参与。
+  function markTemplateSlots(wrap) {
+    const tpl = currentTemplate();
+    const card = wrap && wrap.querySelector('#be-card');
+    if (!tpl || !card) return;
+    const map = tpl.slotImages || {};
+    const shownToRaw = new Map();
+    extractTemplateImageUrls(tpl.css).forEach(raw => {
+      shownToRaw.set(resolveCssUrl(raw), raw);
+      const ref = map[raw];
+      const replaced = ref ? imgUrlSync(ref) : '';
+      if (replaced) shownToRaw.set(replaced, raw);
+    });
+    if (!shownToRaw.size) return;
+    [card, ...card.querySelectorAll('*')].forEach(el => {
+      if (el.closest('.be-quote')) return;
+      const found = [];
+      [null, '::before', '::after'].forEach(pseudo => {
+        let cs;
+        try { cs = mainWin.getComputedStyle(el, pseudo); } catch (e) { return; }
+        if (pseudo && (!cs.content || cs.content === 'none')) return;
+        computedUrls(cs).forEach(u => {
+          const raw = shownToRaw.get(u) || shownToRaw.get(resolveCssUrl(u));
+          if (raw && !found.includes(raw)) found.push(raw);
+        });
+      });
+      if (found.length) {
         el.classList.add('be-tpl-slot');
-        el.setAttribute('data-be-slot', sel);
-        if (stored[sel]) {
-          el.style.backgroundImage = `url("${stored[sel]}")`;
-        }
+        el._beSlotUrls = found;
+      }
+    });
+    const anySlot = card.classList.contains('be-tpl-slot') || card.querySelector('.be-tpl-slot');
+    if (anySlot && !settings._slotHintShown) {
+      settings._slotHintShown = true;
+      saveSettings(settings);
+      toast('提示：这个模板里的图片可以直接点卡片上的图片区域更换', 'info');
+    }
+  }
+  function collectSlotCandidates(target, card) {
+    const out = [];
+    for (let el = target; el && el.nodeType === 1; el = el.parentElement) {
+      (el._beSlotUrls || []).forEach(raw => { if (!out.includes(raw)) out.push(raw); });
+      if (el === card) break;
+    }
+    return out;
+  }
+  function pickImageFile() {
+    return new Promise(resolve => {
+      const input = mainDoc.createElement('input');
+      input.type = 'file';
+      input.accept = 'image/*';
+      input.addEventListener('change', e => resolve((e.target.files && e.target.files[0]) || null));
+      input.click();
+    });
+  }
+  async function replaceTemplateImage(raw) {
+    const tpl = currentTemplate();
+    if (!tpl) return;
+    const f = await pickImageFile();
+    if (!f) return;
+    try {
+      const ref = await saveImageFile(f, 'slot');
+      tpl.slotImages = tpl.slotImages || {};
+      const old = tpl.slotImages[raw];
+      tpl.slotImages[raw] = ref;
+      if (old && old !== ref) imgForget(old);
+      saveSettings(settings);
+      injectCustomTemplateStyles();
+      if (mainDoc.getElementById('be-card')) renderCard(lastText);
+      toast('已替换图片', 'success');
+    } catch (err) {
+      toast('上传失败：' + (err?.message || err), 'error');
+    }
+  }
+  function restoreTemplateImage(raw) {
+    const tpl = currentTemplate();
+    if (!tpl || !tpl.slotImages || !tpl.slotImages[raw]) return;
+    imgForget(tpl.slotImages[raw]);
+    delete tpl.slotImages[raw];
+    saveSettings(settings);
+    injectCustomTemplateStyles();
+    if (mainDoc.getElementById('be-card')) renderCard(lastText);
+    toast('已恢复原图', 'success');
+  }
+  function closeSlotChooser() {
+    mainDoc.getElementById('be-slot-chooser')?.classList.remove('show');
+  }
+  // 一个位置叠了多张图（多图模板、元素+伪元素、外层背景）或这张图已经换过时，先让用户选"换哪张/恢复原图"
+  function openSlotChooser(cands, x, y) {
+    const tpl = currentTemplate();
+    if (!tpl) return;
+    const map = tpl.slotImages || {};
+    let box = mainDoc.getElementById('be-slot-chooser');
+    if (!box) {
+      box = mainDoc.createElement('div');
+      box.id = 'be-slot-chooser';
+      mainDoc.body.appendChild(box);
+      mainDoc.addEventListener('pointerdown', e => {
+        const b = mainDoc.getElementById('be-slot-chooser');
+        if (b && b.classList.contains('show') && !b.contains(e.target)) closeSlotChooser();
+      }, true);
+    } else if (box.parentNode !== mainDoc.body || box.nextSibling) {
+      mainDoc.body.appendChild(box);
+    }
+    box.innerHTML = `
+      <div class="be-slot-chooser-title">更换图片</div>
+      ${cands.map((raw, i) => {
+        const ref = map[raw];
+        const shown = (ref && imgUrlSync(ref)) || resolveCssUrl(raw);
+        return `
+          <div class="be-slot-row" data-i="${i}">
+            <span class="be-slot-thumb" style="background-image:url('${String(shown).replace(/'/g, '%27')}');"></span>
+            <span class="be-slot-name">图 ${i + 1}${ref ? '（已替换）' : ''}</span>
+            <button type="button" class="be-btn" data-act="replace" data-i="${i}">换图</button>
+            ${ref ? `<button type="button" class="be-btn" data-act="restore" data-i="${i}">恢复</button>` : ''}
+          </div>`;
+      }).join('')}
+    `;
+    box.querySelectorAll('button[data-act]').forEach(b => {
+      b.addEventListener('click', e => {
+        e.stopPropagation();
+        const raw = cands[Number(b.getAttribute('data-i'))];
+        closeSlotChooser();
+        if (b.getAttribute('data-act') === 'replace') replaceTemplateImage(raw);
+        else restoreTemplateImage(raw);
       });
     });
+    box.classList.add('show');
+    const bw = box.offsetWidth, bh = box.offsetHeight;
+    const left = Math.max(8, Math.min(x - bw / 2, mainWin.innerWidth - bw - 8));
+    const top = Math.max(8, Math.min(y + 12, mainWin.innerHeight - bh - 8));
+    box.style.left = (left + (mainWin.scrollX || 0)) + 'px';
+    box.style.top = (top + (mainWin.scrollY || 0)) + 'px';
   }
-  async function handleTemplateSlotUpload(sel) {
-    if (!sel) return;
-    const isCustomTpl = String(settings.template || '').startsWith('custom-');
-    if (!isCustomTpl) return;
-    const tid = settings.template.slice(7);
-    const tpl = (settings.customTemplates || []).find(t => t.id === tid);
-    if (!tpl) return;
-    const input = mainDoc.createElement('input');
-    input.type = 'file';
-    input.accept = 'image/*';
-    input.addEventListener('change', async e => {
-      const f = e.target.files && e.target.files[0];
-      if (!f) return;
-      try {
-        const dataUrl = await fileToCompressedImage(f);
-        tpl.slotImages = tpl.slotImages || {};
-        tpl.slotImages[sel] = dataUrl;
-        saveSettings(settings);
-        if (mainDoc.getElementById('be-card')) renderCard(lastText);
-        toast('已替换图片', 'success');
-      } catch (err) {
-        toast('上传失败：' + (err?.message || err), 'error');
-      }
-    });
-    input.click();
+  function onCardSlotClick(e) {
+    const card = mainDoc.getElementById('be-card');
+    if (!card || !card.contains(e.target)) return;
+    if (e.target.closest('.be-quote, .be-avatar-clickable, .be-card-hl')) return;
+    try { const sel = mainWin.getSelection(); if (sel && !sel.isCollapsed) return; } catch (err) {}
+    const cands = collectSlotCandidates(e.target, card);
+    if (!cands.length) return;
+    e.stopPropagation();
+    const map = (currentTemplate() || {}).slotImages || {};
+    if (cands.length === 1 && !map[cands[0]]) replaceTemplateImage(cands[0]);
+    else openSlotChooser(cands, e.clientX, e.clientY);
   }
 
   // 根据 ST 主题背景亮度判断当前是日间/夜间，给 body 加上 .be-light-theme
@@ -3521,8 +3844,171 @@ $(() => {
     if (mainDoc.getElementById('be-panel')?.classList.contains('open')) renderPanel();
   }
 
+  // ---------- 跟随酒馆主题：现场采样酒馆真实元素的样式 ----------
+  // 不猜变量名：直接找一个酒馆自己的下拉框(select) / h4 标题，读它的计算样式——这样用户装的美化主题
+  // （给 select/h4 加的贴图 background-image、边框、border-image、阴影、毛玻璃）都会原样带过来。
+  // select 本身常是半透明（ST 默认 --black30a），真实观感是"它叠在所在面板背景上"，所以要沿祖先往上
+  // 把每层背景（颜色+贴图）按顺序叠起来，直到遇到不透明的一层，否则挪到聊天区上方就成了透明的。
+  function splitCssList(v) {
+    const out = [];
+    let depth = 0, cur = '';
+    for (const ch of String(v || '')) {
+      if (ch === '(') depth++;
+      else if (ch === ')') depth--;
+      if (ch === ',' && depth === 0) { out.push(cur.trim()); cur = ''; } else cur += ch;
+    }
+    if (cur.trim()) out.push(cur.trim());
+    return out;
+  }
+  function parseCssColor(c) {
+    const m = String(c || '').match(/rgba?\(([^)]+)\)/);
+    if (!m) return null;
+    const p = m[1].split(/[\s,\/]+/).filter(Boolean).map(Number);
+    if (p.length < 3 || p.some(isNaN)) return null;
+    return { r: p[0], g: p[1], b: p[2], a: p.length > 3 ? p[3] : 1 };
+  }
+  function findTavernSample(kind) {
+    const sels = kind === 'select'
+      ? ['#themes', '#left-nav-panel select', '.drawer-content select', 'select.text_pole', 'select']
+      : ['#left-nav-panel h4', '#rm_api_block h4', '.drawer-content h4', 'h4'];
+    for (const s of sels) {
+      let list;
+      try { list = mainDoc.querySelectorAll(s); } catch (e) { continue; }
+      for (const el of list) {
+        if (!el.closest('[id^="be-"]')) return el;
+      }
+    }
+    return null;
+  }
+  function collectTavernBgStack(el) {
+    const layers = [];
+    let blur = '';
+    let node = el;
+    let alphaLeft = 1;
+    const pushLayers = (cs) => {
+      const imgs = splitCssList(cs.backgroundImage);
+      const sizes = splitCssList(cs.backgroundSize);
+      const poss = splitCssList(cs.backgroundPosition);
+      const reps = splitCssList(cs.backgroundRepeat);
+      imgs.forEach((img, i) => {
+        if (!img || img === 'none') return;
+        if (/down-arrow/i.test(img)) return; // ST 下拉框自带的小箭头图标，不是背景贴图
+        layers.push({
+          image: img,
+          size: sizes.length ? sizes[i % sizes.length] : 'auto',
+          position: poss.length ? poss[i % poss.length] : '0% 0%',
+          repeat: reps.length ? reps[i % reps.length] : 'repeat'
+        });
+      });
+    };
+    while (node && node.nodeType === 1) {
+      let cs;
+      try { cs = mainWin.getComputedStyle(node); } catch (e) { break; }
+      pushLayers(cs);
+      if (node === el) {
+        ['::before', '::after'].forEach(pseudo => {
+          try {
+            const pcs = mainWin.getComputedStyle(node, pseudo);
+            if (pcs && pcs.content && pcs.content !== 'none') pushLayers(pcs);
+          } catch (e) {}
+        });
+      }
+      const col = parseCssColor(cs.backgroundColor);
+      if (col && col.a > 0) {
+        layers.push({ color: col });
+        alphaLeft *= (1 - col.a);
+      }
+      if (!blur) {
+        const bf = cs.backdropFilter || cs.webkitBackdropFilter;
+        if (bf && bf !== 'none') blur = bf;
+      }
+      if (alphaLeft < 0.02) break;
+      node = node.parentElement;
+    }
+    return { layers, blur, alphaLeft };
+  }
+  function blendLayerColors(layers, base) {
+    // 从最底层往上把纯色层按 alpha 叠出一个近似实色，给小三角箭头用（箭头是 border 画的，没法贴图）
+    let r = base.r, g = base.g, b = base.b;
+    for (let i = layers.length - 1; i >= 0; i--) {
+      const c = layers[i].color;
+      if (!c) continue;
+      r = c.r * c.a + r * (1 - c.a);
+      g = c.g * c.a + g * (1 - c.a);
+      b = c.b * c.a + b * (1 - c.a);
+    }
+    return `rgb(${Math.round(r)}, ${Math.round(g)}, ${Math.round(b)})`;
+  }
+  const TAVERN_FLOAT_PROPS = [
+    'background-image', 'background-size', 'background-position', 'background-repeat', 'background-color',
+    'border-top', 'border-right', 'border-bottom', 'border-left', 'border-radius', 'box-shadow',
+    'backdrop-filter', '-webkit-backdrop-filter', 'text-shadow',
+    'border-image-source', 'border-image-slice', 'border-image-width', 'border-image-outset', 'border-image-repeat',
+    '--be-float-fg', '--be-float-arrow', '--be-float-divider', '--be-float-fw'
+  ];
+  function applyTavernFloatStyle(el, kind) {
+    if (!el) return;
+    TAVERN_FLOAT_PROPS.forEach(p => { try { el.style.removeProperty(p); } catch (e) {} });
+    if (!settings.followTavernTheme) return;
+    const sample = findTavernSample(kind);
+    if (!sample) return;
+    let cs;
+    try { cs = mainWin.getComputedStyle(sample); } catch (e) { return; }
+    const { layers, blur, alphaLeft } = collectTavernBgStack(sample);
+    // 一路叠到 body 都还很透明（主题把面板做成了纯透明）时，垫一层酒馆的 UI 背景色，
+    // 否则工具条浮在聊天文字上面根本看不清
+    if (alphaLeft > 0.5 && !blur) {
+      const tint = parseCssColor(mainWin.getComputedStyle(mainDoc.body).getPropertyValue('--SmartThemeBlurTintColor'));
+      layers.push({ color: tint ? { ...tint, a: 1 } : { r: 23, g: 23, b: 23, a: 1 } });
+    }
+    const imgs = [], sizes = [], poss = [], reps = [];
+    layers.forEach(l => {
+      if (l.color) {
+        const c = l.color;
+        imgs.push(`linear-gradient(rgba(${c.r}, ${c.g}, ${c.b}, ${c.a}), rgba(${c.r}, ${c.g}, ${c.b}, ${c.a}))`);
+        sizes.push('auto'); poss.push('0% 0%'); reps.push('repeat');
+      } else {
+        imgs.push(l.image); sizes.push(l.size); poss.push(l.position); reps.push(l.repeat);
+      }
+    });
+    if (imgs.length) {
+      el.style.setProperty('background-color', 'transparent');
+      el.style.setProperty('background-image', imgs.join(', '));
+      el.style.setProperty('background-size', sizes.join(', '));
+      el.style.setProperty('background-position', poss.join(', '));
+      el.style.setProperty('background-repeat', reps.join(', '));
+    }
+    if (blur) {
+      el.style.setProperty('backdrop-filter', blur);
+      el.style.setProperty('-webkit-backdrop-filter', blur);
+    }
+    ['top', 'right', 'bottom', 'left'].forEach(side => {
+      const w = cs.getPropertyValue(`border-${side}-width`);
+      const st = cs.getPropertyValue(`border-${side}-style`);
+      const c = cs.getPropertyValue(`border-${side}-color`);
+      if (st && st !== 'none' && parseFloat(w) > 0) el.style.setProperty(`border-${side}`, `${w} ${st} ${c}`);
+    });
+    const radius = cs.getPropertyValue('border-top-left-radius');
+    if (radius && parseFloat(radius) > 0) el.style.setProperty('border-radius', cs.borderRadius);
+    if (cs.boxShadow && cs.boxShadow !== 'none') el.style.setProperty('box-shadow', cs.boxShadow);
+    if (cs.textShadow && cs.textShadow !== 'none') el.style.setProperty('text-shadow', cs.textShadow);
+    if (cs.borderImageSource && cs.borderImageSource !== 'none') {
+      el.style.setProperty('border-image-source', cs.borderImageSource);
+      el.style.setProperty('border-image-slice', cs.borderImageSlice);
+      el.style.setProperty('border-image-width', cs.borderImageWidth);
+      el.style.setProperty('border-image-outset', cs.borderImageOutset);
+      el.style.setProperty('border-image-repeat', cs.borderImageRepeat);
+    }
+    el.style.setProperty('--be-float-fg', cs.color);
+    const fg = parseCssColor(cs.color);
+    if (fg) el.style.setProperty('--be-float-divider', `rgba(${fg.r}, ${fg.g}, ${fg.b}, 0.2)`);
+    el.style.setProperty('--be-float-arrow', blendLayerColors(layers, { r: 43, g: 43, b: 43 }));
+    if (kind === 'h4') el.style.setProperty('--be-float-fw', cs.fontWeight);
+  }
+
   function showBar(rect) {
     const bar = ensureBar();
+    applyTavernFloatStyle(bar, 'select');
     bar.classList.add('show');
     bar.classList.remove('arrow-bottom');
     bar.style.left = '-9999px';
@@ -3618,6 +4104,7 @@ $(() => {
       <button class="be-fbtn" type="button" data-act="main">${ICONS.underline}<span>${label}</span></button>
       ${pickPendingStart ? '<span class="be-fbtn-divider"></span><button class="be-fbtn" type="button" data-act="cancel">✕<span>取消</span></button>' : ''}
     `;
+    applyTavernFloatStyle(bar, 'select');
     const bindTap = (el, fn) => {
       const handler = e => { e.stopPropagation(); e.preventDefault(); fn(); };
       el.addEventListener('click', handler);
@@ -3657,21 +4144,30 @@ $(() => {
   // 跟聊天记录划线是两套完全独立的机制：这里选中的是已经生成好的书摘卡片正文（.be-quote），
   // 高亮效果只加在这次弹窗的实时 DOM 上，不创建 note、不落盘——跟"编辑正文"关闭弹窗即丢弃是同一个设计。
   let cardHlRange = null;
-  function wrapCardRange(range, style, color) {
+  // 卡片二次高亮的样式：underline/wavy/marker 沿用聊天划线那套 class；fontcolor 只改字色（不画线）；
+  // bold 是独立开关，可以叠加在任何样式上。同一次选区可能被拆成多个 span（跨节点），用 data-chl 编组，改样式时整组一起改。
+  function applyCardHlStyle(span, style, color, bold) {
+    span.className = `be-highlight style-${style} be-card-hl`;
+    span.dataset.st = style;
+    span.dataset.col = color || '';
+    span.dataset.bold = bold ? '1' : '';
+    applySpanColor(span, style === 'fontcolor' ? '' : style, style === 'fontcolor' ? '' : color);
+    span.style.color = (style === 'fontcolor' && color) ? color : '';
+    span.style.fontWeight = bold ? '700' : '';
+  }
+  function cardHlGroup(gid) {
+    return Array.from(mainDoc.querySelectorAll(`.be-card-hl[data-chl="${gid}"]`));
+  }
+  function wrapCardRange(range, style, color, bold) {
     const doc = (range.startContainer && range.startContainer.ownerDocument) || mainDoc;
-    const className = `be-highlight style-${style} be-card-hl`;
+    const gid = 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
     const makeSpan = () => {
       const span = doc.createElement('span');
-      span.className = className;
-      applySpanColor(span, style, color);
-      // 卡片内的二次高亮没有笔记本那套合并/删除面板：再点一下直接原地取消，符合"临时效果"的定位
+      span.dataset.chl = gid;
+      applyCardHlStyle(span, style, color, bold);
       span.addEventListener('click', e => {
         e.stopPropagation();
-        const parent = span.parentNode;
-        if (!parent) return;
-        while (span.firstChild) parent.insertBefore(span.firstChild, span);
-        parent.removeChild(span);
-        try { parent.normalize(); } catch (err) {}
+        openCardHlPop(gid, span);
       });
       return span;
     };
@@ -3720,15 +4216,23 @@ $(() => {
     bar = mainDoc.createElement('div');
     bar.id = 'be-card-hl-bar';
     bar.innerHTML = `
-      <button class="be-fbtn" data-act="underline" type="button">${ICONS.underline}<span>下划线</span></button>
+      <button class="be-fbtn" data-act="underline" type="button"><span class="be-chl-ico be-chl-ico-u">A</span><span>下划线</span></button>
       <span class="be-fbtn-divider"></span>
-      <button class="be-fbtn" data-act="marker" type="button">${ICONS.underline}<span>荧光笔</span></button>
+      <button class="be-fbtn" data-act="marker" type="button"><span class="be-chl-ico be-chl-ico-m">A</span><span>荧光笔</span></button>
+      <span class="be-fbtn-divider"></span>
+      <button class="be-fbtn" data-act="fontcolor" type="button"><span class="be-chl-ico be-chl-ico-c">A</span><span>字色</span></button>
+      <span class="be-fbtn-divider"></span>
+      <button class="be-fbtn" data-act="bold" type="button"><span class="be-chl-ico be-chl-ico-b">B</span><span>加粗</span></button>
     `;
     bar.addEventListener('pointerdown', e => { e.preventDefault(); });
     const fireAction = (act) => {
       if (!cardHlRange) return;
-      const color = act === 'marker' ? (settings.markerColor || '#ffdc6e') : (settings.underlineColor || '#95b6d6');
-      try { wrapCardRange(cardHlRange, act, color); } catch (e) {}
+      let style = act, color = '', bold = false;
+      if (act === 'marker') color = settings.markerColor || '#ffdc6e';
+      else if (act === 'underline') color = settings.underlineColor || '#95b6d6';
+      else if (act === 'fontcolor') color = settings.underlineColor || '#95b6d6';
+      else if (act === 'bold') { style = 'fontcolor'; bold = true; }
+      try { wrapCardRange(cardHlRange, style, color, bold); } catch (e) {}
       hideCardHlBar();
       try { mainWin.getSelection().removeAllRanges(); } catch (e) {}
     };
@@ -3748,6 +4252,7 @@ $(() => {
   }
   function showCardHlBar(rect) {
     const bar = ensureCardHlBar();
+    applyTavernFloatStyle(bar, 'select');
     bar.classList.add('show');
     bar.classList.remove('arrow-bottom');
     bar.style.left = '-9999px';
@@ -3779,6 +4284,157 @@ $(() => {
     const rects = range.getClientRects();
     const rect = rects.length ? rects[rects.length - 1] : range.getBoundingClientRect();
     showCardHlBar(rect);
+  }
+
+  // 二次点击卡片里的高亮：弹出跟聊天划线工具条同款的"样式+颜色"那一排，外加删除和加粗
+  let _cardHlPopCloser = null;
+  function closeCardHlPop() {
+    mainDoc.getElementById('be-card-hl-pop')?.classList.remove('show');
+    if (_cardHlPopCloser) { mainDoc.removeEventListener('pointerdown', _cardHlPopCloser, true); _cardHlPopCloser = null; }
+  }
+  function renderCardHlPop(pop, gid) {
+    const spans = cardHlGroup(gid);
+    if (!spans.length) { closeCardHlPop(); return; }
+    const first = spans[0];
+    const st = first.dataset.st || 'underline';
+    const col = String(first.dataset.col || '').toLowerCase();
+    const bold = first.dataset.bold === '1';
+    const initialCustom = first.dataset.col || settings.underlineColor || '#95b6d6';
+    pop.innerHTML = `
+      <div class="be-hl-row1">
+        <button data-act="del" class="danger">删除划线</button>
+      </div>
+      <div class="be-hl-row2 be-hl-row2-scroll">
+        <button class="be-hl-st ${st==='underline'?'active':''}" data-st="underline" title="下划线"><span class="be-hl-sample sample-underline">A</span></button>
+        <button class="be-hl-st ${st==='wavy'?'active':''}" data-st="wavy" title="波浪线"><span class="be-hl-sample sample-wavy">A</span></button>
+        <button class="be-hl-st ${st==='marker'?'active':''}" data-st="marker" title="荧光笔"><span class="be-hl-sample sample-marker">A</span></button>
+        <button class="be-hl-st ${st==='fontcolor'?'active':''}" data-st="fontcolor" title="只改字色"><span class="be-hl-sample sample-fontcolor" style="color:${escapeHtml(first.dataset.col || '#e8a0a0')};">A</span></button>
+        <button class="be-hl-st ${bold?'active':''}" data-act="bold" title="加粗"><span class="be-hl-sample sample-bold">B</span></button>
+        <span class="be-hl-divider"></span>
+        ${getPaletteColors().map(c => `<button class="be-hl-col ${col===c.toLowerCase()?'active':''}" data-col="${c}" style="background:${c};"></button>`).join('')}
+        <span class="be-hl-col rainbow" title="自定义颜色">
+          +
+          <input type="color" class="be-hl-col-input" value="${escapeHtml(initialCustom)}">
+        </span>
+      </div>
+    `;
+    const applyAll = (nextSt, nextCol, nextBold) => {
+      cardHlGroup(gid).forEach(s => applyCardHlStyle(s, nextSt, nextCol, nextBold));
+    };
+    pop.querySelector('[data-act="del"]').addEventListener('click', () => {
+      cardHlGroup(gid).forEach(s => {
+        const parent = s.parentNode;
+        if (!parent) return;
+        while (s.firstChild) parent.insertBefore(s.firstChild, s);
+        parent.removeChild(s);
+        try { parent.normalize(); } catch (e) {}
+      });
+      closeCardHlPop();
+    });
+    pop.querySelectorAll('.be-hl-st[data-st]').forEach(b => {
+      b.addEventListener('click', () => {
+        const nextSt = b.getAttribute('data-st');
+        // 从"只改字色"切到画线样式、或反过来时，没选过颜色就给一个该样式的默认色，免得切过去看不见
+        let nextCol = first.dataset.col;
+        if (!nextCol) nextCol = nextSt === 'marker' ? (settings.markerColor || '#ffdc6e') : (settings.underlineColor || '#95b6d6');
+        applyAll(nextSt, nextCol, first.dataset.bold === '1');
+        renderCardHlPop(pop, gid);
+      });
+    });
+    pop.querySelector('[data-act="bold"]').addEventListener('click', () => {
+      applyAll(first.dataset.st || 'underline', first.dataset.col, first.dataset.bold !== '1');
+      renderCardHlPop(pop, gid);
+    });
+    pop.querySelectorAll('.be-hl-col[data-col]').forEach(b => {
+      b.addEventListener('click', () => {
+        applyAll(first.dataset.st || 'underline', b.getAttribute('data-col'), first.dataset.bold === '1');
+        renderCardHlPop(pop, gid);
+      });
+    });
+    const customInput = pop.querySelector('.be-hl-col-input');
+    if (customInput) {
+      const onChange = () => applyAll(first.dataset.st || 'underline', customInput.value, first.dataset.bold === '1');
+      customInput.addEventListener('input', onChange);
+      customInput.addEventListener('change', onChange);
+      customInput.addEventListener('pointerdown', e => e.stopPropagation());
+      customInput.addEventListener('click', e => e.stopPropagation());
+    }
+  }
+  function openCardHlPop(gid, anchor) {
+    hideCardHlBar();
+    let pop = mainDoc.getElementById('be-card-hl-pop');
+    if (!pop) {
+      pop = mainDoc.createElement('div');
+      pop.id = 'be-card-hl-pop';
+      pop.addEventListener('pointerdown', e => {
+        if (!e.target.closest('input')) e.preventDefault();
+      });
+      mainDoc.body.appendChild(pop);
+    } else if (pop.parentNode !== mainDoc.body || pop.nextSibling) {
+      mainDoc.body.appendChild(pop);
+    }
+    renderCardHlPop(pop, gid);
+    applyTavernFloatStyle(pop, 'h4');
+    const rect = anchor.getBoundingClientRect();
+    pop.classList.add('show');
+    pop.classList.remove('arrow-bottom');
+    pop.style.left = '-9999px'; pop.style.top = '-9999px';
+    const bw = pop.offsetWidth, bh = pop.offsetHeight;
+    const vw = mainWin.innerWidth, vh = mainWin.innerHeight;
+    let left = (rect.left + rect.right) / 2 - bw / 2;
+    let top = rect.bottom + 8;
+    let arrowBottom = false;
+    if (top + bh + 4 > vh) { top = rect.top - bh - 8; arrowBottom = true; }
+    left = Math.max(8, Math.min(left, vw - bw - 8));
+    const arrowLeft = (rect.left + rect.right) / 2 - left;
+    pop.style.setProperty('--arrow-left', `${Math.max(16, Math.min(bw - 16, arrowLeft))}px`);
+    if (top < 8) top = 8;
+    pop.style.left = (left + (mainWin.scrollX || 0)) + 'px';
+    pop.style.top = (top + (mainWin.scrollY || 0)) + 'px';
+    if (arrowBottom) pop.classList.add('arrow-bottom');
+    if (_cardHlPopCloser) mainDoc.removeEventListener('pointerdown', _cardHlPopCloser, true);
+    _cardHlPopCloser = (e) => {
+      if (!pop.contains(e.target) && !e.target.closest('.be-card-hl')) closeCardHlPop();
+    };
+    setTimeout(() => mainDoc.addEventListener('pointerdown', _cardHlPopCloser, true), 60);
+  }
+
+  // 导出前（只动 clone，不碰预览）：把卡片二次高亮逐字拆成单字 span。
+  // html2canvas 给行内元素画背景/边框时用的是整个元素的外接矩形，不按行切片——一段跨两行的高亮，
+  // 荧光笔（linear-gradient 背景）会被画成横跨两行的一整块，下划线（border-bottom）只画在外接框最底下一行。
+  // 拆成单字后每个 span 只占一行，画出来就跟预览一致。只处理 .be-card-hl，别的元素不受影响。
+  function splitCardHlForExport(root) {
+    const doc = root.ownerDocument;
+    root.querySelectorAll('.be-card-hl').forEach(span => {
+      const cls = span.className;
+      const css = span.getAttribute('style') || '';
+      const walker = doc.createTreeWalker(span, NodeFilter.SHOW_TEXT);
+      const texts = [];
+      let t;
+      while ((t = walker.nextNode())) texts.push(t);
+      const allChars = [];
+      texts.forEach(tn => {
+        const frag = doc.createDocumentFragment();
+        for (const ch of Array.from(tn.nodeValue || '')) {
+          const s = doc.createElement('span');
+          s.className = cls;
+          s.setAttribute('style', css);
+          s.style.paddingLeft = '0';
+          s.style.paddingRight = '0';
+          s.textContent = ch;
+          frag.appendChild(s);
+          allChars.push(s);
+        }
+        tn.parentNode.replaceChild(frag, tn);
+      });
+      // 原来整段左右各 1px 内边距，拆开后只保留在首尾字上，保证排版宽度跟预览一模一样
+      if (allChars.length) {
+        allChars[0].style.paddingLeft = '1px';
+        allChars[allChars.length - 1].style.paddingRight = '1px';
+      }
+      span.className = '';
+      span.removeAttribute('style');
+    });
   }
   // 选区分流：卡片正文（.be-quote，且不在"编辑正文"模式下，避免跟改字光标冲突）走二次高亮，
   // 其它一律沿用原有的聊天划线判定（checkSelection 内部自己会用 isInsideChat 再筛一遍）
@@ -4527,6 +5183,7 @@ $(() => {
       mainDoc.body.appendChild(bar);
     }
     renderHlBar(bar, noteId);
+    applyTavernFloatStyle(bar, 'h4');
     // 定位（贴近 anchorEl 下方；不够则上方）
     const anchor = anchorEl || mainDoc.querySelector(`.be-highlight[data-be-id="${noteId}"]`);
     // 划线 span 若在状态栏 iframe 里，getBoundingClientRect 是相对 iframe 自身视口的，要换算成 mainDoc 坐标
@@ -4963,7 +5620,8 @@ $(() => {
     const updateAvatarPreview = () => {
       const prev = mask.querySelector('#be-src-avatar-preview');
       if (!prev) return;
-      prev.style.backgroundImage = settings.customAvatar ? `url('${settings.customAvatar}')` : '';
+      const url = imgUrlSync(settings.customAvatar, updateAvatarPreview);
+      prev.style.backgroundImage = url ? `url('${url}')` : '';
       prev.classList.toggle('empty', !settings.customAvatar);
     };
     updateAvatarPreview();
@@ -5020,11 +5678,8 @@ $(() => {
         const f = ev.target.files && ev.target.files[0];
         if (!f) return;
         try {
-          const maxSize = settings.avatarQuality === 'high' ? 900 : 320;
-          const dataUrl = await fileToCompressedAvatar(f, maxSize);
-          settings.customAvatar = dataUrl;
+          await setCustomAvatarFromFile(f);
           // 一旦上传过头像，没切到 custom 类型时也提示用户去切
-          saveSettings(settings);
           updateAvatarPreview();
           if (mainDoc.getElementById('be-card')) renderCard(lastText);
           toast(settings.avatarType === 'custom' ? '已更新自定义头像' : '已保存，到设置面板把头像类型切到「自定义」', 'success');
@@ -5037,8 +5692,7 @@ $(() => {
     reNew('#be-src-avatar-clear', () => {
       if (!settings.customAvatar) { toast('还没上传头像', 'info'); return; }
       if (!mainWin.confirm('清除自定义头像？')) return;
-      settings.customAvatar = '';
-      saveSettings(settings);
+      clearCustomAvatar();
       updateAvatarPreview();
       if (mainDoc.getElementById('be-card')) renderCard(lastText);
     });
@@ -5097,23 +5751,14 @@ $(() => {
   }
 
   function renderDrawer(drawer) {
-    const list = getOrderedCustomTemplates();
     drawer.innerHTML = `
       <div class="be-drawer-handle"></div>
       <div class="be-sec">
         <h4>主题</h4>
         <div class="be-drawer-row" id="be-drawer-tpl">
-          ${Object.entries(TEMPLATES).filter(([k]) => !(settings.hiddenTemplates||[]).includes(k)).map(([k, v]) => `
-            <div class="be-drawer-chip ${settings.template===k?'active':''}" data-k="${k}">${v.name}</div>
-          `).join('')}
           ${(() => {
-            const favSet = new Set(settings.templateFavorites || []);
-            const favs = list.filter(t => favSet.has(t.id));
-            const rest = list.filter(t => !favSet.has(t.id));
-            const chip = t => {
-              const id = `custom-${t.id}`;
-              return `<div class="be-drawer-chip ${settings.template===id?'active':''}" data-k="${id}">${favSet.has(t.id)?'★ ':''}${escapeHtml(t.name)}</div>`;
-            };
+            const { favs, rest } = getTemplatePickerEntries();
+            const chip = e => `<div class="be-drawer-chip ${settings.template===e.key?'active':''}" data-k="${e.key}">${e.fav?'★ ':''}${escapeHtml(e.name)}</div>`;
             const parts = favs.map(chip);
             if (favs.length && rest.length) parts.push('<span class="be-drawer-sep">·</span>');
             parts.push(...rest.map(chip));
@@ -5361,6 +6006,8 @@ $(() => {
     currentRichText = '';
     currentEditable = false;
     hideCardHlBar();
+    closeCardHlPop();
+    closeSlotChooser();
     clearWarmup();
   }
   function ensureMask() {
@@ -5516,7 +6163,9 @@ $(() => {
 
     // 头像（按设置选 user / char / custom）
     const avatarUrl = (() => {
-      if (settings.avatarType === 'custom') return settings.customAvatar || '';
+      if (settings.avatarType === 'custom') {
+        return imgUrlSync(settings.customAvatar, () => { if (mainDoc.getElementById('be-card')) renderCard(lastText); });
+      }
       if (settings.avatarType === 'char') return ctx.charAvatar || '';
       return ctx.userAvatar || '';
     })();
@@ -5752,14 +6401,12 @@ $(() => {
         });
       }
     }
-    // 自定义模板图片槽：自动识别 CSS 里的背景图引用，标记为可点击上传/替换
-    applyTemplateSlotImages(wrap);
-    wrap.querySelectorAll('.be-tpl-slot').forEach(el => {
-      el.addEventListener('click', e => {
-        e.stopPropagation();
-        handleTemplateSlotUpload(el.getAttribute('data-be-slot'));
-      });
-    });
+    // 自定义模板图片槽：找出卡片上实际显示着模板图片的元素，点击即可换图（wrap 本身不会重建，监听只绑一次）
+    markTemplateSlots(wrap);
+    if (!wrap._beSlotBound) {
+      wrap._beSlotBound = true;
+      wrap.addEventListener('click', onCardSlotClick);
+    }
     // 头像区域：不分内置/自定义模板，点一下都能直接换图（等价于设置里"自定义头像"上传，只是从预览触发更直接）
     wrap.querySelectorAll('.be-avatar, .be-pt-avatar, .be-ls-avatar, .be-char-avatar').forEach(el => {
       el.classList.add('be-avatar-clickable');
@@ -5777,11 +6424,8 @@ $(() => {
       const f = e.target.files && e.target.files[0];
       if (!f) return;
       try {
-        const maxSize = settings.avatarQuality === 'high' ? 900 : 320;
-        const dataUrl = await fileToCompressedAvatar(f, maxSize);
         settings.avatarType = 'custom';
-        settings.customAvatar = dataUrl;
-        saveSettings(settings);
+        await setCustomAvatarFromFile(f);
         if (mainDoc.getElementById('be-panel')?.classList.contains('open')) renderSettings();
         if (mainDoc.getElementById('be-card')) renderCard(lastText);
         toast('已更换头像', 'success');
@@ -6006,7 +6650,7 @@ $(() => {
   // dataURL natural size = CSS 尺寸 × dpr，正好等于 h2c 最终输出像素数，让 1024 原图一次缩放到位（无二次降采样）
   // 同时处理多种头像类（经典 .be-avatar / 人像 .be-pt-avatar / 横幅 .be-ls-avatar）
   async function processAvatarInClone(cardClone, idoc, exportScale) {
-    const avs = cardClone.querySelectorAll('.be-avatar, .be-pt-avatar, .be-ls-avatar, .be-char-avatar, .be-tpl-slot');
+    const avs = cardClone.querySelectorAll('.be-avatar, .be-pt-avatar, .be-ls-avatar, .be-char-avatar');
     for (const av of avs) {
       try { await processOneAvatar(av, idoc, exportScale); } catch (e) {}
     }
@@ -6111,6 +6755,8 @@ $(() => {
           });
         }
       } catch (e) {}
+      // 必须在上面按元素顺序配对冻结样式之后再拆（拆完 clone 的元素顺序就跟原卡片对不上了）
+      try { splitCardHlForExport(cardClone); } catch (e) {}
       // 强制导出宽度 = 用户设定宽度（预览容器在窄屏上可能更窄，导出要按设定值）
       cardClone.style.width = cardW + 'px';
       cardClone.style.maxWidth = 'none';
@@ -6218,6 +6864,7 @@ $(() => {
           // 避免兜底路径直接截 background-image 头像导致清晰度下降
           const clone = card.cloneNode(true);
           clone.style.cssText += ';position:fixed;left:-99999px;top:0;visibility:hidden;';
+          try { splitCardHlForExport(clone); } catch (e) {}
           mainDoc.body.appendChild(clone);
           try {
             await processAvatarInClone(clone, mainDoc, dpr);
@@ -6506,13 +7153,23 @@ $(() => {
     const favSet = new Set(settings.templateFavorites || []);
     const idx = id => { const i = order.indexOf(id); return i < 0 ? Infinity : i; };
     list.sort((a, b) => idx(a.id) - idx(b.id));
-    const favs = list.filter(t => favSet.has(t.id));
-    const rest = list.filter(t => !favSet.has(t.id));
+    const favs = list.filter(t => favSet.has(`custom-${t.id}`));
+    const rest = list.filter(t => !favSet.has(`custom-${t.id}`));
     return favs.concat(rest);
   }
-  function toggleTemplateFavorite(tid) {
+  // 选模板用（书摘弹窗里的"模板"抽屉）：收藏的——不分默认/自定义——统一排最前，其余按 默认模板→自定义模板 排
+  function getTemplatePickerEntries() {
+    const favSet = new Set(settings.templateFavorites || []);
+    const hidden = new Set(settings.hiddenTemplates || []);
+    const all = [
+      ...Object.entries(TEMPLATES).filter(([k]) => !hidden.has(k)).map(([k, v]) => ({ key: k, name: v.name })),
+      ...getOrderedCustomTemplates().map(t => ({ key: `custom-${t.id}`, name: t.name || '未命名' }))
+    ].map(e => ({ ...e, fav: favSet.has(e.key) }));
+    return { favs: all.filter(e => e.fav), rest: all.filter(e => !e.fav) };
+  }
+  function toggleTemplateFavorite(key) {
     const favs = new Set(settings.templateFavorites || []);
-    if (favs.has(tid)) favs.delete(tid); else favs.add(tid);
+    if (favs.has(key)) favs.delete(key); else favs.add(key);
     settings.templateFavorites = Array.from(favs);
     saveSettings(settings);
     renderSettings();
@@ -6545,7 +7202,7 @@ $(() => {
           ${list.map(t => {
             const id = `custom-${t.id}`;
             const active = settings.template === id;
-            const isFav = favSet.has(t.id);
+            const isFav = favSet.has(id);
             return `
               <div class="be-tpl-custom-row ${active?'active':''}" draggable="true" data-k="${id}" data-tid="${t.id}">
                 <span class="be-tpl-drag-handle" title="拖动排序"><svg viewBox="0 0 12 12"><circle cx="3" cy="3" r="1.4"/><circle cx="9" cy="3" r="1.4"/><circle cx="3" cy="9" r="1.4"/><circle cx="9" cy="9" r="1.4"/></svg></span>
@@ -6643,7 +7300,8 @@ $(() => {
       mainDoc.head.appendChild(el);
     }
     const selector = `.be-card.tpl-custom-${id}`;
-    el.textContent = String(rawCss || '').replace(/\.be-card\.be-custom\b/g, selector);
+    const tpl = (settings.customTemplates || []).find(t => t.id === id);
+    el.textContent = applySlotImagesToCss(tpl, String(rawCss || '').replace(/\.be-card\.be-custom\b/g, selector));
   }
   // 类名查询器：开发者模式下的检查工具，悬停高亮 + 显示类名，点击复制
   let _inspectorActive = false;
@@ -6965,6 +7623,8 @@ $(() => {
   }
 
   function deleteCustomTemplate(tid) {
+    const doomed = (settings.customTemplates || []).find(t => t.id === tid);
+    if (doomed && doomed.slotImages) Object.values(doomed.slotImages).forEach(imgForget);
     const list = (settings.customTemplates || []).filter(t => t.id !== tid);
     settings.customTemplates = list;
     // 如果删的是当前选中的，退回经典
@@ -7052,6 +7712,11 @@ $(() => {
     const body = container; // 下面沿用原来 body.querySelector(...) 的写法，body 现在指内容容器而不是 #be-p-body
     const isCustomColor = settings.colorPreset === 'custom';
     const srcVals = getSourceValues();
+    const avatarPreviewUrl = imgUrlSync(settings.customAvatar, () => {
+      const p = mainDoc.getElementById('be-avatar-preview');
+      const u = imgUrlSync(settings.customAvatar);
+      if (p && u) { p.style.backgroundImage = `url('${u}')`; p.classList.remove('empty'); }
+    });
 
     body.innerHTML = `
       ${settingsGroup === 'appearance' ? `
@@ -7206,21 +7871,11 @@ $(() => {
         </div>
         <div class="be-row" id="be-custom-avatar-row" style="${settings.avatarType==='custom'?'':'display:none;'}">
           <div class="be-avatar-preview ${settings.customAvatar?'':'empty'}" id="be-avatar-preview"
-               style="${settings.customAvatar?`background-image:url('${settings.customAvatar}');`:''}"></div>
+               style="${avatarPreviewUrl?`background-image:url('${avatarPreviewUrl}');`:''}"></div>
           <div style="flex:1;display:flex;gap:6px;">
             <button class="be-btn" id="be-avatar-upload">上传图片</button>
             <button class="be-btn" id="be-avatar-clear" ${settings.customAvatar?'':'disabled'}>清除</button>
           </div>
-        </div>
-        <div class="be-row" id="be-avatar-quality-row" style="${settings.avatarType==='custom'?'':'display:none;'}">
-          <label style="flex:1;">头像清晰度</label>
-          <div class="be-radio-group" id="be-avatar-quality-group">
-            <button class="be-radio-opt ${(settings.avatarQuality||'standard')==='standard'?'active':''}" data-v="standard">标准</button>
-            <button class="be-radio-opt ${settings.avatarQuality==='high'?'active':''}" data-v="high">高清</button>
-          </div>
-        </div>
-        <div class="be-row" id="be-avatar-quality-hint" style="${settings.avatarType==='custom'?'':'display:none;'}font-size:11px;opacity:0.7;">
-          <span>高清占用存储空间更大，重新上传才会按新档位压缩；已上传的头像不会自动变清晰</span>
         </div>
         <div class="be-row">
           <label style="flex:1;">显示日期</label>
@@ -7500,7 +8155,7 @@ $(() => {
     body.querySelectorAll('#be-tpl-group .be-tpl-custom-row button[data-fav]').forEach(b => {
       b.addEventListener('click', e => {
         e.stopPropagation();
-        toggleTemplateFavorite(b.getAttribute('data-fav'));
+        toggleTemplateFavorite(`custom-${b.getAttribute('data-fav')}`);
       });
     });
     body.querySelectorAll('#be-tpl-group .be-tpl-custom-row button[data-del]').forEach(b => {
@@ -7714,18 +8369,7 @@ $(() => {
         body.querySelectorAll('#be-avatar-type-group .be-radio-opt').forEach(b => b.classList.toggle('active', b === btn));
         const row = body.querySelector('#be-custom-avatar-row');
         if (row) row.style.display = settings.avatarType === 'custom' ? '' : 'none';
-        const qRow = body.querySelector('#be-avatar-quality-row');
-        if (qRow) qRow.style.display = settings.avatarType === 'custom' ? '' : 'none';
-        const qHint = body.querySelector('#be-avatar-quality-hint');
-        if (qHint) qHint.style.display = settings.avatarType === 'custom' ? '' : 'none';
         if (mainDoc.getElementById('be-card')) renderCard(lastText);
-      });
-    });
-    body.querySelectorAll('#be-avatar-quality-group .be-radio-opt').forEach(btn => {
-      btn.addEventListener('click', () => {
-        settings.avatarQuality = btn.getAttribute('data-v');
-        saveSettings(settings);
-        body.querySelectorAll('#be-avatar-quality-group .be-radio-opt').forEach(b => b.classList.toggle('active', b === btn));
       });
     });
     body.querySelectorAll('#be-savemode-group .be-radio-opt').forEach(btn => {
@@ -7748,13 +8392,11 @@ $(() => {
         const f = ev.target.files && ev.target.files[0];
         if (!f) return;
         try {
-          const maxSize = settings.avatarQuality === 'high' ? 900 : 320;
-          const dataUrl = await fileToCompressedAvatar(f, maxSize);
-          settings.customAvatar = dataUrl;
-          saveSettings(settings);
+          await setCustomAvatarFromFile(f);
           const prev = body.querySelector('#be-avatar-preview');
-          if (prev) {
-            prev.style.backgroundImage = `url('${dataUrl}')`;
+          const url = imgUrlSync(settings.customAvatar);
+          if (prev && url) {
+            prev.style.backgroundImage = `url('${url}')`;
             prev.classList.remove('empty');
           }
           const clr = body.querySelector('#be-avatar-clear');
@@ -7770,8 +8412,7 @@ $(() => {
     body.querySelector('#be-avatar-clear')?.addEventListener('click', () => {
       if (!settings.customAvatar) return;
       if (!mainWin.confirm('清除自定义头像？')) return;
-      settings.customAvatar = '';
-      saveSettings(settings);
+      clearCustomAvatar();
       const prev = body.querySelector('#be-avatar-preview');
       if (prev) { prev.style.backgroundImage = ''; prev.classList.add('empty'); }
       const clr = body.querySelector('#be-avatar-clear');
@@ -10348,13 +10989,15 @@ $(() => {
   $(window).on('pagehide', () => {
     ['be-float-bar', 'be-mask', 'be-thought-mask', 'be-source-mask', 'be-panel', 'be-style', 'be-menu-entry',
      'be-hl-bar', 'be-viewer-mask', 'be-imgpop', 'be-merge-badge', 'be-merge-sheet', 'be-merge-target-mask',
-     'be-menu-entry-freeform', 'be-fc-mask', 'be-pick-step-bar', 'be-card-hl-bar', 'be-css-float'].forEach(id => {
+     'be-menu-entry-freeform', 'be-fc-mask', 'be-pick-step-bar', 'be-card-hl-bar', 'be-css-float',
+     'be-card-hl-pop', 'be-slot-chooser'].forEach(id => {
       mainDoc.getElementById(id)?.remove();
     });
   });
 
   // ---------- 启动 ----------
   injectStyle();
+  migrateImagesToIdb();
   loadFontStylesheets();
   // 应用「有想法划线提升明度」class
   if (settings.thoughtBoost) {
