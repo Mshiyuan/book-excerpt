@@ -1118,36 +1118,36 @@ $(() => {
       -webkit-tap-highlight-color: transparent;
     }
     .be-hl-st.active { border-color: var(--be-accent); }
-    .be-hl-sample {
-      font-size: 13px; font-weight: 600;
-      color: var(--be-float-fg, #fff);
-      padding-bottom: 2px;
-      line-height: 1;
+    /* 样式示意 A/B：统一尺寸的盒子，线/底色都画在盒子内部或伪元素上，不改变盒子大小，保证几个字母等高对齐 */
+    .be-hl-sample, .be-chl-ico {
+      position: relative; display: inline-block; box-sizing: border-box;
+      width: 16px; height: 18px; padding: 0;
+      font-size: 14px; font-weight: 600; line-height: 18px; text-align: center;
     }
-    .be-hl-sample.sample-underline { border-bottom: 1.5px solid currentColor; }
-    .be-hl-sample.sample-bold { font-weight: 900; font-size: 14px; }
+    .be-hl-sample { color: var(--be-float-fg, #fff); }
+    .be-hl-sample.sample-underline::after, .be-chl-ico-u::after {
+      content: ''; position: absolute; left: 2px; right: 2px; bottom: 0; height: 2px; background: currentColor;
+    }
+    .be-hl-sample.sample-bold, .be-chl-ico-b { font-weight: 900; }
+    /* 荧光笔示意：只铺字的下半截，颜色跟插件主题色 */
+    .be-hl-sample.sample-marker, .be-chl-ico-m {
+      background: linear-gradient(to bottom, transparent 60%, var(--be-marker-sample) 60%, var(--be-marker-sample) 88%, transparent 88%);
+      --be-marker-sample: color-mix(in srgb, var(--be-accent) 60%, transparent);
+    }
     /* 卡片二次高亮的新样式：只改字色，不画线也不铺底 */
     .be-highlight.style-fontcolor { border-bottom: none; background: none; }
     .be-highlight.style-none { border-bottom: none; background: none; }
     .be-chl-top { display: flex; align-items: center; gap: 4px; }
     .be-chl-top .be-chl-sts { display: flex; align-items: center; margin-left: auto; }
     /* 卡片选区工具条上的文字图标（下划线/荧光笔/字色/加粗） */
-    .be-chl-ico { display: block; font-size: 14px; font-weight: 600; line-height: 15px; height: 15px; }
-    .be-chl-ico-u { border-bottom: 1.5px solid currentColor; line-height: 13px; }
-    .be-chl-ico-m { background: linear-gradient(to bottom, transparent 55%, rgba(255,220,110,0.7) 55%, rgba(255,220,110,0.7) 95%, transparent 95%); padding: 0 2px; }
+    .be-chl-ico { display: block; }
     .be-chl-ico-c { color: #e8a0a0; }
-    .be-chl-ico-b { font-weight: 900; }
     /* 示意图标跟随浮动条字色（浮动条跟随酒馆主题后可能是白底，不能写死白色） */
-    .be-hl-sample.sample-wavy { position: relative; padding-bottom: 4px; }
     .be-hl-sample.sample-wavy::after {
-      content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 4px;
+      content: ''; position: absolute; left: 0; right: 0; bottom: -2px; height: 4px;
       background-color: currentColor;
       -webkit-mask: url("${wavyDataUri('#000000')}") repeat-x 0 0 / 16px 4px;
       mask: url("${wavyDataUri('#000000')}") repeat-x 0 0 / 16px 4px;
-    }
-    .be-hl-sample.sample-marker {
-      background: linear-gradient(to bottom, transparent 55%, rgba(255,200,60,0.8) 55%, rgba(255,200,60,0.8) 95%, transparent 95%);
-      padding: 0 2px;
     }
     /* 卡片高亮弹窗的颜色行居中（内容超宽时仍可横向滚动，用 auto 外边距而不是 justify-content） */
     .be-chl-cols > :first-child { margin-left: auto; }
@@ -2425,8 +2425,6 @@ $(() => {
     .be-tl-body { padding-top: 8px; }
     .be-tl-list { display: flex; flex-direction: column; gap: 6px; }
     .be-tl-sep { text-align: center; opacity: 0.45; margin: 2px 0; line-height: 1; }
-    /* 删除按钮平时在行的右边界外（overflow:hidden 裁掉），左滑时从右侧滑进来盖住右边的按钮，名字不动。
-       行背景是半透明的，不能把删除色垫在内容下面 */
     .be-tl-row {
       position: relative; overflow: hidden; border-radius: 12px;
       background: var(--be-panel-row-bg);
@@ -2437,23 +2435,16 @@ $(() => {
     .be-tl-row:hover { background: var(--be-panel-row-bg-hover); }
     .be-tl-row.active { border-color: var(--be-accent); }
     .be-tl-row.dragging { z-index: 2; box-shadow: 0 6px 18px rgba(0,0,0,0.35); }
-    .be-tl-track { display: flex; width: 100%; touch-action: pan-y; }
+    .be-tl-track { display: flex; width: 100%; }
     .be-tl-main {
       flex: 1 1 auto; min-width: 0; box-sizing: border-box;
       display: flex; align-items: center;
       padding: 4px 4px 4px 0; cursor: pointer; font-size: 13px;
     }
-    .be-tl-del {
-      position: absolute; top: 0; right: 0; bottom: 0; width: 64px; z-index: 1;
-      transform: translateX(100%); transition: transform 0.18s ease;
-      border: none; padding: 0; margin: 0;
-      background: #d9534f; color: #fff; font-size: 16px; cursor: pointer;
-      display: flex; align-items: center; justify-content: center;
-    }
     .be-tl-handle {
       flex: 0 0 34px; height: 34px;
       display: flex; align-items: center; justify-content: center;
-      color: var(--be-panel-sub); opacity: 0.6; font-size: 13px; cursor: grab;
+      color: var(--be-panel-sub); opacity: 0.6; font-size: 12px; cursor: grab;
       touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
     }
     .be-tl-name {
@@ -2465,15 +2456,15 @@ $(() => {
       flex: 0 0 auto; font-size: 10px; line-height: 1; padding: 3px 5px; border-radius: 5px;
       background: rgba(128,128,128,0.16); color: var(--be-panel-sub);
     }
-    /* 右侧按钮：统一 32×32、统一颜色，用 Font Awesome 图标 */
+    /* 右侧按钮：统一 30×30、统一颜色，用 Font Awesome 图标 */
     .be-tl-acts { flex: 0 0 auto; display: flex; align-items: center; }
     .be-tl-btn, .be-tl-slot {
-      flex: 0 0 32px; width: 32px; height: 32px;
+      flex: 0 0 30px; width: 30px; height: 30px;
     }
     .be-tl-btn {
       display: flex; align-items: center; justify-content: center;
       padding: 0; margin: 0; border: none; border-radius: 8px; background: transparent;
-      color: var(--be-panel-sub); font-size: 14px; line-height: 1; cursor: pointer;
+      color: var(--be-panel-sub); font-size: 12.5px; line-height: 1; cursor: pointer;
       -webkit-tap-highlight-color: transparent;
     }
     .be-tl-btn:hover { background: rgba(128,128,128,0.14); color: var(--be-panel-fg); }
@@ -7447,33 +7438,33 @@ $(() => {
     if (settings.creatorMode) openCssFloatEditor(tid);
     else openImportTemplateDialog(tid);
   }
-  // 行布局：[拖动] 名字(默认) ……… [✎] [预览] [收藏] [⋯]
-  // ✎ 只在开发者模式下出现；默认模板在同一位置留空位，保证各行按钮上下对齐。
-  // ⋯ 点开后原地换成 [隐藏][导出]（默认模板只有隐藏）；导入模板左滑露出删除；点行本身 = 使用该模板。
+  // 行布局：[拖动] 名字(默认) ……… [✎] [收藏] [删除] [⋯]
+  // ✎ 只在开发者模式下出现；默认模板没有 ✎ / 删除，在同一位置留空位，保证各行按钮上下对齐。
+  // ⋯ 点开后原地换成 [预览][隐藏][导出]（默认模板没有导出）；点行本身 = 使用该模板。
   function renderTemplateRow(e) {
     const active = settings.template === e.key;
     const dev = !!settings.creatorMode;
-    const canDel = !e.isDefault;
+    const slot = '<span class="be-tl-slot"></span>';
     return `
-      <div class="be-tl-row ${active ? 'active' : ''} ${canDel ? 'has-del' : ''}" data-k="${e.key}">
+      <div class="be-tl-row ${active ? 'active' : ''}" data-k="${e.key}">
         <div class="be-tl-track">
           <div class="be-tl-main">
-            <span class="be-tl-handle" title="拖动排序">${fa('grip-vertical')}</span>
+            <span class="be-tl-handle" title="拖动排序">${fa('bars')}</span>
             <span class="be-tl-name"><span class="be-tl-name-txt">${escapeHtml(e.name)}</span>${e.isDefault ? '<span class="be-tl-tag">默认</span>' : ''}</span>
             <span class="be-tl-acts">
-              ${dev ? (e.isDefault ? '<span class="be-tl-slot"></span>' : `<button type="button" class="be-tl-btn" data-edit="${e.tid}" title="编辑 CSS">${fa('pencil')}</button>`) : ''}
-              <button type="button" class="be-tl-btn" data-preview="${e.key}" title="预览">${fa('eye')}</button>
+              ${dev ? (e.isDefault ? slot : `<button type="button" class="be-tl-btn" data-edit="${e.tid}" title="编辑 CSS">${fa('pencil')}</button>`) : ''}
               <button type="button" class="be-tl-btn be-tl-fav ${e.fav ? 'on' : ''}" data-fav="${e.key}" title="${e.fav ? '取消收藏' : '收藏'}">${fa('star')}</button>
+              ${e.isDefault ? slot : `<button type="button" class="be-tl-btn" data-del="${e.tid}" title="删除">${fa('trash-can')}</button>`}
               <span class="be-tl-moreslot">
                 <button type="button" class="be-tl-btn be-tl-more" data-more="${e.key}" title="更多">${fa('ellipsis')}</button>
                 <span class="be-tl-extra">
+                  <button type="button" class="be-tl-btn" data-preview="${e.key}" title="预览">${fa('magnifying-glass')}</button>
                   <button type="button" class="be-tl-btn" data-hide="${e.key}" title="隐藏">${fa('eye-slash')}</button>
                   ${e.isDefault ? '' : `<button type="button" class="be-tl-btn" data-export="${e.tid}" title="导出">${fa('file-export')}</button>`}
                 </span>
               </span>
             </span>
           </div>
-          ${canDel ? `<button type="button" class="be-tl-del" data-del="${e.tid}" title="删除">${fa('trash-can')}</button>` : ''}
         </div>
       </div>`;
   }
@@ -7572,60 +7563,6 @@ $(() => {
       });
     });
   }
-  // 左滑露出删除（只有导入模板有）。行内容 touch-action: pan-y，竖向滚动照常，横向手势交给这里。
-  const TL_DEL_W = 64;
-  // x：0（收起）~ -TL_DEL_W（完全露出）
-  function setTplSwipe(row, x, animate) {
-    const del = row.querySelector('.be-tl-del');
-    if (!del) return;
-    del.style.transition = animate ? '' : 'none';
-    del.style.transform = x ? `translateX(${TL_DEL_W + x}px)` : '';
-  }
-  function closeTplSwipes(sec, except) {
-    sec.querySelectorAll('.be-tl-row.swiped').forEach(r => {
-      if (r === except) return;
-      r.classList.remove('swiped');
-      setTplSwipe(r, 0, true);
-    });
-  }
-  function bindTemplateSwipe(sec) {
-    sec.querySelectorAll('.be-tl-list .be-tl-row.has-del').forEach(row => {
-      const main = row.querySelector('.be-tl-main');
-      main.addEventListener('pointerdown', e => {
-        if (e.target.closest('button, .be-tl-handle')) return;
-        const sx = e.clientX, sy = e.clientY, pid = e.pointerId;
-        const base = row.classList.contains('swiped') ? -TL_DEL_W : 0;
-        let dx = base, swiping = false, decided = false;
-        const onMove = ev => {
-          if (ev.pointerId !== pid) return;
-          const mx = ev.clientX - sx, my = ev.clientY - sy;
-          if (!decided && (Math.abs(mx) > 8 || Math.abs(my) > 8)) {
-            decided = true;
-            swiping = Math.abs(mx) > Math.abs(my);
-            if (swiping) closeTplSwipes(sec, row);
-          }
-          if (!swiping) return;
-          ev.preventDefault();
-          dx = Math.max(-TL_DEL_W, Math.min(0, base + mx));
-          setTplSwipe(row, dx, false);
-        };
-        const onUp = ev => {
-          if (ev.pointerId !== pid) return;
-          mainDoc.removeEventListener('pointermove', onMove, true);
-          mainDoc.removeEventListener('pointerup', onUp, true);
-          mainDoc.removeEventListener('pointercancel', onUp, true);
-          if (!swiping) return;
-          row._beSwipedJustNow = true;
-          const open = dx < -TL_DEL_W / 2;
-          row.classList.toggle('swiped', open);
-          setTplSwipe(row, open ? -TL_DEL_W : 0, true);
-        };
-        mainDoc.addEventListener('pointermove', onMove, { capture: true, passive: false });
-        mainDoc.addEventListener('pointerup', onUp, true);
-        mainDoc.addEventListener('pointercancel', onUp, true);
-      });
-    });
-  }
   // 模板预览：固定测试文字 + 占位名字/书名/章名 + 纯色头像，按该模板渲染一张缩小的卡片
   const PREVIEW_SAMPLE_TEXT = '这是一段测试文字，用于预览模板的排版效果，包括字号、行距、字间距与整体版式，无实际含义。';
   function closeTplPreview() {
@@ -7684,22 +7621,18 @@ $(() => {
       _tplListOpen = !_tplListOpen;
       renderSettings();
     });
-    // 点到 ⋯ 展开区以外的地方就收回；点到别的行也收回左滑
+    // 点到 ⋯ 展开区以外的地方就收回
     sec.addEventListener('pointerdown', e => {
-      const row = e.target.closest('.be-tl-row');
       if (!e.target.closest('.be-tl-moreslot')) collapseTplMore(sec);
-      closeTplSwipes(sec, row);
     });
     sec.querySelectorAll('.be-tl-list .be-tl-row').forEach(row => {
       row.querySelector('.be-tl-main').addEventListener('click', e => {
         if (e.target.closest('button, .be-tl-handle')) return;
-        if (row._beSwipedJustNow) { row._beSwipedJustNow = false; return; }
-        if (row.classList.contains('swiped')) { closeTplSwipes(sec); return; }
         useTemplate(row.getAttribute('data-k'));
       });
     });
     const on = (sel, fn) => sec.querySelectorAll(sel).forEach(b => b.addEventListener('click', e => { e.stopPropagation(); fn(b); }));
-    on('[data-preview]', b => openTplPreview(b.getAttribute('data-preview')));
+    on('[data-preview]', b => { collapseTplMore(sec); openTplPreview(b.getAttribute('data-preview')); });
     on('[data-fav]', b => toggleTemplateFavorite(b.getAttribute('data-fav')));
     on('[data-more]', b => {
       const row = b.closest('.be-tl-row');
@@ -7709,11 +7642,10 @@ $(() => {
     on('[data-hide]', b => hideTemplate(b.getAttribute('data-hide')));
     on('[data-export]', b => { exportCustomTemplate(b.getAttribute('data-export')); collapseTplMore(sec); });
     on('[data-edit]', b => editCustomTemplate(b.getAttribute('data-edit')));
-    on('.be-tl-del[data-del]', b => {
+    on('[data-del]', b => {
       const tid = b.getAttribute('data-del');
       const name = (settings.customTemplates || []).find(t => t.id === tid)?.name || '';
       if (mainWin.confirm(`删除模板「${name}」？`)) deleteCustomTemplate(tid);
-      else closeTplSwipes(sec);
     });
     sec.querySelector('#be-hidden-tpl-group-head')?.addEventListener('click', () => {
       _hiddenTplOpen = !_hiddenTplOpen;
@@ -7721,7 +7653,6 @@ $(() => {
     });
     on('[data-restore-tpl]', b => restoreTemplate(b.getAttribute('data-restore-tpl')));
     bindTemplateDrag(sec);
-    bindTemplateSwipe(sec);
   }
   // 批量导入模板：一次选多个文件。每个文件可以是
   //   单个模板 {name, css} / 模板数组 [{name, css}, ...] / 插件导出的整包 {templates: [...]} / 纯 .css（文件名当模板名）
