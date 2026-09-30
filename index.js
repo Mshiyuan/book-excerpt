@@ -8327,16 +8327,16 @@ $(() => {
           ${textInput('be-src-in-chapter', srcVals.sourceChapter, '章名（部分模板会显示在书名/作者旁）')}
         </div>
         <div class="be-row" style="margin-top:4px;">
-          <label style="flex:1;">出处生效范围</label>
+          <label style="flex:1;">出处保存方式</label>
         </div>
         <div class="be-row">
           <div class="be-radio-group" id="be-source-scope-group" style="width:100%;">
-            <button type="button" class="be-radio-opt ${(settings.sourceScope||'global')==='global'?'active':''}" data-v="global">全局统一</button>
-            <button type="button" class="be-radio-opt ${settings.sourceScope==='character'?'active':''}" data-v="character">按角色</button>
-            <button type="button" class="be-radio-opt ${settings.sourceScope==='chat'?'active':''}" data-v="chat">按角色+聊天</button>
+            <button type="button" class="be-radio-opt ${(settings.sourceScope||'global')==='global'?'active':''}" data-v="global">共用一份</button>
+            <button type="button" class="be-radio-opt ${settings.sourceScope==='character'?'active':''}" data-v="character">每个角色</button>
+            <button type="button" class="be-radio-opt ${settings.sourceScope==='chat'?'active':''}" data-v="chat">每个聊天</button>
           </div>
         </div>
-        ${hint('按角色或按聊天时，出处仅对当前角色或聊天生效。')}
+        ${hint('上面的用户名、作者、书名、章名（含显示开关）存几份。共用一份：所有角色、所有聊天用同一套；每个角色：每张角色卡各存一套，同一角色的不同聊天共用；每个聊天：每个聊天存档各存一套。切换后，没填过的角色或聊天从空白开始，名字留空时显示 {{user}} / {{char}}。')}
 
         <div class="be-subh">水印</div>
         <div class="be-row">
