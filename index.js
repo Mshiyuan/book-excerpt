@@ -8336,7 +8336,7 @@ $(() => {
             <button type="button" class="be-radio-opt ${settings.sourceScope==='chat'?'active':''}" data-v="chat">每个聊天</button>
           </div>
         </div>
-        ${hint('上面的用户名、作者、书名、章名（含显示开关）存几份。共用一份：所有角色、所有聊天用同一套；每个角色：每张角色卡各存一套，同一角色的不同聊天共用；每个聊天：每个聊天存档各存一套。切换后，没填过的角色或聊天从空白开始，名字留空时显示 {{user}} / {{char}}。')}
+        ${hint('用户名、作者、书名、章名是否按角色或聊天分开保存。切换后需重新填写。')}
 
         <div class="be-subh">水印</div>
         <div class="be-row">
