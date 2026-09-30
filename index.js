@@ -93,7 +93,8 @@ $(() => {
     freeformTemplates: [],
     hiddenTemplates: [],           // 被隐藏的模板 key（默认 'classic' / 导入 'custom-<id>' 都行）
     hiddenColorPresets: [],        // 被用户隐藏的内置配色 id 列表（COLOR_PRESETS 的 id）
-    templateOrder: [],             // 模板排序（默认+导入统一，存 key；没排过的按 默认→导入 的原顺序排在后面）
+    templateOrder: [],             // 模板排序（默认+导入统一，存 key），只有 templateOrderManual 为 true 才生效
+    templateOrderManual: false,    // 用户在模板列表里拖动过才为 true；否则固定 默认模板在前、导入模板在后
     templateFavorites: [],         // 收藏的模板 key 列表（跟 settings.template 同格式：'classic' / 'custom-<id>'），选模板时排在最前
     // 一次性迁移标记：新安装直接带上，存下来的设置里有它就不会再被迁移逻辑改动
     _scaleDefault3: true,
@@ -1136,15 +1137,21 @@ $(() => {
     .be-chl-ico-m { background: linear-gradient(to bottom, transparent 55%, rgba(255,220,110,0.7) 55%, rgba(255,220,110,0.7) 95%, transparent 95%); padding: 0 2px; }
     .be-chl-ico-c { color: #e8a0a0; }
     .be-chl-ico-b { font-weight: 900; }
-    .be-hl-sample.sample-wavy {
-      background: transparent url("${wavyDataUri('#ffffff')}") repeat-x 0 100%;
-      background-size: 16px 4px;
-      padding-bottom: 4px;
+    /* 示意图标跟随浮动条字色（浮动条跟随酒馆主题后可能是白底，不能写死白色） */
+    .be-hl-sample.sample-wavy { position: relative; padding-bottom: 4px; }
+    .be-hl-sample.sample-wavy::after {
+      content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 4px;
+      background-color: currentColor;
+      -webkit-mask: url("${wavyDataUri('#000000')}") repeat-x 0 0 / 16px 4px;
+      mask: url("${wavyDataUri('#000000')}") repeat-x 0 0 / 16px 4px;
     }
     .be-hl-sample.sample-marker {
-      background: linear-gradient(to bottom, transparent 60%, rgba(255,255,255,0.5) 60%, rgba(255,255,255,0.5) 95%, transparent 95%);
-      padding: 0 1px;
+      background: linear-gradient(to bottom, transparent 55%, rgba(255,200,60,0.8) 55%, rgba(255,200,60,0.8) 95%, transparent 95%);
+      padding: 0 2px;
     }
+    /* 卡片高亮弹窗的颜色行居中（内容超宽时仍可横向滚动，用 auto 外边距而不是 justify-content） */
+    .be-chl-cols > :first-child { margin-left: auto; }
+    .be-chl-cols > :last-child { margin-right: auto; }
     .be-hl-divider {
       width: 1px; height: 20px;
       background: var(--be-float-divider, rgba(255,255,255,0.15));
@@ -1228,8 +1235,13 @@ $(() => {
       filter: brightness(1.18) saturate(1.15);
     }
     /* 荧光笔样式（用 --be-line-soft 变量） */
+    /* 纯色块 + 不重复铺 + 定高定位（55%~95% 这一段），不用带透明断点的渐变：
+       html2canvas 按倍率画渐变/重复铺时会在块的上沿漏出一根细线 */
     .be-highlight.style-marker {
-      background: linear-gradient(to bottom, transparent 55%, var(--be-line-soft, var(--be-marker-soft)) 55%, var(--be-line-soft, var(--be-marker-soft)) 95%, transparent 95%);
+      background-image: linear-gradient(var(--be-line-soft, var(--be-marker-soft)), var(--be-line-soft, var(--be-marker-soft)));
+      background-repeat: no-repeat;
+      background-size: 100% 40%;
+      background-position: 0 91.667%;
       border-radius: 1px;
     }
     .be-highlight.style-marker.has-thought {
@@ -1265,7 +1277,10 @@ $(() => {
       border-bottom: 2px solid var(--be-line, var(--be-accent)) !important;
     }
     .be-highlight.strip-style.style-marker {
-      background: linear-gradient(to bottom, transparent 55%, var(--be-line-soft, var(--be-marker-soft)) 55%, var(--be-line-soft, var(--be-marker-soft)) 95%, transparent 95%) !important;
+      background-image: linear-gradient(var(--be-line-soft, var(--be-marker-soft)), var(--be-line-soft, var(--be-marker-soft))) !important;
+      background-repeat: no-repeat !important;
+      background-size: 100% 40% !important;
+      background-position: 0 91.667% !important;
     }
     .be-highlight.strip-style q::before,
     .be-highlight.strip-style q::after { content: '' !important; }
@@ -2409,58 +2424,68 @@ $(() => {
     .be-tl-current.open .be-caret { transform: rotate(180deg); }
     .be-tl-body { padding-top: 8px; }
     .be-tl-list { display: flex; flex-direction: column; gap: 6px; }
-    .be-tl-sep { text-align: center; opacity: 0.45; margin: 4px 0; line-height: 1; }
+    .be-tl-sep { text-align: center; opacity: 0.45; margin: 2px 0; line-height: 1; }
+    /* 删除按钮平时在行的右边界外（overflow:hidden 裁掉），左滑时从右侧滑进来盖住右边的按钮，名字不动。
+       行背景是半透明的，不能把删除色垫在内容下面 */
     .be-tl-row {
       position: relative; overflow: hidden; border-radius: 12px;
-      background: #d9534f; /* 左滑后露出来的删除底色 */
+      background: var(--be-panel-row-bg);
+      border: 1.5px solid transparent;
       -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
       -webkit-tap-highlight-color: transparent;
     }
-    .be-tl-row:not(.swipeable), .be-tl-row-hidden { background: transparent; }
-    .be-tl-inner {
-      position: relative; z-index: 1;
-      display: flex; align-items: center; gap: 4px;
-      padding: 7px 6px 7px 4px; border-radius: 12px;
-      background: var(--be-panel-row-bg); cursor: pointer; font-size: 13px;
-      border: 1.5px solid transparent;
-      transition: transform 0.18s ease, background 0.15s;
-      touch-action: pan-y;
-    }
-    .be-tl-row-hidden .be-tl-inner { cursor: default; padding-left: 12px; }
-    .be-tl-row:hover .be-tl-inner { background: var(--be-panel-row-bg-hover); }
-    .be-tl-row.active .be-tl-inner { border-color: var(--be-accent); background: var(--be-accent-soft); }
+    .be-tl-row:hover { background: var(--be-panel-row-bg-hover); }
+    .be-tl-row.active { border-color: var(--be-accent); }
     .be-tl-row.dragging { z-index: 2; box-shadow: 0 6px 18px rgba(0,0,0,0.35); }
-    .be-tl-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-left: 2px; }
-    .be-tl-tag {
-      font-size: 10px; padding: 1px 6px; border-radius: 6px;
-      background: rgba(128,128,128,0.18); color: var(--be-panel-sub); flex: 0 0 auto;
+    .be-tl-track { display: flex; width: 100%; touch-action: pan-y; }
+    .be-tl-main {
+      flex: 1 1 auto; min-width: 0; box-sizing: border-box;
+      display: flex; align-items: center;
+      padding: 4px 4px 4px 0; cursor: pointer; font-size: 13px;
+    }
+    .be-tl-del {
+      position: absolute; top: 0; right: 0; bottom: 0; width: 64px; z-index: 1;
+      transform: translateX(100%); transition: transform 0.18s ease;
+      border: none; padding: 0; margin: 0;
+      background: #d9534f; color: #fff; font-size: 16px; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
     }
     .be-tl-handle {
-      display: inline-flex; align-items: center; justify-content: center;
-      width: 26px; height: 30px; cursor: grab; opacity: 0.5; flex: 0 0 auto;
+      flex: 0 0 34px; height: 34px;
+      display: flex; align-items: center; justify-content: center;
+      color: var(--be-panel-sub); opacity: 0.6; font-size: 13px; cursor: grab;
       touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
     }
-    .be-tl-handle svg { width: 12px; height: 12px; fill: currentColor; }
-    .be-tl-ico {
-      display: inline-flex; align-items: center; justify-content: center;
-      width: 30px; height: 30px; flex: 0 0 auto; padding: 0;
-      background: transparent; border: none; border-radius: 8px;
-      color: var(--be-panel-sub); cursor: pointer; font-size: 16px; line-height: 1; font-family: inherit;
+    .be-tl-name {
+      flex: 1 1 auto; min-width: 0;
+      display: flex; align-items: center; gap: 6px;
     }
-    .be-tl-ico:hover { background: rgba(128,128,128,0.15); color: var(--be-panel-fg); }
-    .be-tl-ico svg { width: 17px; height: 17px; stroke: currentColor; fill: none; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
-    .be-tl-more svg { fill: currentColor; stroke: none; }
-    .be-tl-fav.on { color: #ffb400; }
-    .be-tl-extra { display: none; }
-    .be-tl-row.expanded .be-tl-extra { display: inline-flex; }
-    .be-tl-row.expanded .be-tl-more { background: rgba(128,128,128,0.18); color: var(--be-panel-fg); }
-    .be-tl-del {
-      position: absolute; right: 0; top: 0; bottom: 0; width: 64px;
+    .be-tl-name-txt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .be-tl-tag {
+      flex: 0 0 auto; font-size: 10px; line-height: 1; padding: 3px 5px; border-radius: 5px;
+      background: rgba(128,128,128,0.16); color: var(--be-panel-sub);
+    }
+    /* 右侧按钮：统一 32×32、统一颜色，用 Font Awesome 图标 */
+    .be-tl-acts { flex: 0 0 auto; display: flex; align-items: center; }
+    .be-tl-btn, .be-tl-slot {
+      flex: 0 0 32px; width: 32px; height: 32px;
+    }
+    .be-tl-btn {
       display: flex; align-items: center; justify-content: center;
-      background: transparent; border: none; color: #fff; cursor: pointer; padding: 0;
+      padding: 0; margin: 0; border: none; border-radius: 8px; background: transparent;
+      color: var(--be-panel-sub); font-size: 14px; line-height: 1; cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
     }
-    .be-tl-del svg { width: 20px; height: 20px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-    .be-tl-row .be-mini-btn { font-size: 11px; padding: 3px 10px; }
+    .be-tl-btn:hover { background: rgba(128,128,128,0.14); color: var(--be-panel-fg); }
+    .be-tl-btn.be-tl-fav { opacity: 0.45; }
+    .be-tl-btn.be-tl-fav.on { color: #f5b301; opacity: 1; }
+    /* ⋯ 仿酒馆正则列表：点开后 ⋯ 自己被同款按钮原地替换 */
+    .be-tl-moreslot { display: flex; }
+    .be-tl-extra { display: none; }
+    .be-tl-row.expanded .be-tl-extra { display: flex; }
+    .be-tl-row.expanded .be-tl-more { display: none; }
+    .be-tl-row-hidden .be-tl-main { cursor: default; padding-left: 12px; }
+    .be-tl-row-hidden .be-tl-name-txt { opacity: 0.6; }
     /* 模板预览弹窗 */
     #be-tpl-preview {
       position: absolute; top: 0; left: 0; width: 100%; height: 100vh; height: 100dvh;
@@ -4427,13 +4452,12 @@ $(() => {
         <button data-act="del" class="danger">删除划线</button>
         <span class="be-chl-sts">
           <button class="be-hl-st ${st==='underline'?'active':''}" data-st="underline" title="下划线"><span class="be-hl-sample sample-underline">A</span></button>
-          <button class="be-hl-st ${st==='wavy'?'active':''}" data-st="wavy" title="波浪线"><span class="be-hl-sample sample-wavy">A</span></button>
           <button class="be-hl-st ${st==='marker'?'active':''}" data-st="marker" title="荧光笔"><span class="be-hl-sample sample-marker">A</span></button>
           <button class="be-hl-st ${st==='fontcolor'?'active':''}" data-st="fontcolor" title="字色"><span class="be-hl-sample sample-fontcolor" style="color:${escapeHtml(first.dataset.col || '#e8a0a0')};">A</span></button>
           <button class="be-hl-st ${bold?'active':''}" data-act="bold" title="加粗"><span class="be-hl-sample sample-bold">B</span></button>
         </span>
       </div>
-      <div class="be-hl-row2 be-hl-row2-scroll">
+      <div class="be-hl-row2 be-hl-row2-scroll be-chl-cols">
         ${getPaletteColors().map(c => `<button class="be-hl-col ${col===c.toLowerCase()?'active':''}" data-col="${c}" style="background:${c};"></button>`).join('')}
         <span class="be-hl-col rainbow" title="自定义颜色">
           +
@@ -6060,7 +6084,7 @@ $(() => {
           </div>
         </div>
         <div class="be-row" style="font-size:11px;opacity:0.7;">
-          <span>倍率越高保存出来的图越清晰，但生成更慢、文件更大；手机屏幕一般 2x/3x 够用，想放大看细节可以选 4x/5x</span>
+          <span>倍率越高图片越清晰，生成越慢、文件越大。</span>
         </div>
       </div>
       <button class="be-drawer-confirm" id="be-ts-confirm">确定</button>
@@ -7333,13 +7357,9 @@ $(() => {
 
   // ---------- 模板管理（默认模板和导入的模板统一成一张列表）----------
   // key 跟 settings.template 同格式：默认模板 'classic'，导入模板 'custom-<id>'。
-  // templateOrder / templateFavorites / hiddenTemplates 都存 key，默认和导入的一起排序、收藏、隐藏。
-  const ICON_DOTS4 = '<svg viewBox="0 0 12 12"><circle cx="3" cy="3" r="1.4"/><circle cx="9" cy="3" r="1.4"/><circle cx="3" cy="9" r="1.4"/><circle cx="9" cy="9" r="1.4"/></svg>';
-  const ICON_MORE = '<svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>';
-  const ICON_EYE_OFF = '<svg viewBox="0 0 24 24"><path d="M3 3l18 18"/><path d="M10.6 5.2A10.4 10.4 0 0 1 12 5c6.4 0 10 7 10 7a17 17 0 0 1-3.2 4.1M6.6 6.6C3.9 8.4 2 12 2 12s3.6 7 10 7a9.6 9.6 0 0 0 5.4-1.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>';
-  const ICON_EXPORT = '<svg viewBox="0 0 24 24"><path d="M13 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h7"/><path d="M13 3v5h5"/><path d="M15 15h7M19 12l3 3-3 3"/></svg>';
-  const ICON_PENCIL = '<svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16v4z"/><path d="M13.5 6.5l4 4"/></svg>';
-  const ICON_TRASH = '<svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/><path d="M10 11v6M14 11v6"/></svg>';
+  // templateFavorites / hiddenTemplates 存 key；templateOrder 只有用户在列表里拖动过（templateOrderManual）才生效，
+  // 否则一律 默认模板在前、导入模板按导入顺序在后。
+  const fa = (name) => `<i class="fa-solid fa-${name}"></i>`;
   let _tplListOpen = false;
   let _hiddenTplOpen = false;
   function getAllTemplateEntries() {
@@ -7349,18 +7369,19 @@ $(() => {
       ...Object.entries(TEMPLATES).map(([k, v]) => ({ key: k, name: v.name, isDefault: true })),
       ...(settings.customTemplates || []).map(t => ({ key: `custom-${t.id}`, name: t.name || '未命名', isDefault: false, tid: t.id }))
     ];
-    // 没被手动拖过的：默认模板排在最前、导入模板排在最后（旧版排序里只有导入模板，不能让默认模板因此掉到末尾）
-    const keys = new Set(natural.map(e => e.key));
-    const saved = (settings.templateOrder || []).filter(k => keys.has(k));
-    const full = [
-      ...natural.filter(e => e.isDefault && !saved.includes(e.key)).map(e => e.key),
-      ...saved,
-      ...natural.filter(e => !e.isDefault && !saved.includes(e.key)).map(e => e.key)
-    ];
-    return full.map(k => {
-      const e = natural.find(x => x.key === k);
-      return { ...e, fav: favSet.has(k), hidden: hidden.has(k) };
-    });
+    let order = natural;
+    if (settings.templateOrderManual) {
+      const byKey = new Map(natural.map(e => [e.key, e]));
+      const saved = (settings.templateOrder || []).filter(k => byKey.has(k));
+      const savedSet = new Set(saved);
+      // 拖过之后新出现的：默认模板补在最前，新导入的补在最后
+      order = [
+        ...natural.filter(e => e.isDefault && !savedSet.has(e.key)),
+        ...saved.map(k => byKey.get(k)),
+        ...natural.filter(e => !e.isDefault && !savedSet.has(e.key))
+      ];
+    }
+    return order.map(e => ({ ...e, fav: favSet.has(e.key), hidden: hidden.has(e.key) }));
   }
   // 列表/选模板共用的顺序：收藏的排最前，其余按上面的顺序；隐藏的单独列出
   function getTemplateListEntries() {
@@ -7401,6 +7422,13 @@ $(() => {
     saveSettings(settings);
     renderSettings();
   }
+  function useTemplate(key) {
+    if (settings.template === key) return;
+    settings.template = key;
+    saveSettings(settings);
+    renderSettings();
+    if (mainDoc.getElementById('be-card')) renderCard(lastText);
+  }
   function exportCustomTemplate(tid) {
     try {
       const tpl = (settings.customTemplates || []).find(x => x.id === tid);
@@ -7419,26 +7447,34 @@ $(() => {
     if (settings.creatorMode) openCssFloatEditor(tid);
     else openImportTemplateDialog(tid);
   }
-  // 行布局（仿酒馆正则列表）：左四点拖动 · 名字 · [开发者模式下导入模板的铅笔] · 收藏 · 更多；
-  // 点"更多"在行内展开 隐藏/导出；导入模板左滑露出删除；点行本身打开预览
+  // 行布局：[拖动] 名字(默认) ……… [✎] [预览] [收藏] [⋯]
+  // ✎ 只在开发者模式下出现；默认模板在同一位置留空位，保证各行按钮上下对齐。
+  // ⋯ 点开后原地换成 [隐藏][导出]（默认模板只有隐藏）；导入模板左滑露出删除；点行本身 = 使用该模板。
   function renderTemplateRow(e) {
     const active = settings.template === e.key;
     const dev = !!settings.creatorMode;
+    const canDel = !e.isDefault;
     return `
-      <div class="be-tl-row ${active ? 'active' : ''} ${e.isDefault ? '' : 'swipeable'}" data-k="${e.key}">
-        <div class="be-tl-inner">
-          <span class="be-tl-handle" title="拖动排序">${ICON_DOTS4}</span>
-          <span class="be-tl-name">${escapeHtml(e.name)}</span>
-          ${e.isDefault ? '<span class="be-tl-tag">默认</span>' : ''}
-          <span class="be-tl-extra">
-            <button type="button" class="be-tl-ico" data-hide="${e.key}" title="隐藏">${ICON_EYE_OFF}</button>
-            ${e.isDefault ? '' : `<button type="button" class="be-tl-ico" data-export="${e.tid}" title="导出">${ICON_EXPORT}</button>`}
-          </span>
-          ${(dev && !e.isDefault) ? `<button type="button" class="be-tl-ico" data-edit="${e.tid}" title="编辑CSS">${ICON_PENCIL}</button>` : ''}
-          <button type="button" class="be-tl-ico be-tl-fav ${e.fav ? 'on' : ''}" data-fav="${e.key}" title="${e.fav ? '取消收藏' : '收藏'}">${e.fav ? '★' : '☆'}</button>
-          <button type="button" class="be-tl-ico be-tl-more" data-more="${e.key}" title="更多">${ICON_MORE}</button>
+      <div class="be-tl-row ${active ? 'active' : ''} ${canDel ? 'has-del' : ''}" data-k="${e.key}">
+        <div class="be-tl-track">
+          <div class="be-tl-main">
+            <span class="be-tl-handle" title="拖动排序">${fa('grip-vertical')}</span>
+            <span class="be-tl-name"><span class="be-tl-name-txt">${escapeHtml(e.name)}</span>${e.isDefault ? '<span class="be-tl-tag">默认</span>' : ''}</span>
+            <span class="be-tl-acts">
+              ${dev ? (e.isDefault ? '<span class="be-tl-slot"></span>' : `<button type="button" class="be-tl-btn" data-edit="${e.tid}" title="编辑 CSS">${fa('pencil')}</button>`) : ''}
+              <button type="button" class="be-tl-btn" data-preview="${e.key}" title="预览">${fa('eye')}</button>
+              <button type="button" class="be-tl-btn be-tl-fav ${e.fav ? 'on' : ''}" data-fav="${e.key}" title="${e.fav ? '取消收藏' : '收藏'}">${fa('star')}</button>
+              <span class="be-tl-moreslot">
+                <button type="button" class="be-tl-btn be-tl-more" data-more="${e.key}" title="更多">${fa('ellipsis')}</button>
+                <span class="be-tl-extra">
+                  <button type="button" class="be-tl-btn" data-hide="${e.key}" title="隐藏">${fa('eye-slash')}</button>
+                  ${e.isDefault ? '' : `<button type="button" class="be-tl-btn" data-export="${e.tid}" title="导出">${fa('file-export')}</button>`}
+                </span>
+              </span>
+            </span>
+          </div>
+          ${canDel ? `<button type="button" class="be-tl-del" data-del="${e.tid}" title="删除">${fa('trash-can')}</button>` : ''}
         </div>
-        ${e.isDefault ? '' : `<button type="button" class="be-tl-del" data-del="${e.tid}" title="删除">${ICON_TRASH}</button>`}
       </div>`;
   }
   function renderTemplateSection() {
@@ -7449,7 +7485,8 @@ $(() => {
         <div class="be-sec-head">
           <h4>模板</h4>
           <span class="be-sec-head-btns">
-            <button type="button" class="be-mini-btn" id="be-tpl-import">+ 导入</button>
+            <button type="button" class="be-mini-btn" id="be-tpl-import">导入</button>
+            <button type="button" class="be-mini-btn" id="be-tpl-import-batch">批量导入</button>
           </span>
         </div>
         <div class="be-tl-current ${open ? 'open' : ''}" id="be-tl-toggle">
@@ -7469,10 +7506,13 @@ $(() => {
             <div class="be-tpl-group-body">
               ${hidden.map(e => `
                 <div class="be-tl-row be-tl-row-hidden">
-                  <div class="be-tl-inner">
-                    <span class="be-tl-name">${escapeHtml(e.name)}</span>
-                    ${e.isDefault ? '<span class="be-tl-tag">默认</span>' : ''}
-                    <button type="button" class="be-mini-btn" data-restore-tpl="${e.key}">恢复</button>
+                  <div class="be-tl-track">
+                    <div class="be-tl-main">
+                      <span class="be-tl-name"><span class="be-tl-name-txt">${escapeHtml(e.name)}</span>${e.isDefault ? '<span class="be-tl-tag">默认</span>' : ''}</span>
+                      <span class="be-tl-acts">
+                        <button type="button" class="be-tl-btn" data-restore-tpl="${e.key}" title="取消隐藏">${fa('eye')}</button>
+                      </span>
+                    </div>
                   </div>
                 </div>`).join('')}
             </div>
@@ -7481,12 +7521,13 @@ $(() => {
       </div>`;
   }
   function commitTemplateOrderFromDom(sec) {
-    const keys = Array.from(sec.querySelectorAll('.be-tl-list .be-tl-row')).map(r => r.getAttribute('data-k'));
+    const shownKeys = Array.from(sec.querySelectorAll('.be-tl-list .be-tl-row')).map(r => r.getAttribute('data-k'));
     const hiddenKeys = getAllTemplateEntries().filter(e => e.hidden).map(e => e.key);
-    settings.templateOrder = keys.concat(hiddenKeys);
+    settings.templateOrder = shownKeys.concat(hiddenKeys);
+    settings.templateOrderManual = true;
     saveSettings(settings);
   }
-  // 拖动排序：pointer 事件 + document 上监听（拖动中挪行会让手柄暂时脱离文档，捕获会丢，所以不用 setPointerCapture）。
+  // 拖动排序：pointer 事件挂在 document 上（拖动中挪行会让手柄暂时离开文档，pointer capture 会丢）。
   // 手柄上阻止 touchstart 默认行为和长按菜单，否则手机上按久一点就变成选中文字。
   function bindTemplateDrag(sec) {
     sec.querySelectorAll('.be-tl-list .be-tl-handle').forEach(h => {
@@ -7499,6 +7540,7 @@ $(() => {
         const list = row.parentElement;
         const scroller = sec.closest('#be-p-body') || sec.parentElement;
         const pid = e.pointerId;
+        let moved = false;
         row.classList.add('dragging');
         const onMove = ev => {
           if (ev.pointerId !== pid) return;
@@ -7507,14 +7549,14 @@ $(() => {
           const box = scroller.getBoundingClientRect();
           if (y < box.top + 40) scroller.scrollTop -= 12;
           else if (y > box.bottom - 40) scroller.scrollTop += 12;
-          const others = Array.from(list.children).filter(r => r !== row);
           let before = null;
-          for (const r of others) {
+          for (const r of list.children) {
+            if (r === row) continue;
             const rc = r.getBoundingClientRect();
             if (y < rc.top + rc.height / 2) { before = r; break; }
           }
-          if (before) { if (row.nextSibling !== before) list.insertBefore(row, before); }
-          else if (list.lastElementChild !== row) list.appendChild(row);
+          if (before) { if (row.nextSibling !== before) { list.insertBefore(row, before); moved = true; } }
+          else if (list.lastElementChild !== row) { list.appendChild(row); moved = true; }
         };
         const onUp = ev => {
           if (ev.pointerId !== pid) return;
@@ -7522,7 +7564,7 @@ $(() => {
           mainDoc.removeEventListener('pointerup', onUp, true);
           mainDoc.removeEventListener('pointercancel', onUp, true);
           row.classList.remove('dragging');
-          commitTemplateOrderFromDom(sec);
+          if (moved) commitTemplateOrderFromDom(sec);
         };
         mainDoc.addEventListener('pointermove', onMove, { capture: true, passive: false });
         mainDoc.addEventListener('pointerup', onUp, true);
@@ -7530,35 +7572,42 @@ $(() => {
       });
     });
   }
-  // 左滑露出删除（只有导入模板有）。行内容区 touch-action: pan-y，竖向滚动照常，横向手势交给这里。
+  // 左滑露出删除（只有导入模板有）。行内容 touch-action: pan-y，竖向滚动照常，横向手势交给这里。
   const TL_DEL_W = 64;
+  // x：0（收起）~ -TL_DEL_W（完全露出）
+  function setTplSwipe(row, x, animate) {
+    const del = row.querySelector('.be-tl-del');
+    if (!del) return;
+    del.style.transition = animate ? '' : 'none';
+    del.style.transform = x ? `translateX(${TL_DEL_W + x}px)` : '';
+  }
   function closeTplSwipes(sec, except) {
     sec.querySelectorAll('.be-tl-row.swiped').forEach(r => {
       if (r === except) return;
       r.classList.remove('swiped');
-      r.querySelector('.be-tl-inner').style.transform = '';
+      setTplSwipe(r, 0, true);
     });
   }
   function bindTemplateSwipe(sec) {
-    sec.querySelectorAll('.be-tl-list .be-tl-row.swipeable').forEach(row => {
-      const inner = row.querySelector('.be-tl-inner');
-      inner.addEventListener('pointerdown', e => {
+    sec.querySelectorAll('.be-tl-list .be-tl-row.has-del').forEach(row => {
+      const main = row.querySelector('.be-tl-main');
+      main.addEventListener('pointerdown', e => {
         if (e.target.closest('button, .be-tl-handle')) return;
         const sx = e.clientX, sy = e.clientY, pid = e.pointerId;
         const base = row.classList.contains('swiped') ? -TL_DEL_W : 0;
-        let dx = 0, swiping = false, decided = false;
+        let dx = base, swiping = false, decided = false;
         const onMove = ev => {
           if (ev.pointerId !== pid) return;
           const mx = ev.clientX - sx, my = ev.clientY - sy;
           if (!decided && (Math.abs(mx) > 8 || Math.abs(my) > 8)) {
             decided = true;
             swiping = Math.abs(mx) > Math.abs(my);
-            if (swiping) { inner.style.transition = 'none'; closeTplSwipes(sec, row); }
+            if (swiping) closeTplSwipes(sec, row);
           }
           if (!swiping) return;
           ev.preventDefault();
-          dx = Math.max(-TL_DEL_W - 16, Math.min(0, base + mx));
-          inner.style.transform = `translateX(${dx}px)`;
+          dx = Math.max(-TL_DEL_W, Math.min(0, base + mx));
+          setTplSwipe(row, dx, false);
         };
         const onUp = ev => {
           if (ev.pointerId !== pid) return;
@@ -7567,10 +7616,9 @@ $(() => {
           mainDoc.removeEventListener('pointercancel', onUp, true);
           if (!swiping) return;
           row._beSwipedJustNow = true;
-          inner.style.transition = '';
           const open = dx < -TL_DEL_W / 2;
           row.classList.toggle('swiped', open);
-          inner.style.transform = open ? `translateX(${-TL_DEL_W}px)` : '';
+          setTplSwipe(row, open ? -TL_DEL_W : 0, true);
         };
         mainDoc.addEventListener('pointermove', onMove, { capture: true, passive: false });
         mainDoc.addEventListener('pointerup', onUp, true);
@@ -7620,39 +7668,46 @@ $(() => {
     scaler.style.transform = `scale(${scale})`;
     stage.style.height = Math.ceil(scaler.offsetHeight * scale) + 'px';
     mask.querySelector('#be-tpv-use').addEventListener('click', () => {
-      settings.template = key;
-      saveSettings(settings);
       closeTplPreview();
-      renderSettings();
-      if (mainDoc.getElementById('be-card')) renderCard(lastText);
+      useTemplate(key);
     });
+  }
+  function collapseTplMore(sec, except) {
+    sec.querySelectorAll('.be-tl-row.expanded').forEach(r => { if (r !== except) r.classList.remove('expanded'); });
   }
   function bindTemplateSection(body) {
     const sec = body.querySelector('#be-tpl-sec');
     if (!sec) return;
     sec.querySelector('#be-tpl-import')?.addEventListener('click', () => openImportTemplateDialog());
+    sec.querySelector('#be-tpl-import-batch')?.addEventListener('click', importTemplatesBatch);
     sec.querySelector('#be-tl-toggle')?.addEventListener('click', () => {
       _tplListOpen = !_tplListOpen;
       renderSettings();
     });
+    // 点到 ⋯ 展开区以外的地方就收回；点到别的行也收回左滑
+    sec.addEventListener('pointerdown', e => {
+      const row = e.target.closest('.be-tl-row');
+      if (!e.target.closest('.be-tl-moreslot')) collapseTplMore(sec);
+      closeTplSwipes(sec, row);
+    });
     sec.querySelectorAll('.be-tl-list .be-tl-row').forEach(row => {
-      row.addEventListener('click', e => {
+      row.querySelector('.be-tl-main').addEventListener('click', e => {
         if (e.target.closest('button, .be-tl-handle')) return;
         if (row._beSwipedJustNow) { row._beSwipedJustNow = false; return; }
         if (row.classList.contains('swiped')) { closeTplSwipes(sec); return; }
-        openTplPreview(row.getAttribute('data-k'));
+        useTemplate(row.getAttribute('data-k'));
       });
     });
     const on = (sel, fn) => sec.querySelectorAll(sel).forEach(b => b.addEventListener('click', e => { e.stopPropagation(); fn(b); }));
+    on('[data-preview]', b => openTplPreview(b.getAttribute('data-preview')));
     on('[data-fav]', b => toggleTemplateFavorite(b.getAttribute('data-fav')));
     on('[data-more]', b => {
       const row = b.closest('.be-tl-row');
-      const opening = !row.classList.contains('expanded');
-      sec.querySelectorAll('.be-tl-row.expanded').forEach(r => r.classList.remove('expanded'));
-      row.classList.toggle('expanded', opening);
+      collapseTplMore(sec, row);
+      row.classList.add('expanded');
     });
     on('[data-hide]', b => hideTemplate(b.getAttribute('data-hide')));
-    on('[data-export]', b => exportCustomTemplate(b.getAttribute('data-export')));
+    on('[data-export]', b => { exportCustomTemplate(b.getAttribute('data-export')); collapseTplMore(sec); });
     on('[data-edit]', b => editCustomTemplate(b.getAttribute('data-edit')));
     on('.be-tl-del[data-del]', b => {
       const tid = b.getAttribute('data-del');
@@ -7667,6 +7722,53 @@ $(() => {
     on('[data-restore-tpl]', b => restoreTemplate(b.getAttribute('data-restore-tpl')));
     bindTemplateDrag(sec);
     bindTemplateSwipe(sec);
+  }
+  // 批量导入模板：一次选多个文件。每个文件可以是
+  //   单个模板 {name, css} / 模板数组 [{name, css}, ...] / 插件导出的整包 {templates: [...]} / 纯 .css（文件名当模板名）
+  function parseTemplateFile(fileName, text) {
+    const baseName = String(fileName || '').replace(/\.(css|json|txt)$/i, '') || '未命名';
+    let j = null;
+    try { j = JSON.parse(text); } catch (e) {}
+    if (j === null) {
+      const css = String(text || '').trim();
+      return css ? [{ name: baseName, css }] : [];
+    }
+    const list = Array.isArray(j) ? j
+      : (j && Array.isArray(j.templates)) ? j.templates
+      : (j && Array.isArray(j.customTemplates)) ? j.customTemplates
+      : [j];
+    return list
+      .filter(p => p && typeof p === 'object' && typeof p.css === 'string' && p.css.trim())
+      .map((p, i) => ({ name: p.name || (list.length > 1 ? `${baseName} ${i + 1}` : baseName), css: p.css }));
+  }
+  function importTemplatesBatch() {
+    const input = mainDoc.createElement('input');
+    input.type = 'file';
+    input.multiple = true;
+    input.accept = '.json,.css,.txt,application/json,text/css,text/plain';
+    input.addEventListener('change', async () => {
+      const files = Array.from(input.files || []);
+      if (!files.length) return;
+      const added = [];
+      let failed = 0;
+      for (const f of files) {
+        try {
+          const text = await f.text();
+          const got = parseTemplateFile(f.name, text);
+          if (!got.length) failed++;
+          got.forEach(p => added.push(portableToTemplate(p)));
+        } catch (e) { failed++; }
+      }
+      if (added.length) {
+        settings.customTemplates = (settings.customTemplates || []).concat(added);
+        saveSettings(settings);
+        injectCustomTemplateStyles();
+        _tplListOpen = true;
+        renderSettings();
+      }
+      toast(`导入 ${added.length} 个模板${failed ? `，${failed} 个文件无法识别` : ''}`, added.length ? 'success' : 'error');
+    });
+    input.click();
   }
 
   // 导入自定义字体（名称 + 完整 CSS 片段）
