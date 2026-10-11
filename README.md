@@ -218,6 +218,13 @@ https://github.com/Mshiyuan/book-excerpt
 - `book-excerpt:notes` 笔记数据（按角色索引）
 - IndexedDB `book-excerpt-images`：上传的头像与模板图片
 
+## 对外接口（给开发者）
+
+书摘提供官方接口 `window.BookExcerpt`，别的扩展或脚本可以直接调用划线、写想法、生成书摘卡片、打开笔记本，不需要内置书摘代码。
+
+- 开发者说明：[docs/API.md](docs/API.md)
+- 给 AI 编程助手看的精简规格：[docs/API_AI.md](docs/API_AI.md)
+
 ## 实现细节
 
 - 截图库：html2canvas 1.4.1，随仓库分发在 `lib/` 目录，加载时本地文件优先，4 个 CDN 镜像（staticfile / bootcdn / jsdelivr / unpkg）作为兜底
