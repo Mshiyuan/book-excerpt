@@ -108,6 +108,7 @@ $(() => {
     dailyReview: false,            // 随机回顾：每天第一次打开酒馆时推一条旧笔记
     lastDailyReview: '',           // 上次推送的日期（YYYY-MM-DD），一天只推一次
     jumpNoConfirm: false,          // 跳回原文要切换聊天/角色时不再弹确认（确认框里勾「以后不再提醒」）
+    panelAnim: 'fade',             // 切换笔记本/设置、设置三个小类时的动画：fade 淡入淡出 / flip 翻页
     panelHome: 'notes',            // 点「书摘笔记」先显示：notes 笔记本主页 / char 当前角色（没有笔记或没开聊天时回落主页）/ settings 设置
     heatScale: 'auto',             // 热力图深浅：auto 按记得最多的那天自适应 / fixed 固定上限
     heatMax: 50,                   // heatScale=fixed 时最深一格代表的条数
@@ -1672,16 +1673,22 @@ $(() => {
     const ctx = getContext();
     const notes = loadNotes();
     const key = charKey || note.charKey;
-    const otherChar = !!key && key !== (ctx.charKey || 'unknown');
-    const otherChat = !otherChar && !!note.chatId && note.chatId !== ctx.chatId;
+    // 聊天名一样就是同一个聊天，不再比角色：群聊里 charKey 记的是当时说话的角色名，比角色会误判成「别的角色」
+    const sameChat = !!note.chatId && note.chatId === ctx.chatId;
+    // 群聊笔记：按聊天名找所在群聊
+    const group = (!sameChat && note.chatId && Array.isArray(raw?.groups)) ? raw.groups.find(g => g && Array.isArray(g.chats) && g.chats.includes(note.chatId)) : null;
+    const otherChar = !sameChat && !group && !!key && key !== (ctx.charKey || 'unknown');
+    const otherChat = !sameChat && !!note.chatId && note.chatId !== ctx.chatId;
+    if (group && raw.groupId !== group.id) { toast(`这条在群聊「${group.name || note.chatId}」里，请先打开这个群聊再跳`, 'warning'); return; }
     if (otherChar || otherChat) {
-      const name = (notes[key] && notes[key].name) || key;
+      const name = group ? (group.name || note.chatId) : ((notes[key] && notes[key].name) || key);
       let chIdx = -1;
       if (otherChar) {
         chIdx = Array.isArray(raw?.characters) ? raw.characters.findIndex(c => c && c.avatar === key) : -1;
         if (chIdx < 0 || typeof raw?.selectCharacterById !== 'function') { toast(`找不到角色「${name}」，可能已被删除或改名`, 'warning'); return; }
       }
-      if (note.chatId && typeof raw?.openCharacterChat !== 'function') { toast(`这条在聊天「${note.chatId}」里，请先打开那个聊天`, 'warning'); return; }
+      const openFn = group ? raw?.openGroupChat : raw?.openCharacterChat;
+      if (note.chatId && typeof openFn !== 'function') { toast(`这条在聊天「${note.chatId}」里，请先打开那个聊天`, 'warning'); return; }
       if (!settings.jumpNoConfirm) {
         const where = otherChar ? `角色「${name}」的聊天「${note.chatId || '（未知）'}」` : `聊天「${note.chatId}」`;
         const r = await beConfirm({ title: '跳到原文', text: `这条在${where}里，要切换过去吗？`, okText: '切换过去', remember: '以后不再提醒' });
@@ -1696,7 +1703,8 @@ $(() => {
           if (!await beWait(() => getContext().charKey === key, 6000)) { toast('切换角色没有成功，可能酒馆正在保存或生成中', 'warning'); return; }
         }
         if (note.chatId && getContext().chatId !== note.chatId) {
-          await stContext().openCharacterChat(note.chatId);
+          if (group) await stContext().openGroupChat(group.id, note.chatId);
+          else await stContext().openCharacterChat(note.chatId);
           if (!await beWait(() => getContext().chatId === note.chatId, 6000)) { toast(`没能打开聊天「${note.chatId}」，可能已被删除或改名`, 'warning'); return; }
         }
       } catch (e) { toast('打开聊天失败：' + (e?.message || e), 'error'); return; }
@@ -1711,6 +1719,7 @@ $(() => {
     if (!mes && raw && typeof raw.executeSlashCommandsWithOptions === 'function') {
       try { await stContext().executeSlashCommandsWithOptions(`/chat-jump ${mesId}`); } catch (e) {}
       mes = await beWait(() => mainDoc.querySelector(`#chat .mes[mesid="${mesId}"]`), 2500);
+      if (mes) mes.classList.remove('flash', 'animated');
     }
     if (!mes) { toast('没找到这一楼，可能需要往上加载更多消息', 'warning'); return; }
     // 划线是消息渲染后异步还原的：等它出现，再把「划线本身」滚到屏幕中间（长消息里只滚楼层会差一大截）
@@ -1721,8 +1730,19 @@ $(() => {
     const target = spans ? spans[0] : mes;
     try { target.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (e) { target.scrollIntoView(); }
     if (spans) {
+      // 平滑滚动途中闪会看不到：等聊天区滚动停下（最多 1.2 秒）再闪一下
+      const sc = mainDoc.getElementById('chat');
+      if (sc) {
+        let last = -1, still = 0;
+        await beWait(() => {
+          const v = sc.scrollTop;
+          still = (v === last) ? still + 1 : 0;
+          last = v;
+          return still >= 2;
+        }, 1200, 60);
+      }
       spans.forEach(sp => { sp.classList.remove('be-jump-flash'); void sp.offsetWidth; sp.classList.add('be-jump-flash'); });
-      setTimeout(() => spans.forEach(sp => sp.classList.remove('be-jump-flash')), 3400);
+      setTimeout(() => spans.forEach(sp => sp.classList.remove('be-jump-flash')), 900);
       return;
     }
     const cur = stContext()?.chat?.[mesId]?.swipe_id;
@@ -2127,8 +2147,8 @@ $(() => {
     }
     .be-highlight:hover { opacity: 0.8; }
     /* 从笔记本跳回原文时闪两下，方便找到 */
-    @keyframes beJumpFlash { 0%, 100% { box-shadow: none; } 50% { box-shadow: 0 0 0 3px var(--be-accent); background-color: var(--be-accent-soft); } }
-    .be-highlight.be-jump-flash { animation: beJumpFlash 0.8s ease-in-out 4; border-radius: 2px; }
+    @keyframes beJumpFlash { 0%, 100% { opacity: 1; } 45% { opacity: 0.2; } }
+    .be-highlight.be-jump-flash { animation: beJumpFlash 0.8s ease-in-out 1; }
     /* 下划线样式（用 --be-line 变量，便于单 note 改色） */
     .be-highlight.style-underline {
       border-bottom: 2px solid var(--be-line, var(--be-accent));
@@ -2462,12 +2482,12 @@ $(() => {
     #be-source-box .be-src-gsum { flex: 1; min-width: 0; font-size: 11px; opacity: 0.55; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     #be-source-box .be-src-caret { width: 0; height: 0; border-left: 5px solid currentColor; border-top: 4px solid transparent; border-bottom: 4px solid transparent; opacity: 0.6; transition: transform 0.2s; flex: 0 0 auto; }
     #be-source-box .be-src-group.open .be-src-caret { transform: rotate(90deg); }
-    #be-source-box .be-src-gbody { display: none; padding: 2px 2px 6px; }
-    #be-source-box .be-src-group.open .be-src-gbody { display: block; }
+    #be-source-box .be-src-gbody { max-height: 0; overflow: hidden; box-sizing: border-box; padding: 0 2px; transition: max-height 0.25s ease, padding 0.25s ease; }
+    #be-source-box .be-src-group.open .be-src-gbody { max-height: none; padding: 2px 2px 6px; }
     /* 出处组合 */
     #be-source-box .be-src-presets { margin-bottom: 12px; }
-    #be-source-box .be-src-preset-h { font-size: 12px; opacity: 0.8; margin-bottom: 6px; letter-spacing: 0.05em; }
-    #be-source-box .be-src-preset-h span { margin-left: 8px; font-size: 10px; opacity: 0.6; letter-spacing: 0; }
+    #be-source-box .be-src-preset-h { font-size: 13px; font-weight: 700; margin-bottom: 7px; letter-spacing: 0.05em; }
+    #be-source-box .be-src-preset-h span { margin-left: 8px; font-size: 10px; font-weight: 400; opacity: 0.55; letter-spacing: 0; }
     #be-source-box .be-src-preset-chips { display: flex; flex-wrap: wrap; gap: 6px; }
     #be-source-box .be-src-preset { display: inline-flex; align-items: center; border: 1px solid var(--be-panel-input-border); border-radius: 14px; background: var(--be-panel-input-bg); overflow: hidden; }
     #be-source-box .be-src-preset-apply { border: 0; background: transparent; color: inherit; padding: 5px 4px 5px 11px; font-size: 12px; cursor: pointer; font-family: inherit; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -4061,6 +4081,13 @@ $(() => {
     .be-confirm-text { font-size: 14px; line-height: 1.7; margin: 4px 0 12px; word-break: break-word; }
     .be-confirm-remember { display: flex; align-items: center; gap: 6px; font-size: 12px; opacity: 0.8; margin-bottom: 12px; cursor: pointer; }
     .be-note-share.be-note-jump { font-size: 11px; padding: 2px 6px; }
+    body #toast-container { z-index: 2147483647 !important; }
+    /* 切换笔记本/设置、设置小类：翻页（按方向从左右带一点透视滑入） */
+    @keyframes be-flip-in-r { from { opacity: 0; transform: perspective(900px) translateX(42px) rotateY(-16deg); } to { opacity: 1; transform: none; } }
+    @keyframes be-flip-in-l { from { opacity: 0; transform: perspective(900px) translateX(-42px) rotateY(16deg); } to { opacity: 1; transform: none; } }
+    .be-flip-r { animation: be-flip-in-r 0.34s cubic-bezier(0.2, 0.8, 0.2, 1); transform-origin: left center; }
+    .be-flip-l { animation: be-flip-in-l 0.34s cubic-bezier(0.2, 0.8, 0.2, 1); transform-origin: right center; }
+    #be-panel .be-p-body { overflow-x: hidden; }
     /* 热力图 */
     .be-hm-scale { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 12px; flex-wrap: wrap; }
     .be-hm-scale > span { opacity: 0.7; }
@@ -6722,7 +6749,7 @@ $(() => {
           openThoughtEditor(noteId, fresh.text, null);
         } else if (act === 'view') {
           closeHlBar();
-          openHighlightViewer(noteId, { fromChat: true });
+          openHighlightViewer(noteId);
         } else if (act === 'excerpt') {
           closeHlBar();
           lastText = fresh.text;
@@ -6770,9 +6797,7 @@ $(() => {
   }
 
   // ----- 划线查看抽屉（点击划线弹出）-----
-  let _viewerFromChat = false;   // 从聊天里点划线打开的：已经在原文处，不显示「跳回原文」
-  function openHighlightViewer(noteId, opts = {}) {
-    _viewerFromChat = !!opts.fromChat;
+  function openHighlightViewer(noteId) {
     let mask = mainDoc.getElementById('be-viewer-mask');
     if (mask && isStaleGen(mask)) { try { mask.remove(); } catch (e) {} mask = null; }   // 旧脚本实例残留：重建
     if (!mask) {
@@ -6808,7 +6833,6 @@ $(() => {
       ${_locationHtml}
       <div class="be-vw-actions">
         <button data-act="copy">复制</button>
-        ${canJumpToNote(note) && !_viewerFromChat ? '<button data-act="jump">跳回原文</button>' : ''}
         <button data-act="thought">写想法</button>
         <button data-act="excerpt">书摘</button>
         <button data-act="del" class="danger">${note.thoughtOnly ? '删除' : '删划线'}</button>
@@ -6834,8 +6858,6 @@ $(() => {
         if (act === 'copy') {
           try { mainWin.navigator.clipboard.writeText(note.text || ''); toast('已复制', 'success'); }
           catch (e) { toast('复制失败', 'error'); }
-        } else if (act === 'jump') {
-          jumpToNote(note, note.charKey);
         } else if (act === 'thought') {
           openThoughtEditor(noteId, note.text, null);
         } else if (act === 'excerpt') {
@@ -6967,12 +6989,31 @@ $(() => {
     });
   }
   // 分组折叠：一次只展开一组，标题右边显示这组的摘要
+  // 展开/收起时用 JS 量出实际高度做 max-height 过渡（组里还有会再展开的折叠区，写死高度会被裁切或动画不匀），结束后放开
+  function animSourceGroup(g, open) {
+    if (open === g.classList.contains('open')) return;
+    const b = g.querySelector('.be-src-gbody');
+    if (!b) { g.classList.toggle('open', open); return; }
+    clearTimeout(b._beT);
+    if (open) {
+      b.style.maxHeight = '0px';
+      g.classList.add('open');
+      void b.offsetHeight;
+      b.style.maxHeight = b.scrollHeight + 'px';
+    } else {
+      b.style.maxHeight = b.scrollHeight + 'px';
+      void b.offsetHeight;
+      g.classList.remove('open');
+      b.style.maxHeight = '0px';
+    }
+    b._beT = setTimeout(() => { b.style.maxHeight = ''; }, 280);
+  }
   function bindSourceGroups(mask) {
     mask.querySelectorAll('.be-src-ghead').forEach(h => h.addEventListener('click', () => {
       const g = h.closest('.be-src-group');
       const willOpen = !g.classList.contains('open');
       markTypoDragging(350);
-      mask.querySelectorAll('.be-src-group').forEach(x => x.classList.toggle('open', willOpen && x === g));
+      mask.querySelectorAll('.be-src-group').forEach(x => animSourceGroup(x, willOpen && x === g));
     }));
   }
   function updateSourceSummaries(mask) {
@@ -7099,10 +7140,10 @@ $(() => {
       mask.innerHTML = `
         <div id="be-source-box">
           <div class="be-src-title">编辑出处</div>
-          <div class="be-src-presets" id="be-src-presets"></div>
           <div class="be-src-group open" data-g="info">
             <button type="button" class="be-src-ghead"><span class="be-src-caret"></span><span class="be-src-gname">出处信息</span><span class="be-src-gsum"></span></button>
             <div class="be-src-gbody">
+              <div class="be-src-presets" id="be-src-presets"></div>
               <div class="be-src-field">
                 <label>头像类型</label>
                 <div class="be-radio-group" id="be-src-avatar-type">
@@ -7307,7 +7348,11 @@ $(() => {
     mask.querySelector('#be-src-mask-obj-char').checked = !!settings.maskChar;
     mask.querySelector('#be-src-keepdel').checked = !!settings.keepDelLine;
     mask.querySelector('#be-src-mask-chips')._beRender?.();
-    mask.querySelectorAll('.be-src-group').forEach(g => g.classList.toggle('open', g.getAttribute('data-g') === 'info'));
+    mask.querySelectorAll('.be-src-group').forEach(g => {
+      const b = g.querySelector('.be-src-gbody');
+      if (b) { clearTimeout(b._beT); b.style.maxHeight = ''; }
+      g.classList.toggle('open', g.getAttribute('data-g') === 'info');
+    });
     renderSourcePresets(mask);
     syncSourceStars(mask);
     setTimeout(() => updateSourceSummaries(mask), 0);
@@ -8803,6 +8848,19 @@ $(() => {
     openPanel('notes');
   }
 
+  // 入场动画：fade 淡入 / flip 翻页（dir<0 从左边进，否则从右边进）
+  function playPanelSwitchAnim(el, dir) {
+    if (!el) return;
+    el.classList.remove('be-body-anim', 'be-flip-l', 'be-flip-r');
+    void el.offsetWidth;
+    if (settings.panelAnim === 'flip') {
+      markTypoDragging(420);
+      el.classList.add(dir < 0 ? 'be-flip-l' : 'be-flip-r');
+    } else {
+      el.classList.add('be-body-anim');
+    }
+  }
+
   function renderPanel() {
     const panel = mainDoc.getElementById('be-panel');
     if (!panel) return;
@@ -8829,12 +8887,7 @@ $(() => {
         panel.querySelectorAll('.be-p-tabs button').forEach(x => x.classList.toggle('active', x === b));
         if (panelView === 'notes') renderNotesList();
         else renderSettings();
-        const body = mainDoc.getElementById('be-p-body');
-        if (body) {
-          body.classList.remove('be-body-anim');
-          void body.offsetWidth;
-          body.classList.add('be-body-anim');
-        }
+        playPanelSwitchAnim(mainDoc.getElementById('be-p-body'), newView === 'notes' ? -1 : 1);
       });
     });
     if (panelView === 'notes') renderNotesList();
@@ -9812,18 +9865,15 @@ $(() => {
         el.addEventListener('click', () => {
           const g = el.getAttribute('data-g');
           if (g === settingsGroup) return;
+          const order = ['card', 'highlight', 'general'];
+          const dir = order.indexOf(g) < order.indexOf(settingsGroup) ? -1 : 1;
           settingsGroup = g;
           panelBody.querySelectorAll('.be-settings-subtabs button').forEach(b => b.classList.toggle('active', b === el));
           // 跟"笔记本/设置"顶部主 Tab 切换用同一套手法：内容瞬间换掉（没有旧内容残留/重叠这回事），
           // 只在新内容上补一个入场淡入，跟主 Tab 切换的手感保持一致——那个切换用户没意见，直接照搬。
           panelBody.scrollTop = 0;
           renderSettingsGroupContent(mainDoc.getElementById('be-settings-content'));
-          const freshContent = mainDoc.getElementById('be-settings-content');
-          if (freshContent) {
-            freshContent.classList.remove('be-body-anim');
-            void freshContent.offsetWidth;
-            freshContent.classList.add('be-body-anim');
-          }
+          playPanelSwitchAnim(mainDoc.getElementById('be-settings-content'), dir);
         });
       });
       content = panelBody.querySelector('#be-settings-content');
@@ -10194,6 +10244,16 @@ $(() => {
         </div>
         ${hint('选「当前角色」时，如果没打开聊天或这个角色还没有划线和想法，就显示笔记本主页。')}
         <div class="be-row" style="margin-top:8px;">
+          <label style="flex:1;">切换页面的动画</label>
+        </div>
+        <div class="be-row">
+          <div class="be-radio-group" id="be-panel-anim-group" style="width:100%;">
+            <button type="button" class="be-radio-opt ${settings.panelAnim !== 'flip' ? 'active' : ''}" data-v="fade">淡入淡出</button>
+            <button type="button" class="be-radio-opt ${settings.panelAnim === 'flip' ? 'active' : ''}" data-v="flip">翻页</button>
+          </div>
+        </div>
+        ${hint('切换「笔记本 / 设置」和设置里「书摘卡片 / 划线 / 通用」时的效果。')}
+        <div class="be-row" style="margin-top:8px;">
           <label style="flex:1;">跳回原文要切换聊天时先确认</label>
           ${toggleHtml('be-jump-confirm', !settings.jumpNoConfirm)}
         </div>
@@ -10407,6 +10467,13 @@ $(() => {
         settings.panelHome = btn.getAttribute('data-v');
         saveSettings(settings);
         body.querySelectorAll('#be-panel-home-group .be-radio-opt').forEach(b => b.classList.toggle('active', b === btn));
+      });
+    });
+    body.querySelectorAll('#be-panel-anim-group .be-radio-opt').forEach(btn => {
+      btn.addEventListener('click', () => {
+        settings.panelAnim = btn.getAttribute('data-v') === 'flip' ? 'flip' : 'fade';
+        saveSettings(settings);
+        body.querySelectorAll('#be-panel-anim-group .be-radio-opt').forEach(b => b.classList.toggle('active', b === btn));
       });
     });
     body.querySelector('#be-jump-confirm')?.addEventListener('change', e => {
