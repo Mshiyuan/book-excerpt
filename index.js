@@ -77,8 +77,9 @@ $(() => {
     sourceTitle: '',               // 书名
     sourceChapter: '',             // 章名
     sourceScope: 'global',         // 出处设定的生效范围：global(全局，默认，跟旧版一致) / character(按角色区分) / chat(按角色+聊天区分)
-    sourceByChar: {},
-    sourceHistory: {},             // 出处/水印各字段保存过的值：{user|author|title|chapter|watermark: [{v, pin}]}，编辑出处里点 ▾ 直接选              // sourceScope!=='global' 时才用到：{[charKey]: {...出处字段}} 或 {[charKey]: {[chatId]: {...}}}（chat 模式再嵌一层）
+    sourceByChar: {},              // sourceScope!=='global' 时才用到：{[charKey]: {...出处字段}} 或 {[charKey]: {[chatId]: {...}}}（chat 模式再嵌一层）
+    sourceHistory: {},             // 出处/水印各字段收藏过的值：{user|author|title|chapter|watermark: [{v, pin}]}，编辑出处里点 ☆ 收藏、点 ▾ 选
+    sourcePresets: [],             // 出处组合：[{id, name, user, author, title, showTitle, chapter, showChapter, wm, showWm}]，一键套用
     customTemplates: [],           // 用户导入的自定义模板 [{id, name, css}]
     customFonts: [],               // 用户导入的自定义字体 [{id, name, css, fontFamily}]
     lastStyle: '',                 // 上次实际用的划线样式（空=回退到 highlightStyle）
@@ -97,7 +98,7 @@ $(() => {
     hiddenColorPresets: [],        // 被用户隐藏的内置配色 id 列表（COLOR_PRESETS 的 id）
     templateOrder: [],             // 模板排序（默认+导入统一，存 key），只有 templateOrderManual 为 true 才生效
     templateOrderManual: false,    // 用户在模板列表里拖动过才为 true；否则固定 默认模板在前、导入模板在后
-    templateFavorites: [],
+    templateFavorites: [],         // 收藏的模板 key 列表（跟 settings.template 同格式：'classic' / 'custom-<id>'），选模板时排在最前
     floatBarCustom: false,         // 自定义悬浮栏按钮（高级设置，默认关）：开着时按 floatBarLayout 排序/隐藏
     floatBarLayout: [],            // [{id:'highlight'|'thought'|'excerpt'|'pick', hidden}]，没列到的按钮自动排在后面
     recentColors: [],              // 取色器「最近使用」（最多 16 个）
@@ -105,7 +106,11 @@ $(() => {
     colorPickerTab: 'classic',     // 取色器上次用的方式：classic 经典 / disc 色盘 / value 参数 / palette 调色板
     dataDirSync: true,             // 同步到酒馆数据目录（data/<用户>/user/files/）：浏览器存储照旧，另存一份双保险
     dailyReview: false,            // 随机回顾：每天第一次打开酒馆时推一条旧笔记
-    lastDailyReview: '',           // 上次推送的日期（YYYY-MM-DD），一天只推一次         // 收藏的模板 key 列表（跟 settings.template 同格式：'classic' / 'custom-<id>'），选模板时排在最前
+    lastDailyReview: '',           // 上次推送的日期（YYYY-MM-DD），一天只推一次
+    jumpNoConfirm: false,          // 跳回原文要切换聊天/角色时不再弹确认（确认框里勾「以后不再提醒」）
+    panelHome: 'notes',            // 点「书摘笔记」先显示：notes 笔记本主页 / char 当前角色（没有笔记或没开聊天时回落主页）/ settings 设置
+    heatScale: 'auto',             // 热力图深浅：auto 按记得最多的那天自适应 / fixed 固定上限
+    heatMax: 50,                   // heatScale=fixed 时最深一格代表的条数
     // 一次性迁移标记：新安装直接带上，存下来的设置里有它就不会再被迁移逻辑改动
     _scaleDefault3: true,
     _defaults150b: true
@@ -746,8 +751,15 @@ $(() => {
   function cpEmit(type) {
     if (!_cp || !_cp.input) return;
     const hex = cpCurrentHex();
+    const t = _cp.targets ? _cp.targets[_cp.ti] : null;
+    const wasAuto = !!(t && t.auto && t.auto.get());
     _cp.input.value = hex;
     _cp.input.dispatchEvent(new Event(type, { bubbles: true }));
+    if (t) {
+      const dot = _cp.el.querySelector(`.be-cp-tseg button[data-ti="${_cp.ti}"] .be-cp-tdot`);
+      if (dot) dot.style.background = hex;
+      if (wasAuto) { if (t.auto.get()) t.auto.set(false); _cp.el.querySelector('.be-cp-auto')?.classList.remove('active'); }
+    }
   }
   function cpPushRecent(hex) {
     const list = (Array.isArray(settings.recentColors) ? settings.recentColors : []).filter(c => c !== hex);
@@ -757,7 +769,11 @@ $(() => {
   function closeColorPicker(commit = true) {
     if (!_cp) return;
     const st = _cp;
-    if (commit && cpCurrentHex() !== st.orig) {
+    if (commit && st.targets) {
+      st.targets.forEach(t => {
+        if (t.input.value !== t.orig) { t.input.dispatchEvent(new Event('change', { bubbles: true })); cpPushRecent(t.input.value); }
+      });
+    } else if (commit && cpCurrentHex() !== st.orig) {
       cpEmit('change');
       cpPushRecent(cpCurrentHex());
     }
@@ -767,12 +783,16 @@ $(() => {
     mainDoc.removeEventListener('keydown', st.onKey, true);
     _cp = null;
   }
-  function openColorPicker(input) {
+  // opts.targets：[{label, input, auto?:{get(), set(bool)}}]，顶部出现切换（如 背景 / 字色），每个目标各自实时写回；
+  // opts.anchor：定位参照（目标是没挂到页面上的隐藏 input 时用）
+  function openColorPicker(input, opts = {}) {
     if (_cp) closeColorPicker(true);
+    const targets = Array.isArray(opts.targets) && opts.targets.length ? opts.targets.map(t => ({ ...t, orig: cpRgbToHex(cpHexToRgb(t.input.value) || { r: 149, g: 182, b: 214 }) })) : null;
+    if (targets) input = targets[0].input;
     const rgb = cpHexToRgb(input.value) || { r: 149, g: 182, b: 214 };
     const el = stampGen(mainDoc.createElement('div'));
     el.id = 'be-cpick';
-    _cp = { input, hsv: cpRgbToHsv(rgb), orig: cpRgbToHex(rgb), el, tab: settings.colorPickerTab || 'classic' };
+    _cp = { input, hsv: cpRgbToHsv(rgb), orig: cpRgbToHex(rgb), el, tab: settings.colorPickerTab || 'classic', targets, ti: 0 };
     el.addEventListener('pointerdown', e => e.stopPropagation());
     mainDoc.body.appendChild(el);
     _cp.outside = (e) => { if (_cp && !el.contains(e.target) && e.target !== input) closeColorPicker(true); };
@@ -785,7 +805,7 @@ $(() => {
     mainDoc.addEventListener('pointerdown', _cp.outside, true);
     renderColorPicker();
     // 定位：优先放在色块下方，放不下就上方；窄屏左右贴边留 8px（absolute + 滚动偏移，见 ST 禁用 fixed 的坑）
-    const r = input.getBoundingClientRect();
+    const r = (opts.anchor || input).getBoundingClientRect();
     const vw = mainWin.innerWidth, vh = mainWin.innerHeight;
     const w = el.offsetWidth, h = el.offsetHeight;
     let left = cpClamp(r.left + r.width / 2 - w / 2, 8, Math.max(8, vw - w - 8));
@@ -797,9 +817,55 @@ $(() => {
   }
   function cpRevert() {
     if (!_cp) return;
-    _cp.hsv = cpRgbToHsv(cpHexToRgb(_cp.orig));
-    cpEmit('input');
+    if (_cp.targets) {
+      _cp.targets.forEach(t => { if (t.input.value !== t.orig) { t.input.value = t.orig; t.input.dispatchEvent(new Event('input', { bubbles: true })); } });
+    } else {
+      _cp.hsv = cpRgbToHsv(cpHexToRgb(_cp.orig));
+      cpEmit('input');
+    }
     closeColorPicker(false);
+  }
+  // 拖动取色器：按住顶部的横条（或顶部一行的空白处）移动，跟 CSS 编辑小窗一样
+  function cpBindMove(el) {
+    const startDrag = (e) => {
+      if (e.button != null && e.button !== 0) return;
+      const r0 = el.getBoundingClientRect();
+      const sx = e.clientX, sy = e.clientY;
+      e.preventDefault();
+      const handle = e.currentTarget;
+      try { handle.setPointerCapture(e.pointerId); } catch (err) {}
+      el.classList.add('be-cp-moving');
+      const mv = (ev) => {
+        const vw = mainWin.innerWidth, vh = mainWin.innerHeight;
+        const left = cpClamp(r0.left + ev.clientX - sx, 4 - r0.width + 60, vw - 60);
+        const top = cpClamp(r0.top + ev.clientY - sy, 0, vh - 40);
+        el.style.left = (left + (mainWin.scrollX || 0)) + 'px';
+        el.style.top = (top + (mainWin.scrollY || 0)) + 'px';
+      };
+      const up = () => {
+        el.classList.remove('be-cp-moving');
+        handle.removeEventListener('pointermove', mv); handle.removeEventListener('pointerup', up); handle.removeEventListener('pointercancel', up);
+      };
+      handle.addEventListener('pointermove', mv);
+      handle.addEventListener('pointerup', up);
+      handle.addEventListener('pointercancel', up);
+    };
+    const grip = el.querySelector('.be-cp-grip');
+    if (grip) { grip.style.touchAction = 'none'; grip.addEventListener('pointerdown', startDrag); }
+    const top = el.querySelector('.be-cp-top');
+    if (top) top.addEventListener('pointerdown', (e) => {
+      if (e.target !== top) return;   // 只认顶部一行的空白处，色块/输入框/按钮照常
+      startDrag(e);
+    });
+  }
+  function cpSwitchTarget(i) {
+    if (!_cp || !_cp.targets || !_cp.targets[i]) return;
+    _cp.ti = i;
+    const t = _cp.targets[i];
+    _cp.input = t.input;
+    _cp.orig = t.orig;
+    _cp.hsv = cpRgbToHsv(cpHexToRgb(t.input.value) || cpHexToRgb(t.orig));
+    renderColorPicker();
   }
   // 只刷新数值/拇指位置，不重建 DOM（拖动中重建会丢 pointer capture）
   function cpSync(skipHexInput) {
@@ -915,7 +981,15 @@ $(() => {
         </div>`;
     }
     const canEye = typeof mainWin.EyeDropper === 'function';
+    const tg = _cp.targets;
+    const curT = tg ? tg[_cp.ti] : null;
+    const autoOn = !!(curT && curT.auto && curT.auto.get());
     el.innerHTML = `
+      <div class="be-cp-grip" title="按住拖动"></div>
+      ${tg ? `<div class="be-cp-targets">
+        <div class="be-cp-tseg">${tg.map((t, i) => `<button type="button" data-ti="${i}" class="${i === _cp.ti ? 'active' : ''}"><span class="be-cp-tdot" style="background:${escapeHtml(t.input.value)}"></span>${escapeHtml(t.label)}</button>`).join('')}</div>
+        ${curT && curT.auto ? `<button type="button" class="be-cp-auto ${autoOn ? 'active' : ''}" title="按背景明暗自动选深色或浅色文字">自动</button>` : ''}
+      </div>` : ''}
       <div class="be-cp-top">
         <span class="be-cp-cmp"><span class="be-cp-old" style="background:${_cp.orig}" title="原来的颜色（点一下恢复）"></span><span class="be-cp-new"></span></span>
         <label class="be-cp-hexwrap">#<input class="be-cp-hex" maxlength="7" spellcheck="false" autocomplete="off"></label>
@@ -927,6 +1001,12 @@ $(() => {
         ${[['classic', '经典'], ['disc', '色盘'], ['value', '参数'], ['palette', '调色板']].map(([k, n]) => `<button type="button" data-tab="${k}" class="${tab === k ? 'active' : ''}">${n}</button>`).join('')}
       </div>`;
     // 事件
+    el.querySelectorAll('.be-cp-tseg button').forEach(b => b.addEventListener('click', () => cpSwitchTarget(+b.getAttribute('data-ti'))));
+    el.querySelector('.be-cp-auto')?.addEventListener('click', () => {
+      curT.auto.set(!curT.auto.get());
+      renderColorPicker();
+    });
+    cpBindMove(el);
     el.querySelectorAll('.be-cp-tabs button').forEach(b => b.addEventListener('click', () => {
       _cp.tab = b.getAttribute('data-tab');
       settings.colorPickerTab = _cp.tab;
@@ -1084,14 +1164,17 @@ $(() => {
   }
   // ====== 名字打码：分享时隐去角色/用户名 ======
   // 收集要打码的目标词：自动取角色名/用户名（含出处里自定义的名字）+ 额外补充词
-  function buildMaskTargets() {
+  // over：编辑出处弹窗里还没保存的值 {maskUser, maskChar, sourceUser, sourceAuthor}，用来让 chip 立刻跟着勾选变化
+  function buildMaskTargets(over) {
     const names = [];
     const push = n => { const v = (n == null ? '' : String(n)).trim(); if (v) names.push(v); };
-    if (settings.maskUser || settings.maskChar) {
+    const mUser = over ? over.maskUser : settings.maskUser;
+    const mChar = over ? over.maskChar : settings.maskChar;
+    if (mUser || mChar) {
       const ctx = getContext();
-      const src = getSourceValues();
-      if (settings.maskUser) { push(ctx.userName); push(src.sourceUser); }
-      if (settings.maskChar) { push(ctx.charName); push(src.sourceAuthor); }
+      const src = over || getSourceValues();
+      if (mUser) { push(ctx.userName); push(src.sourceUser); }
+      if (mChar) { push(ctx.charName); push(src.sourceAuthor); }
     }
     maskExtraWords().forEach(w => names.push(w));
     // 去重 + 长的先匹配，避免短名把长名截断
@@ -1134,8 +1217,8 @@ $(() => {
   }
   // ---- 打码词 chip：每个要打码的词一枚，点开可单独指定样式（设置面板和编辑出处共用） ----
   const MASK_STYLE_NAMES = { block: '涂黑', symbol: '符号', custom: '自定义' };
-  function maskChipsHtml(openWord) {
-    const targets = buildMaskTargets();
+  function maskChipsHtml(openWord, over) {
+    const targets = buildMaskTargets(over);
     if (!targets.length) return `<div class="be-mask-chips-empty">还没有要打码的词</div>`;
     const extra = new Set(maskExtraWords());
     const chips = targets.map(w => {
@@ -1166,11 +1249,11 @@ $(() => {
     if (settings.maskWordStyle) delete settings.maskWordStyle[word];
   }
   // box：chip 容器；onChange：改完要做的事（刷新卡片/同步输入框）
-  function bindMaskChips(box, onChange) {
+  function bindMaskChips(box, onChange, getOver) {
     if (!box || box._beChips) return;
     box._beChips = true;
     let openWord = '';
-    const render = () => { box.innerHTML = maskChipsHtml(openWord); };
+    const render = () => { box.innerHTML = maskChipsHtml(openWord, getOver ? getOver() : undefined); };
     box._beRender = render;
     box.addEventListener('click', (e) => {
       const chip = e.target.closest('.be-mask-chip');
@@ -1536,7 +1619,52 @@ $(() => {
   function canJumpToNote(note) {
     return !!note && note.msgId !== undefined && note.msgId !== '' && !isNaN(parseInt(note.msgId));
   }
-  // 跳回原楼层：同聊天直接跳；同角色别的聊天先确认再打开；别的角色只提示。
+  // 通用确认框（居中）：不用 window.confirm——部分手机浏览器/WebView 会静默吞掉它，表现成「点了没反应」。
+  // opts.remember 给出文字时多一个「以后不再提醒」勾选；resolve({ ok, remember })
+  function beConfirm({ title = '', text = '', okText = '确定', cancelText = '取消', remember = '' } = {}) {
+    return new Promise(resolve => {
+      mainDoc.getElementById('be-confirm-mask')?.remove();
+      const mask = stampGen(mainDoc.createElement('div'));
+      mask.id = 'be-confirm-mask';
+      mask.className = 'be-import-tpl-mask open';
+      mask.innerHTML = `
+        <div class="be-import-tpl-box be-confirm-box">
+          ${title ? `<div class="be-src-title">${escapeHtml(title)}</div>` : ''}
+          <div class="be-confirm-text">${escapeHtml(text)}</div>
+          ${remember ? `<label class="be-confirm-remember"><input type="checkbox" id="be-confirm-remember"> ${escapeHtml(remember)}</label>` : ''}
+          <div class="be-src-actions">
+            <button class="be-btn" data-ok="0">${escapeHtml(cancelText)}</button>
+            <button class="be-btn primary" data-ok="1">${escapeHtml(okText)}</button>
+          </div>
+        </div>`;
+      mainDoc.body.appendChild(mask);
+      detectAndApplyTheme();
+      const done = (ok) => {
+        const rem = !!mask.querySelector('#be-confirm-remember')?.checked;
+        mask.remove();
+        resolve({ ok, remember: ok && rem });
+      };
+      mask.addEventListener('click', e => {
+        if (e.target === mask) return done(false);
+        const b = e.target.closest('[data-ok]');
+        if (b) done(b.getAttribute('data-ok') === '1');
+      });
+    });
+  }
+  function beWait(cond, ms = 4000, step = 100) {
+    return new Promise(resolve => {
+      const t0 = Date.now();
+      const tick = () => {
+        let v = false;
+        try { v = cond(); } catch (e) {}
+        if (v) return resolve(v);
+        if (Date.now() - t0 >= ms) return resolve(null);
+        setTimeout(tick, step);
+      };
+      tick();
+    });
+  }
+  // 跳回原楼层：同聊天直接跳；别的聊天/别的角色先确认（可勾「以后不再提醒」）再切过去。
   // 楼层没渲染（酒馆只显示最近若干楼）时用 /chat-jump 让酒馆自己加载再滚过去。
   async function jumpToNote(note, charKey) {
     if (!canJumpToNote(note)) { toast('这条笔记没有记录楼层，无法跳转', 'info'); return; }
@@ -1544,15 +1672,35 @@ $(() => {
     const ctx = getContext();
     const notes = loadNotes();
     const key = charKey || note.charKey;
-    if (key && key !== (ctx.charKey || 'unknown')) {
-      toast(`这条在角色「${(notes[key] && notes[key].name) || key}」的聊天里，请先切换到该角色`, 'warning');
-      return;
-    }
-    if (note.chatId && ctx.chatId && note.chatId !== ctx.chatId) {
-      if (!raw || typeof raw.openCharacterChat !== 'function') { toast(`这条在聊天「${note.chatId}」里，请先打开那个聊天`, 'warning'); return; }
-      if (!mainWin.confirm(`这条在聊天「${note.chatId}」里，要切换过去吗？`)) return;
-      try { await raw.openCharacterChat(note.chatId); } catch (e) { toast('打开聊天失败：' + (e?.message || e), 'error'); return; }
-      await new Promise(r => setTimeout(r, 600));
+    const otherChar = !!key && key !== (ctx.charKey || 'unknown');
+    const otherChat = !otherChar && !!note.chatId && note.chatId !== ctx.chatId;
+    if (otherChar || otherChat) {
+      const name = (notes[key] && notes[key].name) || key;
+      let chIdx = -1;
+      if (otherChar) {
+        chIdx = Array.isArray(raw?.characters) ? raw.characters.findIndex(c => c && c.avatar === key) : -1;
+        if (chIdx < 0 || typeof raw?.selectCharacterById !== 'function') { toast(`找不到角色「${name}」，可能已被删除或改名`, 'warning'); return; }
+      }
+      if (note.chatId && typeof raw?.openCharacterChat !== 'function') { toast(`这条在聊天「${note.chatId}」里，请先打开那个聊天`, 'warning'); return; }
+      if (!settings.jumpNoConfirm) {
+        const where = otherChar ? `角色「${name}」的聊天「${note.chatId || '（未知）'}」` : `聊天「${note.chatId}」`;
+        const r = await beConfirm({ title: '跳到原文', text: `这条在${where}里，要切换过去吗？`, okText: '切换过去', remember: '以后不再提醒' });
+        if (!r.ok) return;
+        if (r.remember) { settings.jumpNoConfirm = true; saveSettings(settings); }
+      }
+      closePanel();
+      mainDoc.getElementById('be-viewer-mask')?.classList.remove('open');
+      try {
+        if (otherChar) {
+          await raw.selectCharacterById(chIdx);
+          if (!await beWait(() => getContext().charKey === key, 6000)) { toast('切换角色没有成功，可能酒馆正在保存或生成中', 'warning'); return; }
+        }
+        if (note.chatId && getContext().chatId !== note.chatId) {
+          await stContext().openCharacterChat(note.chatId);
+          if (!await beWait(() => getContext().chatId === note.chatId, 6000)) { toast(`没能打开聊天「${note.chatId}」，可能已被删除或改名`, 'warning'); return; }
+        }
+      } catch (e) { toast('打开聊天失败：' + (e?.message || e), 'error'); return; }
+      await new Promise(r => setTimeout(r, 500));
     }
     const mesId = parseInt(note.msgId);
     const chat = stContext()?.chat;
@@ -1561,16 +1709,18 @@ $(() => {
     mainDoc.getElementById('be-viewer-mask')?.classList.remove('open');
     let mes = mainDoc.querySelector(`#chat .mes[mesid="${mesId}"]`);
     if (!mes && raw && typeof raw.executeSlashCommandsWithOptions === 'function') {
-      try { await raw.executeSlashCommandsWithOptions(`/chat-jump ${mesId}`); } catch (e) {}
-      await new Promise(r => setTimeout(r, 500));
-      mes = mainDoc.querySelector(`#chat .mes[mesid="${mesId}"]`);
+      try { await stContext().executeSlashCommandsWithOptions(`/chat-jump ${mesId}`); } catch (e) {}
+      mes = await beWait(() => mainDoc.querySelector(`#chat .mes[mesid="${mesId}"]`), 2500);
     }
     if (!mes) { toast('没找到这一楼，可能需要往上加载更多消息', 'warning'); return; }
-    try { mes.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (e) { mes.scrollIntoView(); }
-    // 划线是消息渲染后异步还原的，稍等再找
-    await new Promise(r => setTimeout(r, 350));
-    const spans = mes.querySelectorAll(`.be-highlight[data-be-id="${note.id}"]`);
-    if (spans.length) {
+    // 划线是消息渲染后异步还原的：等它出现，再把「划线本身」滚到屏幕中间（长消息里只滚楼层会差一大截）
+    const spans = await beWait(() => {
+      const list = mes.querySelectorAll(`.be-highlight[data-be-id="${note.id}"]`);
+      return list.length ? list : null;
+    }, 1500);
+    const target = spans ? spans[0] : mes;
+    try { target.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (e) { target.scrollIntoView(); }
+    if (spans) {
       spans.forEach(sp => { sp.classList.remove('be-jump-flash'); void sp.offsetWidth; sp.classList.add('be-jump-flash'); });
       setTimeout(() => spans.forEach(sp => sp.classList.remove('be-jump-flash')), 3400);
       return;
@@ -2294,7 +2444,37 @@ $(() => {
     }
     /* 出处字段存档：输入框右侧 ▾，点开在下方列出保存过的值 */
     #be-source-box .be-combo { position: relative; }
-    #be-source-box .be-combo input[type=text] { padding-right: 36px; }
+    #be-source-box .be-combo input[type=text] { padding-right: 66px; }
+    #be-source-box .be-combo-star {
+      position: absolute; right: 32px; top: 50%; transform: translateY(-50%);
+      width: 30px; height: 30px; border: 0; background: transparent;
+      color: var(--be-panel-sub); cursor: pointer; font-size: 12px;
+    }
+    #be-source-box .be-combo-star.on { color: var(--be-accent); }
+    /* 分组折叠 */
+    #be-source-box .be-src-group { border-top: 1px solid var(--be-panel-divider); }
+    #be-source-box .be-src-group + .be-src-actions { border-top: 1px solid var(--be-panel-divider); padding-top: 14px; }
+    #be-source-box .be-src-ghead {
+      width: 100%; display: flex; align-items: center; gap: 8px; padding: 11px 2px;
+      background: transparent; border: 0; color: inherit; cursor: pointer; font-family: inherit; text-align: left;
+    }
+    #be-source-box .be-src-gname { font-size: 13px; font-weight: 600; letter-spacing: 0.05em; flex: 0 0 auto; }
+    #be-source-box .be-src-gsum { flex: 1; min-width: 0; font-size: 11px; opacity: 0.55; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #be-source-box .be-src-caret { width: 0; height: 0; border-left: 5px solid currentColor; border-top: 4px solid transparent; border-bottom: 4px solid transparent; opacity: 0.6; transition: transform 0.2s; flex: 0 0 auto; }
+    #be-source-box .be-src-group.open .be-src-caret { transform: rotate(90deg); }
+    #be-source-box .be-src-gbody { display: none; padding: 2px 2px 6px; }
+    #be-source-box .be-src-group.open .be-src-gbody { display: block; }
+    /* 出处组合 */
+    #be-source-box .be-src-presets { margin-bottom: 12px; }
+    #be-source-box .be-src-preset-h { font-size: 12px; opacity: 0.8; margin-bottom: 6px; letter-spacing: 0.05em; }
+    #be-source-box .be-src-preset-h span { margin-left: 8px; font-size: 10px; opacity: 0.6; letter-spacing: 0; }
+    #be-source-box .be-src-preset-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    #be-source-box .be-src-preset { display: inline-flex; align-items: center; border: 1px solid var(--be-panel-input-border); border-radius: 14px; background: var(--be-panel-input-bg); overflow: hidden; }
+    #be-source-box .be-src-preset-apply { border: 0; background: transparent; color: inherit; padding: 5px 4px 5px 11px; font-size: 12px; cursor: pointer; font-family: inherit; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #be-source-box .be-src-preset-del { border: 0; background: transparent; color: var(--be-panel-sub); padding: 5px 9px 5px 4px; font-size: 13px; cursor: pointer; opacity: 0.6; }
+    #be-source-box .be-src-preset-add { border: 1px dashed var(--be-panel-input-border); background: transparent; color: var(--be-accent); border-radius: 14px; padding: 5px 11px; font-size: 12px; cursor: pointer; font-family: inherit; }
+    #be-source-box .be-src-preset-new { display: flex; gap: 6px; margin-top: 8px; }
+    #be-source-box .be-src-preset-new input { flex: 1; min-width: 0; box-sizing: border-box; background: var(--be-panel-input-bg); border: 1px solid var(--be-panel-input-border); color: inherit; padding: 6px 10px; border-radius: 6px; font-size: 13px; font-family: inherit; }
     #be-source-box .be-combo-btn {
       position: absolute; right: 2px; top: 50%; transform: translateY(-50%);
       width: 32px; height: 30px; border: 0; background: transparent;
@@ -2332,7 +2512,7 @@ $(() => {
       max-height: 320px;
     }
     /* 打码折叠区字段多（4~5 项），单独给足高度，展开时不被裁切 */
-    #be-source-box #be-src-mask-wrap.open { max-height: 640px; }
+    #be-source-box #be-src-mask-wrap.open { max-height: 1200px; }
     #be-source-box .be-src-actions {
       display: flex; gap: 8px; justify-content: flex-end;
     }
@@ -3756,6 +3936,17 @@ $(() => {
       user-select: none; -webkit-user-select: none;
     }
     #be-cpick .be-cp-top { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+    #be-cpick .be-cp-grip { width: 40px; height: 5px; border-radius: 3px; background: currentColor; opacity: 0.25; margin: -4px auto 8px; cursor: grab; position: relative; }
+    #be-cpick .be-cp-grip::before { content: ''; position: absolute; left: -40px; right: -40px; top: -8px; bottom: -8px; }
+    #be-cpick.be-cp-moving { opacity: 0.92; }
+    #be-cpick.be-cp-moving .be-cp-grip { cursor: grabbing; opacity: 0.5; }
+    #be-cpick .be-cp-targets { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; }
+    #be-cpick .be-cp-tseg { flex: 1; display: flex; gap: 4px; background: var(--be-panel-row-bg, rgba(255,255,255,0.05)); border-radius: 9px; padding: 3px; }
+    #be-cpick .be-cp-tseg button { flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; border: 0; background: transparent; color: inherit; opacity: 0.7; padding: 5px 0; border-radius: 7px; font-size: 12px; cursor: pointer; font-family: inherit; }
+    #be-cpick .be-cp-tseg button.active { background: var(--be-panel-bg, #2a2a2a); opacity: 1; color: var(--be-accent); font-weight: 600; }
+    #be-cpick .be-cp-tdot { width: 12px; height: 12px; border-radius: 50%; box-shadow: inset 0 0 0 1px rgba(128,128,128,0.45); }
+    #be-cpick .be-cp-auto { border: 1px solid var(--be-panel-divider, rgba(255,255,255,0.15)); background: transparent; color: inherit; border-radius: 8px; padding: 5px 9px; font-size: 12px; cursor: pointer; opacity: 0.75; font-family: inherit; }
+    #be-cpick .be-cp-auto.active { border-color: var(--be-accent); color: var(--be-accent); opacity: 1; }
     #be-cpick .be-cp-cmp { display: flex; width: 52px; height: 28px; border-radius: 8px; overflow: hidden; flex: 0 0 auto; box-shadow: inset 0 0 0 1px rgba(128,128,128,0.35); }
     #be-cpick .be-cp-old, #be-cpick .be-cp-new { flex: 1; }
     #be-cpick .be-cp-old { cursor: pointer; }
@@ -3845,20 +4036,40 @@ $(() => {
     .be-rv-ava { width: 20px; height: 20px; border-radius: 50%; background-size: cover; background-position: center; flex: 0 0 auto; }
     .be-rv-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; margin-bottom: 16px; }
     .be-rv-daily { border-top: 1px solid var(--be-panel-divider); padding-top: 12px; }
+    /* 每日回顾：屏幕正中的小弹窗（absolute + 100dvh，见 ST 禁用 fixed 的坑），点空白处关闭 */
     #be-daily-review {
-      position: absolute; right: 12px; bottom: calc(12px + env(safe-area-inset-bottom, 0px)); z-index: 2147483600;
-      width: min(300px, calc(100vw - 24px)); box-sizing: border-box;
-      background: var(--be-panel-bg); color: var(--be-panel-fg); border: 1px solid var(--be-panel-divider);
-      border-radius: 12px; padding: 12px 14px; box-shadow: 0 10px 30px rgba(0,0,0,0.35);
-      font-family: var(--mainFontFamily, sans-serif); cursor: pointer;
-      opacity: 0; transform: translateY(8px); transition: opacity 0.25s, transform 0.25s;
+      position: absolute; top: 0; left: 0; width: 100%; height: 100vh; height: 100dvh; z-index: 2147483600;
+      display: flex; align-items: center; justify-content: center; padding: 16px; box-sizing: border-box;
+      background: rgba(0,0,0,0.45); opacity: 0; transition: opacity 0.22s;
     }
-    #be-daily-review.show { opacity: 1; transform: none; }
-    #be-daily-review .be-dr-head { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--be-accent); margin-bottom: 6px; }
-    #be-daily-review .be-dr-x { margin-left: auto; border: 0; background: transparent; color: var(--be-panel-sub); font-size: 16px; cursor: pointer; }
-    #be-daily-review .be-dr-quote { font-size: 13px; line-height: 1.7; }
-    #be-daily-review .be-dr-src { font-size: 10px; opacity: 0.55; margin-top: 6px; }
+    #be-daily-review.show { opacity: 1; }
+    #be-daily-review .be-dr-card {
+      width: min(340px, 100%); box-sizing: border-box;
+      background: var(--be-panel-bg); color: var(--be-panel-fg); border: 1px solid var(--be-panel-divider);
+      border-radius: 14px; padding: 16px 18px 14px; box-shadow: 0 14px 40px rgba(0,0,0,0.4);
+      font-family: var(--mainFontFamily, sans-serif);
+      transform: translateY(8px) scale(0.98); transition: transform 0.22s;
+    }
+    #be-daily-review.show .be-dr-card { transform: none; }
+    #be-daily-review .be-dr-head { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--be-accent); margin-bottom: 10px; letter-spacing: 0.06em; }
+    #be-daily-review .be-dr-quote { font-size: 15px; line-height: 1.85; white-space: pre-wrap; word-break: break-word; max-height: 40vh; overflow-y: auto; }
+    #be-daily-review .be-dr-src { font-size: 11px; opacity: 0.6; margin-top: 10px; }
+    #be-daily-review .be-dr-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+    .be-confirm-box { max-width: 340px; }
+    .be-confirm-box .be-src-title { font-size: 14px; letter-spacing: 0.1em; margin-bottom: 8px; opacity: 0.9; }
+    .be-confirm-box .be-src-actions { display: flex; gap: 8px; justify-content: flex-end; }
+    .be-confirm-text { font-size: 14px; line-height: 1.7; margin: 4px 0 12px; word-break: break-word; }
+    .be-confirm-remember { display: flex; align-items: center; gap: 6px; font-size: 12px; opacity: 0.8; margin-bottom: 12px; cursor: pointer; }
+    .be-note-share.be-note-jump { font-size: 11px; padding: 2px 6px; }
     /* 热力图 */
+    .be-hm-scale { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 12px; flex-wrap: wrap; }
+    .be-hm-scale > span { opacity: 0.7; }
+    .be-hm-max { display: flex; align-items: center; gap: 4px; opacity: 0.85; }
+    .be-hm-max input {
+      width: 56px; background: var(--be-panel-input-bg); color: inherit; border: 1px solid var(--be-panel-input-border);
+      border-radius: 6px; padding: 3px 6px; font-size: 12px; font-family: inherit;
+    }
+    .be-hm-scale-tip { font-size: 11px; opacity: 0.55; margin: 4px 0 10px; }
     .be-hm-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
     .be-hm-stats { font-size: 12px; color: var(--be-panel-sub); margin-bottom: 10px; }
     .be-hm-scroll { overflow-x: auto; padding: 18px 0 6px; position: relative; scrollbar-width: thin; }
@@ -6511,7 +6722,7 @@ $(() => {
           openThoughtEditor(noteId, fresh.text, null);
         } else if (act === 'view') {
           closeHlBar();
-          openHighlightViewer(noteId);
+          openHighlightViewer(noteId, { fromChat: true });
         } else if (act === 'excerpt') {
           closeHlBar();
           lastText = fresh.text;
@@ -6559,7 +6770,9 @@ $(() => {
   }
 
   // ----- 划线查看抽屉（点击划线弹出）-----
-  function openHighlightViewer(noteId) {
+  let _viewerFromChat = false;   // 从聊天里点划线打开的：已经在原文处，不显示「跳回原文」
+  function openHighlightViewer(noteId, opts = {}) {
+    _viewerFromChat = !!opts.fromChat;
     let mask = mainDoc.getElementById('be-viewer-mask');
     if (mask && isStaleGen(mask)) { try { mask.remove(); } catch (e) {} mask = null; }   // 旧脚本实例残留：重建
     if (!mask) {
@@ -6595,7 +6808,7 @@ $(() => {
       ${_locationHtml}
       <div class="be-vw-actions">
         <button data-act="copy">复制</button>
-        ${canJumpToNote(note) ? '<button data-act="jump">跳回原文</button>' : ''}
+        ${canJumpToNote(note) && !_viewerFromChat ? '<button data-act="jump">跳回原文</button>' : ''}
         <button data-act="thought">写想法</button>
         <button data-act="excerpt">书摘</button>
         <button data-act="del" class="danger">${note.thoughtOnly ? '删除' : '删划线'}</button>
@@ -6663,7 +6876,7 @@ $(() => {
   // ---------- 书摘卡片 ----------
   // 编辑出处对话框（三字段：用户名、作者、书名 + 显示书名开关）
   // ---------- 出处/水印字段存档 ----------
-  // 每个字段单独一份历史：保存出处时自动记一笔（去重、新的排前），可置顶、可删除；
+  // 每个字段单独一份收藏：点输入框旁的 ☆ 才记一笔（去重、新的排前），可置顶、可删除；
   // 置顶的永远排最前且不受条数上限影响。
   const SOURCE_HIST_MAX = 20;
   function getSourceHistory(field) {
@@ -6696,7 +6909,7 @@ $(() => {
           <button type="button" class="be-combo-act" data-act="pin" title="${x.pin ? '取消置顶' : '置顶'}"><i class="fa-solid fa-thumbtack"></i></button>
           <button type="button" class="be-combo-act" data-act="del" title="删除"><i class="fa-solid fa-xmark"></i></button>
         </div>`).join('')
-      : `<div class="be-combo-empty">还没有保存过。填好后点「保存」，下次就能在这里直接选。</div>`;
+      : `<div class="be-combo-empty">还没有收藏。填好后点 ☆，下次就能在这里直接选。</div>`;
   }
   function bindSourceCombos(mask) {
     mask.addEventListener('click', (e) => {
@@ -6728,6 +6941,7 @@ $(() => {
         }
         saveSettings(settings);
         renderSourceComboList(listEl);
+        syncSourceStars(mask);
         return;
       }
       const input = listEl.previousElementSibling.querySelector('input');
@@ -6735,6 +6949,141 @@ $(() => {
       input.dispatchEvent(new Event('input', { bubbles: true }));
       listEl.hidden = true;
       listEl.previousElementSibling.classList.remove('open');
+    });
+  }
+
+  const SOURCE_FIELD_INPUTS = { user: '#be-src-user', author: '#be-src-author', title: '#be-src-title', chapter: '#be-src-chapter', watermark: '#be-src-wmtext' };
+  // ☆：填好的内容点一下收藏进 ▾（再点取消）。底部「保存」只应用这一次，不会自动收藏
+  function syncSourceStars(mask) {
+    mask.querySelectorAll('.be-combo').forEach(combo => {
+      const field = combo.getAttribute('data-field');
+      const v = (combo.querySelector('input').value || '').trim();
+      const on = !!v && getSourceHistory(field).some(x => x.v === v);
+      const star = combo.querySelector('.be-combo-star');
+      if (!star) return;
+      star.classList.toggle('on', on);
+      star.title = on ? '已收藏（点一下取消）' : '收藏到 ▾，下次直接选';
+      star.innerHTML = `<i class="fa-${on ? 'solid' : 'regular'} fa-star"></i>`;
+    });
+  }
+  // 分组折叠：一次只展开一组，标题右边显示这组的摘要
+  function bindSourceGroups(mask) {
+    mask.querySelectorAll('.be-src-ghead').forEach(h => h.addEventListener('click', () => {
+      const g = h.closest('.be-src-group');
+      const willOpen = !g.classList.contains('open');
+      markTypoDragging(350);
+      mask.querySelectorAll('.be-src-group').forEach(x => x.classList.toggle('open', willOpen && x === g));
+    }));
+  }
+  function updateSourceSummaries(mask) {
+    const q = (sel) => mask.querySelector(sel);
+    const ctx = getContext();
+    const sum = (g, text) => { const el = mask.querySelector(`.be-src-group[data-g="${g}"] .be-src-gsum`); if (el) el.textContent = text; };
+    const parts = [(q('#be-src-user').value.trim() || ctx.userName || '用户'), (q('#be-src-author').value.trim() || ctx.charName || '角色')];
+    if (q('#be-src-showtitle').checked && q('#be-src-title').value.trim()) parts.push('《' + q('#be-src-title').value.trim() + '》');
+    sum('info', parts.join(' · '));
+    sum('wm', q('#be-src-showwm').checked ? (q('#be-src-wmtext').value.trim() || 'SillyTavern') : '关');
+    if (q('#be-src-mask').checked) {
+      const n = mask.querySelectorAll('#be-src-mask-chips .be-mask-chip').length;
+      sum('mask', `开 · ${n} 个词`);
+    } else sum('mask', '关');
+    sum('other', `${q('#be-src-keepdel').checked ? '保留删除线' : '不留删除线'} · ${settings.saveMode === 'popup' ? '弹图长按' : '下载文件'}`);
+    syncSourceStars(mask);
+  }
+  // 出处组合：用户名/作者/书名/章名/水印 存成一组，点一下全部填好（仍要点底部「保存」才生效）
+  function sourcePresetFromForm(mask) {
+    const q = (sel) => mask.querySelector(sel);
+    return {
+      user: q('#be-src-user').value.trim(), author: q('#be-src-author').value.trim(),
+      title: q('#be-src-title').value.trim(), showTitle: q('#be-src-showtitle').checked,
+      chapter: q('#be-src-chapter').value.trim(), showChapter: q('#be-src-showchapter').checked,
+      wm: q('#be-src-wmtext').value, showWm: q('#be-src-showwm').checked
+    };
+  }
+  function applySourcePreset(mask, p) {
+    const q = (sel) => mask.querySelector(sel);
+    const setV = (sel, v) => { const el = q(sel); el.value = v || ''; el.dispatchEvent(new Event('input', { bubbles: true })); };
+    const setC = (sel, v) => { const el = q(sel); if (el.checked !== !!v) { el.checked = !!v; el.dispatchEvent(new Event('change', { bubbles: true })); } };
+    setV('#be-src-user', p.user); setV('#be-src-author', p.author);
+    setV('#be-src-title', p.title); setC('#be-src-showtitle', p.showTitle);
+    setV('#be-src-chapter', p.chapter); setC('#be-src-showchapter', p.showChapter);
+    setV('#be-src-wmtext', p.wm); setC('#be-src-showwm', p.showWm !== false);
+    updateSourceSummaries(mask);
+  }
+  function renderSourcePresets(mask, naming = false) {
+    const box = mask.querySelector('#be-src-presets');
+    if (!box) return;
+    const list = Array.isArray(settings.sourcePresets) ? settings.sourcePresets : [];
+    box.innerHTML = `
+      <div class="be-src-preset-h">出处组合<span>点一下把用户名、作者、书名、章名、水印一起填好</span></div>
+      <div class="be-src-preset-chips">
+        ${list.map(p => `<span class="be-src-preset"><button type="button" class="be-src-preset-apply" data-id="${escapeHtml(p.id)}" title="${escapeHtml([p.user, p.author, p.title, p.chapter].filter(Boolean).join(' · ') || '（空）')}">${escapeHtml(p.name || '未命名')}</button><button type="button" class="be-src-preset-del" data-id="${escapeHtml(p.id)}" title="删除这个组合">×</button></span>`).join('')}
+        ${naming ? '' : '<button type="button" class="be-src-preset-add"><i class="fa-solid fa-plus"></i> 存为组合</button>'}
+      </div>
+      ${naming ? `<div class="be-src-preset-new">
+        <input type="text" class="be-src-preset-name" placeholder="组合名称" maxlength="20">
+        <button type="button" class="be-btn primary be-src-preset-ok">保存</button>
+        <button type="button" class="be-btn be-src-preset-cancel">取消</button>
+      </div>` : ''}`;
+    if (naming) {
+      const inp = box.querySelector('.be-src-preset-name');
+      const f = sourcePresetFromForm(mask);
+      inp.value = f.title || f.author || `组合${list.length + 1}`;
+      setTimeout(() => { try { inp.focus(); inp.select(); } catch (e) {} }, 0);
+    }
+  }
+  function bindSourcePresets(mask) {
+    const box = mask.querySelector('#be-src-presets');
+    const commitNew = () => {
+      const name = (box.querySelector('.be-src-preset-name')?.value || '').trim();
+      if (!name) { toast('给组合起个名字', 'info'); return; }
+      const p = { id: 'sp' + Date.now().toString(36), name, ...sourcePresetFromForm(mask) };
+      const list = (Array.isArray(settings.sourcePresets) ? settings.sourcePresets : []).filter(x => x.name !== name);
+      list.push(p);
+      settings.sourcePresets = list;
+      saveSettings(settings);
+      renderSourcePresets(mask);
+      toast(`已存为组合「${name}」`, 'success');
+    };
+    box.addEventListener('click', async (e) => {
+      if (e.target.closest('.be-src-preset-add')) { renderSourcePresets(mask, true); return; }
+      if (e.target.closest('.be-src-preset-cancel')) { renderSourcePresets(mask); return; }
+      if (e.target.closest('.be-src-preset-ok')) { commitNew(); return; }
+      const del = e.target.closest('.be-src-preset-del');
+      if (del) {
+        const p = (settings.sourcePresets || []).find(x => x.id === del.getAttribute('data-id'));
+        if (!p) return;
+        const r = await beConfirm({ text: `删除组合「${p.name}」？`, okText: '删除' });
+        if (!r.ok) return;
+        settings.sourcePresets = (settings.sourcePresets || []).filter(x => x.id !== p.id);
+        saveSettings(settings);
+        renderSourcePresets(mask);
+        return;
+      }
+      const ap = e.target.closest('.be-src-preset-apply');
+      if (ap) {
+        const p = (settings.sourcePresets || []).find(x => x.id === ap.getAttribute('data-id'));
+        if (p) { applySourcePreset(mask, p); toast(`已填入「${p.name}」，点「保存」生效`, 'info'); }
+      }
+    });
+    box.addEventListener('keydown', (e) => {
+      if (e.target.closest('.be-src-preset-name') && e.key === 'Enter') { e.preventDefault(); commitNew(); }
+    });
+    // ☆ 收藏
+    mask.querySelector('#be-source-box').addEventListener('click', (e) => {
+      const star = e.target.closest('.be-combo-star');
+      if (!star) return;
+      const combo = star.closest('.be-combo');
+      const field = combo.getAttribute('data-field');
+      const v = (combo.querySelector('input').value || '').trim();
+      if (!v) { toast('先填好内容再收藏', 'info'); return; }
+      const list = getSourceHistory(field);
+      if (list.some(x => x.v === v)) setSourceHistory(field, list.filter(x => x.v !== v));
+      else pushSourceHistory(field, v);
+      saveSettings(settings);
+      syncSourceStars(mask);
+      const listEl = combo.nextElementSibling;
+      if (listEl && !listEl.hidden) renderSourceComboList(listEl);
     });
   }
 
@@ -6750,109 +7099,133 @@ $(() => {
       mask.innerHTML = `
         <div id="be-source-box">
           <div class="be-src-title">编辑出处</div>
-          <div class="be-src-field">
-            <label>头像类型</label>
-            <div class="be-radio-group" id="be-src-avatar-type">
-              <button type="button" class="be-radio-opt" data-v="user">用户</button>
-              <button type="button" class="be-radio-opt" data-v="char">角色</button>
-              <button type="button" class="be-radio-opt" data-v="custom">自定义</button>
-            </div>
-          </div>
-          <div class="be-src-collapse" id="be-src-avatar-wrap">
-            <div class="be-src-field be-src-avatar-field">
-              <label>自定义头像</label>
-              <div class="be-src-avatar-row">
-                <div class="be-src-avatar-preview" id="be-src-avatar-preview"></div>
-                <button class="be-btn" id="be-src-avatar-upload">上传图片</button>
-                <button class="be-btn" id="be-src-avatar-clear">清除</button>
+          <div class="be-src-presets" id="be-src-presets"></div>
+          <div class="be-src-group open" data-g="info">
+            <button type="button" class="be-src-ghead"><span class="be-src-caret"></span><span class="be-src-gname">出处信息</span><span class="be-src-gsum"></span></button>
+            <div class="be-src-gbody">
+              <div class="be-src-field">
+                <label>头像类型</label>
+                <div class="be-radio-group" id="be-src-avatar-type">
+                  <button type="button" class="be-radio-opt" data-v="user">用户</button>
+                  <button type="button" class="be-radio-opt" data-v="char">角色</button>
+                  <button type="button" class="be-radio-opt" data-v="custom">自定义</button>
+                </div>
+              </div>
+              <div class="be-src-collapse" id="be-src-avatar-wrap">
+                <div class="be-src-field be-src-avatar-field">
+                  <label>自定义头像</label>
+                  <div class="be-src-avatar-row">
+                    <div class="be-src-avatar-preview" id="be-src-avatar-preview"></div>
+                    <button class="be-btn" id="be-src-avatar-upload">上传图片</button>
+                    <button class="be-btn" id="be-src-avatar-clear">清除</button>
+                  </div>
+                </div>
+              </div>
+              <div class="be-src-field">
+                <label>用户名（留空使用 ${escapeHtml('{{user}}')}）</label>
+                <div class="be-combo" data-field="user"><input type="text" id="be-src-user" placeholder=""><button type="button" class="be-combo-star" title="收藏到 ▾，下次直接选"><i class="fa-regular fa-star"></i></button><button type="button" class="be-combo-btn" title="收藏的内容"><i class="fa-solid fa-chevron-down"></i></button></div><div class="be-combo-list" data-field="user" hidden></div>
+              </div>
+              <div class="be-src-field">
+                <label>作者（留空使用 ${escapeHtml('{{char}}')}）</label>
+                <div class="be-combo" data-field="author"><input type="text" id="be-src-author" placeholder=""><button type="button" class="be-combo-star" title="收藏到 ▾，下次直接选"><i class="fa-regular fa-star"></i></button><button type="button" class="be-combo-btn" title="收藏的内容"><i class="fa-solid fa-chevron-down"></i></button></div><div class="be-combo-list" data-field="author" hidden></div>
+              </div>
+              <div class="be-src-row">
+                <input type="checkbox" id="be-src-showtitle">
+                <label for="be-src-showtitle">显示书名</label>
+              </div>
+              <div class="be-src-collapse" id="be-src-title-wrap">
+                <div class="be-src-field">
+                  <label>书名 / 作品名</label>
+                  <div class="be-combo" data-field="title"><input type="text" id="be-src-title" placeholder="书名将显示在卡片上"><button type="button" class="be-combo-star" title="收藏到 ▾，下次直接选"><i class="fa-regular fa-star"></i></button><button type="button" class="be-combo-btn" title="收藏的内容"><i class="fa-solid fa-chevron-down"></i></button></div><div class="be-combo-list" data-field="title" hidden></div>
+                </div>
+              </div>
+              <div class="be-src-row">
+                <input type="checkbox" id="be-src-showchapter">
+                <label for="be-src-showchapter">显示章名</label>
+              </div>
+              <div class="be-src-collapse" id="be-src-chapter-wrap">
+                <div class="be-src-field">
+                  <label>章名（部分模板会显示在书名/作者旁）</label>
+                  <div class="be-combo" data-field="chapter"><input type="text" id="be-src-chapter" placeholder="章名将显示在卡片上"><button type="button" class="be-combo-star" title="收藏到 ▾，下次直接选"><i class="fa-regular fa-star"></i></button><button type="button" class="be-combo-btn" title="收藏的内容"><i class="fa-solid fa-chevron-down"></i></button></div><div class="be-combo-list" data-field="chapter" hidden></div>
+                </div>
               </div>
             </div>
           </div>
-          <div class="be-src-field">
-            <label>用户名（留空使用 ${escapeHtml('{{user}}')}）</label>
-            <div class="be-combo" data-field="user"><input type="text" id="be-src-user" placeholder=""><button type="button" class="be-combo-btn" title="已保存的内容"><i class="fa-solid fa-chevron-down"></i></button></div><div class="be-combo-list" data-field="user" hidden></div>
-          </div>
-          <div class="be-src-field">
-            <label>作者（留空使用 ${escapeHtml('{{char}}')}）</label>
-            <div class="be-combo" data-field="author"><input type="text" id="be-src-author" placeholder=""><button type="button" class="be-combo-btn" title="已保存的内容"><i class="fa-solid fa-chevron-down"></i></button></div><div class="be-combo-list" data-field="author" hidden></div>
-          </div>
-          <div class="be-src-row">
-            <input type="checkbox" id="be-src-showtitle">
-            <label for="be-src-showtitle">显示书名</label>
-          </div>
-          <div class="be-src-collapse" id="be-src-title-wrap">
-            <div class="be-src-field">
-              <label>书名 / 作品名</label>
-              <div class="be-combo" data-field="title"><input type="text" id="be-src-title" placeholder="书名将显示在卡片上"><button type="button" class="be-combo-btn" title="已保存的内容"><i class="fa-solid fa-chevron-down"></i></button></div><div class="be-combo-list" data-field="title" hidden></div>
-            </div>
-          </div>
-          <div class="be-src-row">
-            <input type="checkbox" id="be-src-showchapter">
-            <label for="be-src-showchapter">显示章名</label>
-          </div>
-          <div class="be-src-collapse" id="be-src-chapter-wrap">
-            <div class="be-src-field">
-              <label>章名（部分模板会显示在书名/作者旁）</label>
-              <div class="be-combo" data-field="chapter"><input type="text" id="be-src-chapter" placeholder="章名将显示在卡片上"><button type="button" class="be-combo-btn" title="已保存的内容"><i class="fa-solid fa-chevron-down"></i></button></div><div class="be-combo-list" data-field="chapter" hidden></div>
-            </div>
-          </div>
-          <div class="be-src-row">
-            <input type="checkbox" id="be-src-showwm">
-            <label for="be-src-showwm">显示水印</label>
-          </div>
-          <div class="be-src-collapse" id="be-src-wm-wrap">
-            <div class="be-src-field">
-              <label>水印文字</label>
-              <div class="be-combo" data-field="watermark"><input type="text" id="be-src-wmtext" placeholder="留空默认 SillyTavern"><button type="button" class="be-combo-btn" title="已保存的内容"><i class="fa-solid fa-chevron-down"></i></button></div><div class="be-combo-list" data-field="watermark" hidden></div>
-            </div>
-          </div>
-          <div class="be-src-row">
-            <input type="checkbox" id="be-src-mask">
-            <label for="be-src-mask">正文打码（分享时隐去名字）</label>
-          </div>
-          <div class="be-src-collapse" id="be-src-mask-wrap">
-            <div class="be-src-field">
-              <label>打码对象</label>
-              <div class="be-src-row" style="margin-bottom:6px;">
-                <input type="checkbox" id="be-src-mask-obj-user">
-                <label for="be-src-mask-obj-user">用户名</label>
+          <div class="be-src-group" data-g="wm">
+            <button type="button" class="be-src-ghead"><span class="be-src-caret"></span><span class="be-src-gname">水印</span><span class="be-src-gsum"></span></button>
+            <div class="be-src-gbody">
+              <div class="be-src-row">
+                <input type="checkbox" id="be-src-showwm">
+                <label for="be-src-showwm">显示水印</label>
               </div>
-              <div class="be-src-row" style="margin-bottom:6px;">
-                <input type="checkbox" id="be-src-mask-obj-char">
-                <label for="be-src-mask-obj-char">角色名</label>
-              </div>
-              <div class="be-src-row" style="margin-bottom:0;">
-                <input type="checkbox" id="be-src-mask-source">
-                <label for="be-src-mask-source">出处显示的用户名 / 作者</label>
+              <div class="be-src-collapse" id="be-src-wm-wrap">
+                <div class="be-src-field">
+                  <label>水印文字</label>
+                  <div class="be-combo" data-field="watermark"><input type="text" id="be-src-wmtext" placeholder="留空默认 SillyTavern"><button type="button" class="be-combo-star" title="收藏到 ▾，下次直接选"><i class="fa-regular fa-star"></i></button><button type="button" class="be-combo-btn" title="收藏的内容"><i class="fa-solid fa-chevron-down"></i></button></div><div class="be-combo-list" data-field="watermark" hidden></div>
+                </div>
               </div>
             </div>
-            <div class="be-src-field">
-              <label>额外打码词</label>
-              <input type="text" id="be-src-mask-extra" placeholder="逗号分隔，如昵称、地名">
-              <div class="be-mask-chip-box" id="be-src-mask-chips"></div>
-            </div>
-            <div class="be-src-field">
-              <label>打码形式</label>
-              <div class="be-radio-group" id="be-src-mask-style">
-                <button type="button" class="be-radio-opt" data-v="block">涂黑</button>
-                <button type="button" class="be-radio-opt" data-v="symbol">符号</button>
-                <button type="button" class="be-radio-opt" data-v="custom">自定义</button>
+          </div>
+          <div class="be-src-group" data-g="mask">
+            <button type="button" class="be-src-ghead"><span class="be-src-caret"></span><span class="be-src-gname">打码</span><span class="be-src-gsum"></span></button>
+            <div class="be-src-gbody">
+              <div class="be-src-row">
+                <input type="checkbox" id="be-src-mask">
+                <label for="be-src-mask">正文打码（分享时隐去名字）</label>
+              </div>
+              <div class="be-src-collapse" id="be-src-mask-wrap">
+                <div class="be-src-field">
+                  <label>打码对象</label>
+                  <div class="be-src-row" style="margin-bottom:6px;">
+                    <input type="checkbox" id="be-src-mask-obj-user">
+                    <label for="be-src-mask-obj-user">用户名</label>
+                  </div>
+                  <div class="be-src-row" style="margin-bottom:6px;">
+                    <input type="checkbox" id="be-src-mask-obj-char">
+                    <label for="be-src-mask-obj-char">角色名</label>
+                  </div>
+                  <div class="be-src-row" style="margin-bottom:0;">
+                    <input type="checkbox" id="be-src-mask-source">
+                    <label for="be-src-mask-source">出处显示的用户名 / 作者</label>
+                  </div>
+                </div>
+                <div class="be-src-field">
+                  <label>额外打码词</label>
+                  <input type="text" id="be-src-mask-extra" placeholder="逗号分隔，如昵称、地名">
+                </div>
+                <div class="be-src-field">
+                  <label>打码的词（点一下单独设样式）</label>
+                  <div class="be-mask-chip-box" id="be-src-mask-chips"></div>
+                </div>
+                <div class="be-src-field">
+                  <label>默认打码形式</label>
+                  <div class="be-radio-group" id="be-src-mask-style">
+                    <button type="button" class="be-radio-opt" data-v="block">涂黑</button>
+                    <button type="button" class="be-radio-opt" data-v="symbol">符号</button>
+                    <button type="button" class="be-radio-opt" data-v="custom">自定义</button>
+                  </div>
+                </div>
+                <div class="be-src-field" id="be-src-mask-char-field">
+                  <label>自定义符号</label>
+                  <input type="text" id="be-src-mask-char" placeholder="例如 ✕ ※ ＊ ▩">
+                </div>
               </div>
             </div>
-            <div class="be-src-field" id="be-src-mask-char-field">
-              <label>自定义符号</label>
-              <input type="text" id="be-src-mask-char" placeholder="例如 ✕ ※ ＊ ▩">
-            </div>
           </div>
-          <div class="be-src-row">
-            <input type="checkbox" id="be-src-keepdel">
-            <label for="be-src-keepdel">保留原文删除线（书摘内显示划掉效果）</label>
-          </div>
-          <div class="be-src-field">
-            <label>保存图片方式（下载没反应时换「弹图长按」）</label>
-            <div class="be-radio-group" id="be-src-savemode">
-              <button type="button" class="be-radio-opt" data-v="download">下载文件</button>
-              <button type="button" class="be-radio-opt" data-v="popup">弹图长按</button>
+          <div class="be-src-group" data-g="other">
+            <button type="button" class="be-src-ghead"><span class="be-src-caret"></span><span class="be-src-gname">其他</span><span class="be-src-gsum"></span></button>
+            <div class="be-src-gbody">
+              <div class="be-src-row">
+                <input type="checkbox" id="be-src-keepdel">
+                <label for="be-src-keepdel">保留原文删除线（书摘内显示划掉效果）</label>
+              </div>
+              <div class="be-src-field">
+                <label>保存图片方式（下载没反应时换「弹图长按」）</label>
+                <div class="be-radio-group" id="be-src-savemode">
+                  <button type="button" class="be-radio-opt" data-v="download">下载文件</button>
+                  <button type="button" class="be-radio-opt" data-v="popup">弹图长按</button>
+                </div>
+              </div>
             </div>
           </div>
           <div class="be-src-actions">
@@ -6879,15 +7252,32 @@ $(() => {
       bindCollapse('be-src-showchapter', 'be-src-chapter-wrap');
       bindCollapse('be-src-showwm', 'be-src-wm-wrap');
       bindSourceCombos(mask);
-      // 打码词 chip：点开单独设样式；输入框改动时重画 chip
+      bindSourceGroups(mask);
+      bindSourcePresets(mask);
+      // 打码词 chip：点开单独设样式。打码对象/用户名/作者还没点「保存」也要立刻反映到 chip 上，
+      // 所以 chip 按弹窗里当前勾选和填写的值算（而不是已保存的设置）
+      const pendingMask = () => ({
+        maskUser: mask.querySelector('#be-src-mask-obj-user').checked,
+        maskChar: mask.querySelector('#be-src-mask-obj-char').checked,
+        sourceUser: mask.querySelector('#be-src-user').value.trim(),
+        sourceAuthor: mask.querySelector('#be-src-author').value.trim()
+      });
       bindMaskChips(mask.querySelector('#be-src-mask-chips'), (what) => {
         if (what === 'extra') mask.querySelector('#be-src-mask-extra').value = settings.maskExtra || '';
         if (mainDoc.getElementById('be-card')) renderCard(lastText);
-      });
+        updateSourceSummaries(mask);
+      }, pendingMask);
       mask.querySelector('#be-src-mask-extra').addEventListener('input', (e) => {
         settings.maskExtra = e.target.value;
         mask.querySelector('#be-src-mask-chips')._beRender?.();
       });
+      const rerenderChips = () => mask.querySelector('#be-src-mask-chips')._beRender?.();
+      ['#be-src-mask-obj-user', '#be-src-mask-obj-char'].forEach(sel => mask.querySelector(sel).addEventListener('change', rerenderChips));
+      ['#be-src-user', '#be-src-author'].forEach(sel => mask.querySelector(sel).addEventListener('input', rerenderChips));
+      // 分组标题上的摘要跟着改动实时更新
+      mask.querySelector('#be-source-box').addEventListener('input', () => updateSourceSummaries(mask));
+      mask.querySelector('#be-source-box').addEventListener('change', () => updateSourceSummaries(mask));
+      mask.querySelector('#be-source-box').addEventListener('click', (e) => { if (e.target.closest('.be-radio-opt')) setTimeout(() => updateSourceSummaries(mask), 0); });
     } else if (mask.parentNode !== mainDoc.body || mask.nextSibling) {
       mainDoc.body.appendChild(mask);
     }
@@ -6916,6 +7306,11 @@ $(() => {
     mask.querySelector('#be-src-mask-obj-user').checked = !!settings.maskUser;
     mask.querySelector('#be-src-mask-obj-char').checked = !!settings.maskChar;
     mask.querySelector('#be-src-keepdel').checked = !!settings.keepDelLine;
+    mask.querySelector('#be-src-mask-chips')._beRender?.();
+    mask.querySelectorAll('.be-src-group').forEach(g => g.classList.toggle('open', g.getAttribute('data-g') === 'info'));
+    renderSourcePresets(mask);
+    syncSourceStars(mask);
+    setTimeout(() => updateSourceSummaries(mask), 0);
     // 保存方式高亮
     const syncSaveMode = () => {
       const sm = settings.saveMode === 'popup' ? 'popup' : 'download';
@@ -7029,9 +7424,6 @@ $(() => {
       });
       settings.showWatermark = mask.querySelector('#be-src-showwm').checked;
       settings.watermarkText = mask.querySelector('#be-src-wmtext').value;
-      [['user', '#be-src-user'], ['author', '#be-src-author'], ['title', '#be-src-title'],
-       ['chapter', '#be-src-chapter'], ['watermark', '#be-src-wmtext']]
-        .forEach(([f, sel]) => pushSourceHistory(f, mask.querySelector(sel).value));
       settings.maskOn = mask.querySelector('#be-src-mask').checked;
       settings.maskUser = mask.querySelector('#be-src-mask-obj-user').checked;
       settings.maskChar = mask.querySelector('#be-src-mask-obj-char').checked;
@@ -7111,7 +7503,7 @@ $(() => {
       <div class="be-sec">
         <h4>颜色</h4>
         <div class="be-drawer-row" id="be-drawer-color">
-          ${COLOR_PRESETS.map(p => `
+          ${COLOR_PRESETS.filter(p => !(settings.hiddenColorPresets || []).includes(p.id)).map(p => `
             <div class="be-drawer-chip be-color-chip ${settings.colorPreset===p.id?'active':''}" data-k="${p.id}"
                  style="background:${p.bg};color:${p.fg};">A</div>
           `).join('')}
@@ -7150,10 +7542,33 @@ $(() => {
         drawer.querySelectorAll('#be-drawer-color .be-drawer-chip').forEach(x => x.classList.remove('active'));
         el.classList.add('active');
         apply();
+        if (settings.colorPreset === 'custom') openDrawerCustomColor(el);
       });
     });
     drawer.querySelector('#be-drawer-confirm').addEventListener('click', () => drawer._closeFn && drawer._closeFn());
     drawer.querySelectorAll('.be-drawer-row').forEach(enableHScroll);
+  }
+
+  // 自定义配色取色器：背景 / 字色 两个目标，拖动时实时刷新卡片（rAF 合并，拖动不卡）
+  function openDrawerCustomColor(anchor) {
+    const mk = (v) => { const i = mainDoc.createElement('input'); i.type = 'color'; i.value = v; return i; };
+    const bgIn = mk(settings.customBg || '#f5f1e8');
+    const fgIn = mk(settings.customFg || '#222222');
+    let raf = 0;
+    const live = () => {
+      if (raf) return;
+      raf = mainWin.requestAnimationFrame(() => { raf = 0; if (mainDoc.getElementById('be-card')) renderCard(lastText); });
+    };
+    bgIn.addEventListener('input', () => { settings.customBg = bgIn.value; live(); });
+    fgIn.addEventListener('input', () => { settings.customFg = fgIn.value; settings.customFgEnabled = true; live(); });
+    [bgIn, fgIn].forEach(i => i.addEventListener('change', () => saveSettings(settings)));
+    openColorPicker(bgIn, {
+      anchor,
+      targets: [
+        { label: '背景', input: bgIn },
+        { label: '字色', input: fgIn, auto: { get: () => !settings.customFgEnabled, set: (v) => { settings.customFgEnabled = !v; saveSettings(settings); live(); } } }
+      ]
+    });
   }
 
   // 排版微调浮层：字号 / 行距 / 整体宽度（独立小弹层，不挤占模板抽屉，保留卡片可见）
@@ -8292,6 +8707,9 @@ $(() => {
           // 避免兜底路径直接截 background-image 头像导致清晰度下降
           const clone = card.cloneNode(true);
           clone.style.cssText += ';position:fixed;left:-99999px;top:0;visibility:hidden;';
+          // 预览缩放（zoom）不能带进导出：按设定宽度原尺寸截
+          clone.style.zoom = '';
+          if (Number(settings.cardWidth) > 0) { clone.style.width = Number(settings.cardWidth) + 'px'; clone.style.maxWidth = 'none'; }
           mainDoc.body.appendChild(clone);
           try { void clone.offsetHeight; splitCardHlForExport(clone); } catch (e) {}
           try {
@@ -8365,6 +8783,24 @@ $(() => {
   }
   function closePanel() {
     mainDoc.getElementById('be-panel')?.classList.remove('open');
+  }
+  // 点「书摘笔记」：按设置先显示笔记本主页 / 当前角色 / 设置。
+  // 选了「当前角色」但没开聊天、或这个角色还没有划线和想法时，回落到笔记本主页。
+  function openPanelHome() {
+    const home = settings.panelHome || 'notes';
+    if (home === 'settings') return openPanel('settings');
+    if (home === 'char') {
+      const ctx = getContext();
+      const ch = loadNotes()[ctx.charKey];
+      if (ctx.chatId && ch && Array.isArray(ch.items) && ch.items.some(it => it.type !== 'excerpt')) {
+        openPanel('notes');
+        currentCharKey = ctx.charKey;
+        panelView = 'char';
+        renderPanel();
+        return;
+      }
+    }
+    openPanel('notes');
   }
 
   function renderPanel() {
@@ -9746,6 +10182,21 @@ $(() => {
           <input type="color" id="be-theme-color" value="${escapeHtml(settings.themeColor || '#95b6d6')}">
         </div>
         ${hint('插件界面的强调色，不影响卡片配色。')}
+        <div class="be-row" style="margin-top:8px;">
+          <label style="flex:1;">打开书摘笔记时先显示</label>
+        </div>
+        <div class="be-row">
+          <div class="be-radio-group" id="be-panel-home-group" style="width:100%;">
+            <button type="button" class="be-radio-opt ${(settings.panelHome || 'notes') === 'notes' ? 'active' : ''}" data-v="notes">笔记本主页</button>
+            <button type="button" class="be-radio-opt ${settings.panelHome === 'char' ? 'active' : ''}" data-v="char">当前角色</button>
+            <button type="button" class="be-radio-opt ${settings.panelHome === 'settings' ? 'active' : ''}" data-v="settings">设置</button>
+          </div>
+        </div>
+        ${hint('选「当前角色」时，如果没打开聊天或这个角色还没有划线和想法，就显示笔记本主页。')}
+        <div class="be-row" style="margin-top:8px;">
+          <label style="flex:1;">跳回原文要切换聊天时先确认</label>
+          ${toggleHtml('be-jump-confirm', !settings.jumpNoConfirm)}
+        </div>
       </div>
 
       <div class="be-sec">
@@ -9950,6 +10401,17 @@ $(() => {
     body.querySelector('#be-color-underline-reset')?.addEventListener('click', () => {
       settings.underlineColor = DEFAULT_SETTINGS.underlineColor;
       saveSettings(settings); refreshStyle(); renderSettings();
+    });
+    body.querySelectorAll('#be-panel-home-group .be-radio-opt').forEach(btn => {
+      btn.addEventListener('click', () => {
+        settings.panelHome = btn.getAttribute('data-v');
+        saveSettings(settings);
+        body.querySelectorAll('#be-panel-home-group .be-radio-opt').forEach(b => b.classList.toggle('active', b === btn));
+      });
+    });
+    body.querySelector('#be-jump-confirm')?.addEventListener('change', e => {
+      settings.jumpNoConfirm = !e.target.checked;
+      saveSettings(settings);
     });
     body.querySelector('#be-theme-color')?.addEventListener('input', e => {
       settings.themeColor = e.target.value;
@@ -10319,13 +10781,13 @@ $(() => {
       <div style="font-size:12px;opacity:0.6;margin-bottom:10px;text-align:center;letter-spacing:0.1em;">
         ${totalNotes} 条笔记 · 留在了 ${keys.length} 个角色身上
       </div>
+      <div class="be-search">
+        <input type="text" id="be-search" placeholder="搜索文字或想法..." value="${escapeHtml(searchKey)}">
+      </div>
       <div class="be-nb-tools">
         <button class="be-filter-btn" id="be-nb-review"><i class="fa-solid fa-shuffle"></i> 随机回顾</button>
         <button class="be-filter-btn" id="be-nb-heat"><i class="fa-solid fa-calendar-days"></i> 热力图</button>
         <button class="be-filter-btn" id="be-nb-export"><i class="fa-solid fa-file-export"></i> 导出</button>
-      </div>
-      <div class="be-search">
-        <input type="text" id="be-search" placeholder="搜索文字或想法..." value="${escapeHtml(searchKey)}">
       </div>
       <div id="be-notes-list"></div>
     `;
@@ -10520,7 +10982,7 @@ $(() => {
                 ${ths.length > 1 ? `<div class="be-note-more">+${ths.length - 1} 条想法</div>` : ''}
                 <div class="be-note-foot">
                   <span class="be-note-time">${formatDateTime(it.ts)}${noteLocationText(it, false) ? ' · ' + escapeHtml(noteLocationText(it, false)) : ''}</span>
-                  ${!charMergeMode && canJumpToNote(it) ? `<button class="be-note-share be-note-jump" data-jump="${it.id}" title="跳回原文"><i class="fa-solid fa-arrow-up-right-from-square"></i></button>` : ''}
+                  ${!charMergeMode && canJumpToNote(it) ? `<button class="be-note-share be-note-jump" data-jump="${it.id}" title="跳回原文"><i class="fa-solid fa-location-crosshairs"></i></button>` : ''}
                 </div>
               </div>
             </div>
@@ -10783,7 +11245,7 @@ $(() => {
           <div class="be-filter-h">导出笔记</div>
           <div class="be-filter-label">范围</div>
           <div class="be-filter-kinds be-export-scope">
-            ${charKey ? `<button class="be-filter-kind ${scope === 'char' ? 'active' : ''}" data-scope="char">${escapeHtml(charName)}</button>` : ''}
+            ${charKey ? `<button class="be-filter-kind ${scope === 'char' ? 'active' : ''}" data-scope="char">${presetCharKey ? '' : '当前角色 · '}${escapeHtml(charName)}</button>` : ''}
             ${(notes[ctx.charKey] && (!presetCharKey || presetCharKey === ctx.charKey)) ? `<button class="be-filter-kind ${scope === 'chat' ? 'active' : ''}" data-scope="chat">当前聊天</button>` : ''}
             <button class="be-filter-kind ${scope === 'all' ? 'active' : ''}" data-scope="all">全部</button>
           </div>
@@ -10922,13 +11384,23 @@ $(() => {
     mainDoc.getElementById('be-daily-review')?.remove();
     const el = stampGen(mainDoc.createElement('div'));
     el.id = 'be-daily-review';
+    const txt = String(picked.note.text || '');
     el.innerHTML = `
-      <div class="be-dr-head"><i class="fa-solid fa-shuffle"></i> 今日回顾<button class="be-dr-x" title="关闭">×</button></div>
-      <div class="be-dr-quote">${escapeHtml(String(picked.note.text || '').slice(0, 90))}${String(picked.note.text || '').length > 90 ? '…' : ''}</div>
-      <div class="be-dr-src">${escapeHtml((notes[picked.charKey] && notes[picked.charKey].name) || '')} · ${formatDateTime(picked.note.ts)}</div>`;
+      <div class="be-dr-card">
+        <div class="be-dr-head"><i class="fa-solid fa-shuffle"></i> 今日回顾</div>
+        <div class="be-dr-quote">${escapeHtml(txt.slice(0, 200))}${txt.length > 200 ? '…' : ''}</div>
+        <div class="be-dr-src">${escapeHtml((notes[picked.charKey] && notes[picked.charKey].name) || '')} · ${formatDateTime(picked.note.ts)}</div>
+        <div class="be-dr-actions">
+          <button class="be-btn be-dr-x">关闭</button>
+          <button class="be-btn primary be-dr-go">去回顾</button>
+        </div>
+      </div>`;
     mainDoc.body.appendChild(el);
-    el.querySelector('.be-dr-x').addEventListener('click', e => { e.stopPropagation(); el.remove(); });
-    el.addEventListener('click', () => {
+    detectAndApplyTheme();
+    const close = () => { el.classList.remove('show'); setTimeout(() => { try { el.remove(); } catch (e) {} }, 220); };
+    el.addEventListener('click', e => { if (e.target === el) close(); });
+    el.querySelector('.be-dr-x').addEventListener('click', close);
+    el.querySelector('.be-dr-go').addEventListener('click', () => {
       el.remove();
       reviewState.charKey = '';
       reviewState.current = picked;
@@ -10936,7 +11408,6 @@ $(() => {
       openPanel('review');
     });
     setTimeout(() => { try { el.classList.add('show'); } catch (e) {} }, 30);
-    setTimeout(() => { try { if (el.isConnected) el.remove(); } catch (e) {} }, 20000);
   }
 
   // ---------- 热力图（GitHub 式日历格子：每天写了多少条） ----------
@@ -10965,7 +11436,10 @@ $(() => {
     const today = new Date(); today.setHours(0, 0, 0, 0);
     const start = new Date(today); start.setDate(start.getDate() - heatState.range + 1);
     start.setDate(start.getDate() - start.getDay()); // 从周日开始一列
-    const max = Math.max(1, ...Object.values(counts));
+    // 深浅：自适应 = 相对记得最多的那一天分 4 档；固定 = 0 到 heatMax 条平均分 4 档，超过的算最深
+    const fixed = settings.heatScale === 'fixed';
+    const heatMax = Math.max(4, Math.round(Number(settings.heatMax) || 50));
+    const max = fixed ? heatMax : Math.max(1, ...Object.values(counts));
     const level = n => !n ? 0 : (n >= max * 0.75 ? 4 : n >= max * 0.5 ? 3 : n >= max * 0.25 ? 2 : 1);
     const cols = [];
     const months = [];
@@ -11010,7 +11484,16 @@ $(() => {
           <div class="be-hm-months">${months.map(m => `<span style="left:${m.col * 14}px">${m.m}月</span>`).join('')}</div>
           <div class="be-hm-grid">${cols.join('')}</div>
         </div>
-        <div class="be-hm-legend">少<span class="be-hm-cell l0"></span><span class="be-hm-cell l1"></span><span class="be-hm-cell l2"></span><span class="be-hm-cell l3"></span><span class="be-hm-cell l4"></span>多</div>
+        <div class="be-hm-legend">${fixed ? '0' : '少'}<span class="be-hm-cell l0"></span><span class="be-hm-cell l1"></span><span class="be-hm-cell l2"></span><span class="be-hm-cell l3"></span><span class="be-hm-cell l4"></span>${fixed ? heatMax + '+' : '多'}</div>
+        <div class="be-hm-scale">
+          <span>深浅</span>
+          <div class="be-radio-group" id="be-hm-scale">
+            <button type="button" class="be-radio-opt ${fixed ? '' : 'active'}" data-s="auto">自适应</button>
+            <button type="button" class="be-radio-opt ${fixed ? 'active' : ''}" data-s="fixed">固定</button>
+          </div>
+          ${fixed ? `<label class="be-hm-max">最深 <input type="number" id="be-hm-max" min="4" max="999" step="1" value="${heatMax}"> 条</label>` : ''}
+        </div>
+        <div class="be-hm-scale-tip">${fixed ? `0 到 ${heatMax} 条平均分 4 档，${heatMax} 条及以上最深。` : `按你记得最多的那一天（${max} 条）分 4 档。`}划线和想法各算一条。</div>
         ${heatState.day ? `
           <div class="be-hm-day-h">${heatState.day} · ${dayItems.length} 条</div>
           <div class="be-hm-day-list">${dayItems.length ? dayItems.map(({ k, it }) => `
@@ -11023,6 +11506,17 @@ $(() => {
     panel.querySelector('#be-p-close').addEventListener('click', closePanel);
     panel.querySelector('#be-hm-char').addEventListener('change', e => { heatState.charKey = e.target.value; heatState.day = ''; renderPanel(); });
     panel.querySelectorAll('#be-hm-range .be-radio-opt').forEach(b => b.addEventListener('click', () => { heatState.range = +b.getAttribute('data-r'); renderPanel(); }));
+    panel.querySelectorAll('#be-hm-scale .be-radio-opt').forEach(b => b.addEventListener('click', () => {
+      settings.heatScale = b.getAttribute('data-s') === 'fixed' ? 'fixed' : 'auto';
+      saveSettings(settings);
+      renderPanel();
+    }));
+    panel.querySelector('#be-hm-max')?.addEventListener('change', e => {
+      const v = Math.round(Number(e.target.value));
+      settings.heatMax = isFinite(v) && v >= 4 ? Math.min(999, v) : 50;
+      saveSettings(settings);
+      renderPanel();
+    });
     panel.querySelectorAll('.be-hm-grid .be-hm-cell[data-d]').forEach(c => c.addEventListener('click', () => {
       heatState.day = heatState.day === c.getAttribute('data-d') ? '' : c.getAttribute('data-d');
       renderPanel();
@@ -13030,7 +13524,7 @@ $(() => {
         div.className = 'list-group-item flex-container flexGap5 interactable';
         div.tabIndex = 0;
         div.innerHTML = `<div class="fa-fw fa-solid fa-bookmark extensionsMenuExtensionButton"></div><span>书摘笔记</span>`;
-        div.addEventListener('click', () => openPanel('notes'));
+        div.addEventListener('click', () => openPanelHome());
         menu.appendChild(div);
       }
       // 自由排版入口：仅扩展形态 + 设置里开着才出现，关掉就撤掉，不留痕迹

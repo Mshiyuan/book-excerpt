@@ -225,6 +225,10 @@ https://github.com/Mshiyuan/book-excerpt
 - 开发者说明：[docs/API.md](docs/API.md)
 - 给 AI 编程助手看的精简规格：[docs/API_AI.md](docs/API_AI.md)
 
+### 免责声明
+
+其他扩展或脚本通过本接口调用书摘所产生的一切内容与后果（包括生成的图片、写入的笔记、调用方自身的功能和行为），由调用方作者自行负责，与书摘作者无关。
+
 ## 实现细节
 
 - 截图库：html2canvas 1.4.1，随仓库分发在 `lib/` 目录，加载时本地文件优先，4 个 CDN 镜像（staticfile / bootcdn / jsdelivr / unpkg）作为兜底

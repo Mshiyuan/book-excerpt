@@ -11,7 +11,6 @@ Concise and normative. Follow it exactly. Human-oriented docs: API.md.
 - Never cache the object across calls. Re-read `HOST.BookExcerpt` each time, because it is replaced on hot reload.
 - Listeners registered with `on()` survive reloads.
 - The object is frozen.
-- Do NOT bundle or copy BookExcerpt source code; its license forbids it. Call this API instead.
 
 ## Types
 ```ts
@@ -77,6 +76,7 @@ All are rejections with `.code`.
 2. Call UI-opening methods (`openCard`, `openNotebook`, `openReview`, `openThoughtEditor`, `jumpToNote`) only in response to a user action.
 3. Treat returned objects as read-only copies. Mutate only through API methods.
 4. Gate on `apiVersion`, not `version`.
+5. Disclaimer: output produced through this API (images, notes, the calling extension's own behavior) is the responsibility of the calling extension's author, not BookExcerpt's author.
 
 ## Minimal template
 ```js
