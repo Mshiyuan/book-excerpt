@@ -74,6 +74,7 @@ $(() => {
     mergeDefaultTarget: '',        // 合并完成后默认动作：'' 每次询问 / 'note' 直接存为笔记 / 'card' 直接生成书摘
     mergeDeleteOriginal: '',       // 合并后原划线怎么处理：'' 每次询问 / 'delete' 删除原划线 / 'keep' 保留原划线
     highlightDisabled: false,      // 划线总开关（关闭时不影响已有划线显示，只关掉“选中文字弹浮动栏”这一步，供与其它选中类插件冲突的用户使用）
+    layoutImgReplace: 'ask',       // 书摘弹窗里点自由排版的图片换图：ask 每次询问 / once 仅本次导出 / save 保存到模板
     layoutTemplates: [],           // 自由排版的版式模板（整页富文本 + 浮动贴纸）：[{id, name, v:2, page, doc, floats}]，模板 key 为 'layout-<id>'
     hiddenTemplates: [],           // 被隐藏的模板 key（默认 'classic' / 导入 'custom-<id>' 都行）
     hiddenColorPresets: [],        // 被用户隐藏的内置配色 id 列表（COLOR_PRESETS 的 id）
@@ -1745,7 +1746,7 @@ $(() => {
     const target = await scrollToMes(hit.floor);
     if (target) { try { target.scrollIntoView({ block: 'start', behavior: 'smooth' }); } catch (e) {} }
     if (hit.swipe !== hit.cur) {
-      toast(`原文位于第 ${hit.floor + 1} 楼的第 ${hit.swipe + 1} 个回复版本（swipe），当前显示第 ${hit.cur + 1} 个，切换到该版本后即可看到划线`, 'info');
+      toast(`原文位于第 ${hit.floor + 1} 楼的另一个回复版本（第 ${hit.swipe + 1} 个 swipe），当前显示第 ${hit.cur + 1} 个`, 'info');
       return;
     }
     // 原文就在当前版本里，但页面上没标出划线
@@ -4102,20 +4103,14 @@ $(() => {
     .be-lp-box::before { content: ''; position: absolute; left: 0; top: 0; right: 0; bottom: 0; background: currentColor; opacity: 0.08; border-radius: 4px; pointer-events: none; }
     .be-lp-quote { padding-left: 14px; }
     .be-lp-quote::before { content: ''; position: absolute; left: 0; top: 2px; bottom: 2px; width: 4px; background: currentColor; opacity: 0.35; border-radius: 2px; pointer-events: none; }
-    .be-lay-img { background-size: cover; background-position: center; background-repeat: no-repeat; box-sizing: border-box; background-color: rgba(128,128,128,0.15); position: relative; }
+    .be-lay-imgw { position: relative; box-sizing: border-box; }
+    .be-lay-img { position: relative; width: 100%; background-size: 100% 100%; background-position: center; background-repeat: no-repeat; box-sizing: border-box; background-color: rgba(128,128,128,0.15); }
+    .be-lay-shd { position: absolute; display: block; background-size: 100% 100%; background-repeat: no-repeat; pointer-events: none; }
     .be-lay-doc > .be-lay-img-left { float: left; margin-right: 14px; }
     .be-lay-doc > .be-lay-img-right { float: right; margin-left: 14px; }
     .be-lay-doc > .be-lay-img-center { margin-left: auto; margin-right: auto; }
-    .be-lay-doc > .be-lay-img-full, .be-lay-doc > .be-lay-img-center, .be-lay-doc > .be-lay-div, .be-lay-doc > .be-lay-space, .be-lay-doc > .be-lay-split, .be-lay-doc > .be-lay-vt { clear: both; }
+    .be-lay-doc > .be-lay-img-full, .be-lay-doc > .be-lay-img-center, .be-lay-doc > .be-lay-div, .be-lay-doc > .be-lay-space, .be-lay-doc > .be-lay-vt { clear: both; }
     .be-lay-clear { clear: both; }
-    .be-lay-split { position: relative; }
-    .be-lay-split .be-lay-sa, .be-lay-split .be-lay-sb { background-size: 100% 100%; background-repeat: no-repeat; position: relative; }
-    .be-lay-split .be-lay-sa:not([style*="background-image"]), .be-lay-split .be-lay-sb:not([style*="background-image"]) { background-color: rgba(128,128,128,0.15); }
-    .be-lay-split-h .be-lay-sa, .be-lay-split-h .be-lay-sb { width: 100%; }
-    .be-lay-split-v { display: flex; align-items: center; }
-    .be-lay-split-v .be-lay-sa, .be-lay-split-v .be-lay-sb { flex: none; }
-    .be-lay-split-v .be-lay-split-mid { flex: none; box-sizing: border-box; padding: 0 6px; }
-    .be-lay-split-midv { display: flex; justify-content: center; align-self: stretch; align-items: center; }
     .be-lay-vt { display: flex; flex-direction: row-reverse; flex-wrap: wrap; line-height: 1; }
     .be-lay-vcol { display: flex; flex-direction: column; align-items: center; flex: none; }
     .be-lay-vcol > span { display: block; width: 1.1em; text-align: center; line-height: 1.05; }
@@ -4127,30 +4122,44 @@ $(() => {
     .be-lay-float { position: absolute; line-height: 1.2; white-space: nowrap; z-index: 2; }
     .be-lay-float-text { font-size: 5cqw; }
     .be-lay-ph { opacity: 0.4; font-size: 12px; font-style: normal; font-weight: 400; }
-    .be-lay-img > .be-lay-ph, .be-lay-sa > .be-lay-ph, .be-lay-sb > .be-lay-ph { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
+    .be-lay-img > .be-lay-ph { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
+    .be-lay-img:not([style*="aspect-ratio"]) { aspect-ratio: 4 / 3; }
 
-    /* 编辑态 */
+    /* 编辑态（颜色全部用书摘主题色 --be-accent） */
     .be-lay-edit .be-lay-doc { cursor: text; -webkit-user-select: text; user-select: text; }
     .be-lay-edit .be-la, .be-lay-edit .be-lay-float { cursor: pointer; }
     .be-lay-edit .be-la { position: relative; -webkit-user-select: none; user-select: none; }
-    .be-lay-edit .be-lay-split-mid.be-lp { cursor: text; -webkit-user-select: text; user-select: text; outline: 1px dashed rgba(128,128,128,0.45); outline-offset: -1px; min-height: 1.4em; }
-    .be-lay-edit .be-lp[data-slot] { outline: 1px dashed rgba(46,158,152,0.6); outline-offset: 3px; position: relative; }
-    .be-lay-edit .be-lp[data-slot]::after { content: attr(data-label); position: absolute; left: -3px; top: -17px; font: 10px/1.5 sans-serif; font-style: normal; font-weight: 400; color: #fff; background: #2e9e98; padding: 0 5px; border-radius: 3px; pointer-events: none; white-space: nowrap; letter-spacing: 0; text-decoration: none; }
-    .be-lay-tok { display: inline-block; padding: 0 5px; margin: 0 1px; border-radius: 4px; background: rgba(46,158,152,0.16); color: #2e9e98; font-size: 0.85em; line-height: 1.45; font-weight: 400; font-style: normal; text-decoration: none; vertical-align: baseline; cursor: pointer; white-space: nowrap; -webkit-user-select: all; user-select: all; }
+    .be-lay-edit .be-lp[data-slot] { position: relative; box-shadow: inset 2px 0 0 var(--be-accent-soft); }
+    .be-lay-edit .be-lp.be-lp-ph::before { content: attr(data-ph); position: absolute; left: 0; right: 0; opacity: 0.35; pointer-events: none; font-style: normal; }
+    .be-lay-edit .be-la[data-vslot] { box-shadow: inset -2px 0 0 var(--be-accent-soft); }
+    .be-lay-slottag {
+      position: absolute; z-index: 4; height: 15px; padding: 0 6px; border: 0; border-radius: 8px;
+      background: var(--be-accent); color: #fff; font: 10px/15px sans-serif; letter-spacing: 0.04em; cursor: pointer; opacity: 0.85;
+    }
+    .be-lay-slottag:hover { opacity: 1; }
+    .be-lay-tok { display: inline-block; padding: 0 5px; margin: 0 1px; border-radius: 4px; background: var(--be-accent-soft); color: var(--be-accent); font-size: 0.85em; line-height: 1.45; font-weight: 400; font-style: normal; text-decoration: none; vertical-align: baseline; cursor: pointer; white-space: nowrap; -webkit-user-select: all; user-select: all; }
     .be-lay-vt-ph { opacity: 0.45; }
-    .be-lay-edit .be-lay-sel { outline: 2px solid #2e9e98 !important; outline-offset: 3px; }
+    .be-lay-edit .be-lay-sel { outline: 2px solid var(--be-accent) !important; outline-offset: 3px; }
     .be-lay-edit .be-lay-float.be-lay-sel { outline-offset: 4px; touch-action: none; }
     .be-lay-edit .be-lay-float { touch-action: none; user-select: none; -webkit-user-select: none; }
     .be-lay-edit .be-lay-dragging { opacity: 0.35; }
+    .be-lay-edit .be-lay-busy::after { content: ''; position: absolute; left: 50%; top: 50%; width: 22px; height: 22px; margin: -11px 0 0 -11px; border-radius: 50%; border: 2px solid var(--be-accent); border-right-color: transparent; animation: be-lay-spin 0.7s linear infinite; z-index: 6; }
+    .be-lay-edit .be-lay-busy .be-lay-img { opacity: 0.6; }
+    @keyframes be-lay-spin { to { transform: rotate(360deg); } }
     .be-lay-grip, .be-lay-rot {
       position: absolute; display: flex; align-items: center; justify-content: center;
-      width: 30px; height: 30px; border-radius: 50%; background: #2e9e98; color: #fff;
+      width: 30px; height: 30px; border-radius: 50%; background: var(--be-accent); color: #fff;
       font: 12px/1 sans-serif; box-shadow: 0 2px 8px rgba(0,0,0,0.25); touch-action: none; z-index: 5; cursor: grab;
     }
     .be-lay-grip { left: -14px; top: 50%; margin-top: -15px; }
     .be-lay-img-right .be-lay-grip { left: auto; right: -14px; }
     .be-lay-rot { right: -18px; bottom: -18px; width: 26px; height: 26px; font-size: 11px; transform: none; }
-    .be-lay-dropline { position: absolute; left: 10px; right: 10px; height: 3px; border-radius: 2px; background: #2e9e98; z-index: 6; pointer-events: none; }
+    /* 缩放柄：触摸区域 32px，看到的是 14px 的圆点 */
+    .be-lay-rh { position: absolute; width: 32px; height: 32px; z-index: 5; touch-action: none; }
+    .be-lay-rh::after { content: ''; position: absolute; left: 9px; top: 9px; width: 14px; height: 14px; border-radius: 50%; background: #fff; border: 2px solid var(--be-accent); box-sizing: border-box; box-shadow: 0 1px 4px rgba(0,0,0,0.25); }
+    .be-lay-rh-nw { left: -16px; top: -16px; cursor: nwse-resize; } .be-lay-rh-se { right: -16px; bottom: -16px; cursor: nwse-resize; }
+    .be-lay-rh-ne { right: -16px; top: -16px; cursor: nesw-resize; } .be-lay-rh-sw { left: -16px; bottom: -16px; cursor: nesw-resize; }
+    .be-lay-dropline { position: absolute; left: 10px; right: 10px; height: 3px; border-radius: 2px; background: var(--be-accent); z-index: 6; pointer-events: none; }
 
     /* 编辑器外壳：铺满屏幕，按钮全收在底部一条 */
     #be-lay-mask {
@@ -4165,7 +4174,7 @@ $(() => {
     .be-lay-tbtn { width: 38px; height: 38px; border-radius: 50%; border: 0; background: var(--be-panel-input-bg, rgba(0,0,0,0.06)); color: inherit; cursor: pointer; font-size: 15px; flex: 0 0 auto; }
     .be-lay-name { flex: 1; min-width: 0; border: 0; background: transparent; color: inherit; font-size: 16px; font-weight: 600; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 6px; }
     .be-lay-stage { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 18px 12px 40px; -webkit-overflow-scrolling: touch; }
-    .be-lay-pagewrap { margin: 0 auto; box-shadow: 0 6px 24px rgba(0,0,0,0.16); }
+    .be-lay-pagewrap { margin: 0 auto; box-shadow: 0 6px 24px rgba(0,0,0,0.16); position: relative; }
     .be-lay-pagewrap .be-card { margin: 0; box-shadow: none; border-radius: 0; }
     .be-lay-tip { text-align: center; font-size: 11px; opacity: 0.5; margin-top: 14px; line-height: 1.7; }
     .be-lay-bar {
@@ -4196,6 +4205,9 @@ $(() => {
     .be-lay-opts { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 10px 10px; }
     .be-lay-opts button { border: 1px solid var(--be-panel-input-border, rgba(0,0,0,0.12)); background: transparent; color: inherit; border-radius: 8px; padding: 7px 10px; font-size: 13px; cursor: pointer; }
     .be-lay-opts button.on { border-color: var(--be-accent); color: var(--be-accent); }
+    .be-lay-opts-grid { display: grid; grid-template-columns: repeat(3, 1fr); }
+    .be-lay-opts-grid button { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 8px 4px; font-size: 12px; }
+    .be-lay-oic { font-style: normal; font-size: 20px; line-height: 1.1; }
     .be-lay-slider { display: flex; align-items: center; gap: 8px; padding: 10px 12px 12px; min-width: 210px; box-sizing: border-box; }
     .be-lay-slider input[type="range"] { flex: 1; min-width: 0; accent-color: var(--be-accent); }
     .be-lay-slider input[type="number"] { width: 54px; padding: 4px 6px; border-radius: 6px; border: 1px solid var(--be-panel-input-border, rgba(0,0,0,0.15)); background: var(--be-panel-input-bg, #fff); color: inherit; font-size: 13px; font-family: inherit; }
@@ -4217,6 +4229,14 @@ $(() => {
     }
     .be-lay-cell.on { border-color: var(--be-accent); box-shadow: inset 0 0 0 1px var(--be-accent); color: var(--be-accent); }
     .be-lay-sw { display: inline-block; width: 26px; height: 14px; border-radius: 3px; border: 1px solid rgba(128,128,128,0.35); vertical-align: middle; }
+    .be-lay-sw-rainbow { width: 16px; height: 16px; border-radius: 50%; border: 0; background: conic-gradient(#e85d5d, #e8c35d, #6fd26f, #5dc4e8, #7a6be8, #e85dc6, #e85d5d); }
+    .be-lay-cell-sw { min-width: 44px; padding: 0 8px; }
+    .be-lay-dot { display: inline-block; width: 20px; height: 20px; border-radius: 50%; border: 1px solid rgba(128,128,128,0.35); }
+    /* 跟随配色的预览块：和书摘弹窗「颜色」一栏同样的样子 */
+    .be-lay-prev-row { padding-top: 2px; padding-bottom: 6px; }
+    .be-lay-pchip { flex: 0 0 auto; width: 52px; height: 40px; border-radius: 10px; border: 2px solid transparent; font-size: 16px; font-family: serif; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: inset 0 0 0 1px rgba(128,128,128,0.25); }
+    .be-lay-pchip.on { border-color: var(--be-accent); }
+    .be-lay-pchip-cur { background: var(--be-panel-input-bg, rgba(0,0,0,0.05)); color: inherit; font-size: 12px; font-family: inherit; }
     .be-lay-fmt { display: flex; align-items: center; justify-content: space-around; padding: 8px 6px 6px; gap: 2px; }
     .be-lay-fmt button { border: 0; background: transparent; color: inherit; min-width: 36px; height: 36px; border-radius: 6px; font-size: 16px; cursor: pointer; }
     .be-lay-fmt button[data-tl] { font-size: 12px; min-width: 64px; }
@@ -4247,22 +4267,67 @@ $(() => {
     .be-lay-crop-img { position: relative; touch-action: none; }
     .be-lay-crop-img img { width: 100%; height: 100%; display: block; pointer-events: none; user-select: none; }
     .be-lay-crop-rect { position: absolute; border: 2px solid #fff; box-shadow: 0 0 0 9999px rgba(0,0,0,0.45); cursor: move; touch-action: none; box-sizing: border-box; }
-    .be-lay-crop-rect i { position: absolute; width: 22px; height: 22px; border-radius: 50%; background: #fff; }
-    .be-lay-crop-rect i[data-h="nw"] { left: -12px; top: -12px; } .be-lay-crop-rect i[data-h="ne"] { right: -12px; top: -12px; }
-    .be-lay-crop-rect i[data-h="sw"] { left: -12px; bottom: -12px; } .be-lay-crop-rect i[data-h="se"] { right: -12px; bottom: -12px; }
+    .be-lay-crop-rect i { position: absolute; width: 34px; height: 34px; touch-action: none; }
+    .be-lay-crop-rect i::after { content: ''; position: absolute; width: 16px; height: 16px; border: 4px solid #fff; box-sizing: border-box; }
+    .be-lay-crop-rect i[data-h="nw"] { left: -2px; top: -2px; cursor: nwse-resize; } .be-lay-crop-rect i[data-h="nw"]::after { left: 0; top: 0; border-right: 0; border-bottom: 0; }
+    .be-lay-crop-rect i[data-h="ne"] { right: -2px; top: -2px; cursor: nesw-resize; } .be-lay-crop-rect i[data-h="ne"]::after { right: 0; top: 0; border-left: 0; border-bottom: 0; }
+    .be-lay-crop-rect i[data-h="sw"] { left: -2px; bottom: -2px; cursor: nesw-resize; } .be-lay-crop-rect i[data-h="sw"]::after { left: 0; bottom: 0; border-right: 0; border-top: 0; }
+    .be-lay-crop-rect i[data-h="se"] { right: -2px; bottom: -2px; cursor: nwse-resize; } .be-lay-crop-rect i[data-h="se"]::after { right: 0; bottom: 0; border-left: 0; border-top: 0; }
     .be-lay-crop-ar { display: flex; gap: 6px; justify-content: center; flex-wrap: wrap; padding: 10px; }
     .be-lay-crop-ar button { border: 1px solid #555; background: transparent; color: #ddd; border-radius: 14px; padding: 5px 12px; font-size: 12px; cursor: pointer; }
     .be-lay-crop-ar button.on { border-color: #fff; color: #fff; background: rgba(255,255,255,0.15); }
     .be-lay-crop-acts { display: flex; justify-content: flex-end; gap: 8px; padding: 6px 14px calc(14px + env(safe-area-inset-bottom, 0px)); }
+    .be-lay-starter { position: absolute; inset: 0; z-index: 28; background: rgba(0,0,0,0.45); display: flex; align-items: flex-end; justify-content: center; }
+    .be-lay-starter-box { width: 100%; max-width: 560px; max-height: 82%; overflow-y: auto; background: var(--be-panel-bg, #fff); border-radius: 16px 16px 0 0; padding: 14px 12px calc(16px + env(safe-area-inset-bottom, 0px)); box-sizing: border-box; }
+    .be-lay-starter-h { font-size: 14px; font-weight: 600; padding: 2px 4px 12px; }
+    .be-lay-starter-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 12px; }
+    .be-lay-starter-item { border: 1px solid var(--be-panel-input-border, rgba(0,0,0,0.12)); border-radius: 10px; background: transparent; color: inherit; padding: 8px; cursor: pointer; display: flex; flex-direction: column; gap: 6px; align-items: stretch; }
+    .be-lay-starter-pv { display: block; height: 170px; overflow: hidden; border-radius: 6px; position: relative; pointer-events: none; }
+    .be-lay-starter-pv > .be-card { position: absolute; left: 0; top: 0; transform: scale(0.38); transform-origin: 0 0; margin: 0; box-shadow: none; }
+    .be-lay-starter-name { font-size: 13px; text-align: center; }
     /* 模板栏里的「＋ 自由排版」和排版模板上的 ✎ */
     #be-drawer .be-drawer-chip.be-drawer-new { background: transparent; border: 1px dashed var(--be-accent); color: var(--be-accent); }
     #be-drawer .be-drawer-chip .be-lay-chip-edit { margin-left: 6px; opacity: 0.75; font-size: 11px; }
+
+    /* ===== 动效：只动 transform（scale / translate 单独属性，不覆盖元素自己的定位 transform）和 opacity ===== */
+    :root { --be-spring: cubic-bezier(0.34, 1.36, 0.5, 1); --be-out: cubic-bezier(0.22, 0.75, 0.25, 1); }
+    @keyframes be-pop-in { from { opacity: 0; scale: 0.94; translate: 0 4px; } to { opacity: 1; scale: 1; translate: 0 0; } }
+    @keyframes be-box-in { from { opacity: 0; scale: 0.93; } to { opacity: 1; scale: 1; } }
+    @keyframes be-sheet-up { from { opacity: 0; translate: 0 18px; } to { opacity: 1; translate: 0 0; } }
+    @keyframes be-panel-in { from { opacity: 0; translate: 0 10px; scale: 0.985; } to { opacity: 1; translate: 0 0; scale: 1; } }
+    @keyframes be-dim-in { from { opacity: 0; } to { opacity: 1; } }
+    /* 浮动条、小菜单、取色器：打开时轻微回弹 */
+    #be-float-bar.show, #be-card-hl-bar.show, #be-hl-bar.show, #be-card-hl-pop.show, #be-slot-chooser.show,
+    .be-lay-menu:not([hidden]), #be-cpick { animation: be-pop-in 0.26s var(--be-spring); transform-origin: 50% 0; }
+    /* 对话框：遮罩淡入，框体回弹 */
+    .be-import-tpl-mask.open, #be-thought-mask.open, #be-source-mask.open, .be-lay-ask { animation: be-dim-in 0.18s ease; }
+    .be-import-tpl-mask.open > .be-import-tpl-box, #be-thought-mask.open #be-thought-box, #be-source-mask.open #be-source-box, .be-lay-askbox { animation: be-box-in 0.3s var(--be-spring); }
+    #be-mask.open #be-modal { animation: be-box-in 0.32s var(--be-spring); }
+    #be-panel.open { animation: be-panel-in 0.3s var(--be-spring); }
+    /* 底部面板 */
+    #be-drawer, #be-typo-sheet { transition: transform 0.34s var(--be-spring); }
+    .be-lay-sheet:not([hidden]), .be-lay-starter-box { animation: be-sheet-up 0.3s var(--be-spring); }
+    /* 按下反馈 */
+    .be-btn, .be-mini-btn, .be-drawer-chip, .be-radio-opt, .be-fbtn, .be-tl-btn, .be-p-tabs button, .be-settings-subtabs button,
+    .be-lay-cell, .be-lay-ins, .be-lay-bar button, .be-lay-opts button, .be-lay-pchip, .be-lay-starter-item, .be-lay-tbtn, .be-lay-seg button, .be-lay-stkgrid button {
+      transition: scale 0.14s var(--be-out);
+    }
+    .be-btn:active, .be-mini-btn:active, .be-drawer-chip:active, .be-radio-opt:active, .be-fbtn:active, .be-tl-btn:active, .be-p-tabs button:active, .be-settings-subtabs button:active,
+    .be-lay-cell:active, .be-lay-ins:active, .be-lay-bar button:active, .be-lay-opts button:active, .be-lay-pchip:active, .be-lay-starter-item:active, .be-lay-tbtn:active, .be-lay-seg button:active, .be-lay-stkgrid button:active {
+      scale: 0.95;
+    }
+    .be-lay-menu > button:active { background: var(--be-accent-soft); }
+    @media (prefers-reduced-motion: reduce) {
+      #be-float-bar.show, #be-card-hl-bar.show, #be-hl-bar.show, #be-card-hl-pop.show, #be-slot-chooser.show, .be-lay-menu:not([hidden]), #be-cpick,
+      .be-import-tpl-mask.open, .be-import-tpl-mask.open > .be-import-tpl-box, #be-thought-mask.open #be-thought-box, #be-source-mask.open #be-source-box,
+      #be-mask.open #be-modal, #be-panel.open, .be-lay-sheet:not([hidden]), .be-lay-starter-box, .be-lay-askbox { animation: none; }
+    }
     body #toast-container { z-index: 2147483647 !important; }
     /* 切换笔记本/设置、设置小类：滑动（按切换方向从左或右平移淡入） */
     @keyframes be-slide-in-r { from { opacity: 0; transform: translateX(24px); } to { opacity: 1; transform: none; } }
     @keyframes be-slide-in-l { from { opacity: 0; transform: translateX(-24px); } to { opacity: 1; transform: none; } }
-    .be-slide-r { animation: be-slide-in-r 0.25s cubic-bezier(0.2, 0.8, 0.2, 1); }
-    .be-slide-l { animation: be-slide-in-l 0.25s cubic-bezier(0.2, 0.8, 0.2, 1); }
+    .be-slide-r { animation: be-slide-in-r 0.38s cubic-bezier(0.22, 0.75, 0.25, 1); }
+    .be-slide-l { animation: be-slide-in-l 0.38s cubic-bezier(0.22, 0.75, 0.25, 1); }
     #be-panel .be-p-body { overflow-x: hidden; }
     /* 热力图 */
     .be-hm-scale { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 12px; flex-wrap: wrap; }
@@ -7501,6 +7566,7 @@ $(() => {
       <div class="be-sec">
         <h4>颜色</h4>
         <div class="be-drawer-row" id="be-drawer-color">
+          <div class="be-drawer-chip be-color-chip rainbow ${settings.colorPreset==='custom'?'active':''}" data-k="custom" title="自定义">●</div>
           ${COLOR_PRESETS.filter(p => !(settings.hiddenColorPresets || []).includes(p.id)).map(p => `
             <div class="be-drawer-chip be-color-chip ${settings.colorPreset===p.id?'active':''}" data-k="${p.id}"
                  style="background:${p.bg};color:${p.fg};">A</div>
@@ -7509,7 +7575,6 @@ $(() => {
             <div class="be-drawer-chip be-color-chip ${settings.colorPreset===('saved-'+c.id)?'active':''}" data-k="saved-${c.id}"
                  style="background:${c.bg};color:${c.fg};" title="${escapeHtml(c.name||'自定义配色')}">A</div>
           `).join('')}
-          <div class="be-drawer-chip be-color-chip rainbow ${settings.colorPreset==='custom'?'active':''}" data-k="custom" title="自定义">●</div>
         </div>
       </div>
       <button class="be-drawer-confirm" id="be-drawer-confirm">确定</button>
@@ -7743,6 +7808,7 @@ $(() => {
   function clearWarmup() { _saveWarmup = null; }
   function closeModal() {
     mainDoc.getElementById('be-mask')?.classList.remove('open');
+    layClearOnceImgs();
     _apiSourceOverride = null;
     currentThoughtText = '';
     currentRichText = '';
@@ -7894,6 +7960,17 @@ $(() => {
 
   // 只负责拼卡片 HTML，不碰页面：书摘弹窗（renderCard）和设置里的模板预览共用
   // opts.tplKey 指定模板（默认当前模板）；opts.preview 时不带 id、不用想法/删除线这些"当前这次摘录"的状态
+  function layHtmlToPlain(html) {
+    if (!html) return '';
+    const d = mainDoc.createElement('div');
+    d.innerHTML = html;
+    d.querySelectorAll('.be-mask').forEach(m => m.replaceWith('■'.repeat(Math.max(1, Math.min(4, (m.getAttribute('data-mask-word') || '■').length)))));
+    d.querySelectorAll('br').forEach(b => b.replaceWith('\n'));
+    d.querySelectorAll('p, div').forEach(b => b.append('\n'));
+    return (d.textContent || '').replace(/\n{2,}/g, '\n').trim();
+  }
+  // 书摘弹窗里「仅本次」换的排版图片：{ 模板id: { 'g:组号' 或 图片id: { 图片id: {src, ar, baked, shd, shdBox} } } }，关掉弹窗就清空
+  const _layOnceImgs = {};
   function buildCardMarkup(text, opts = {}) {
     const tplKey = opts.tplKey || settings.template;
     const isCustomTpl = String(tplKey || '').startsWith('custom-');
@@ -7969,12 +8046,15 @@ $(() => {
 
     let inner = '';
     if (tplId === 'layout') {
+      const thoughtHtml = thoughtText ? maskText(thoughtText) : '';
       inner = renderLayoutInner(layoutTpl, {
-        quoteHtml: quotePart,
-        thoughtHtml: thoughtText ? maskText(thoughtText) : '',
+        quoteHtml: quotePart, quotePlain: layHtmlToPlain(quotePart),
+        thoughtHtml, thoughtPlain: layHtmlToPlain(thoughtHtml),
         charName: opts.preview ? 'char' : (ctx.charName || ''),
         userName, authorName, bookName, chapter, wmText,
-        preview: !!opts.preview, edit: !!opts.layEdit, pageW: opts.layPageW
+        preview: !!opts.preview, edit: !!opts.layEdit, pageW: opts.layPageW,
+        previewColors: opts.layPreview || null,
+        imgOverride: (!opts.layEdit && !opts.preview && _layOnceImgs[layoutTpl.id]) || null
       });
     } else if (isCustomTpl) {
       // 自定义模板：提供通用 HTML 结构，用户 CSS 自行控制布局/隐藏
@@ -8254,6 +8334,16 @@ $(() => {
           }, 300);
         });
       }
+    }
+    // 自由排版的图片：点一下换图（仅本次导出 / 保存到模板）
+    if (!wrap._beLayImg) {
+      wrap._beLayImg = true;
+      wrap.addEventListener('click', (e) => {
+        const im = e.target.closest && e.target.closest('#be-card .be-lay [data-lay-aid]');
+        if (!im || !im.classList.contains('be-lay-imgw')) return;
+        e.stopPropagation();
+        layModalReplaceImage(im.getAttribute('data-lay-aid'));
+      });
     }
     // 自定义模板图片槽：找出卡片上实际显示着模板图片的元素，点击即可换图（wrap 本身不会重建，监听只绑一次）
     markTemplateSlots(wrap);
@@ -8822,6 +8912,7 @@ $(() => {
       mainDoc.body.appendChild(panel);
     }
     detectAndApplyTheme();
+    if (!panel.classList.contains('open')) markTypoDragging(380);
     panel.classList.add('open');
     renderPanel();
   }
@@ -8853,7 +8944,7 @@ $(() => {
     el.classList.remove('be-body-anim', 'be-slide-l', 'be-slide-r');
     void el.offsetWidth;
     if (settings.panelAnim === 'slide') {
-      markTypoDragging(320);
+      markTypoDragging(460);
       el.classList.add(dir < 0 ? 'be-slide-l' : 'be-slide-r');
     } else {
       el.classList.add('be-body-anim');
@@ -9198,7 +9289,7 @@ $(() => {
         <div class="be-sec-head">
           <h4>模板</h4>
           <span class="be-sec-head-btns">
-            <button type="button" class="be-mini-btn" id="be-tpl-new-layout">新建排版</button>
+            <button type="button" class="be-mini-btn" id="be-tpl-new-layout">自由排版</button>
             <button type="button" class="be-mini-btn" id="be-tpl-import">导入</button>
             <button type="button" class="be-mini-btn" id="be-tpl-import-batch">批量导入</button>
           </span>
@@ -9231,6 +9322,12 @@ $(() => {
                 </div>`).join('')}
             </div>
           </div>` : ''}
+        </div>
+        <div class="be-row" style="margin-top:10px;"><label style="flex:1;">书摘弹窗里更换自由排版的图片</label></div>
+        <div class="be-row">
+          <div class="be-radio-group" id="be-lay-imgmode" style="width:100%;">
+            ${[['ask', '每次询问'], ['once', '仅本次导出'], ['save', '保存到模板']].map(([v, n]) => `<button type="button" class="be-radio-opt ${(settings.layoutImgReplace || 'ask') === v ? 'active' : ''}" data-v="${v}">${n}</button>`).join('')}
+          </div>
         </div>
       </div>`;
   }
@@ -9344,6 +9441,11 @@ $(() => {
     const sec = body.querySelector('#be-tpl-sec');
     if (!sec) return;
     sec.querySelector('#be-tpl-new-layout')?.addEventListener('click', () => openLayoutEditor(null));
+    sec.querySelectorAll('#be-lay-imgmode .be-radio-opt').forEach(btn => btn.addEventListener('click', () => {
+      settings.layoutImgReplace = btn.getAttribute('data-v');
+      saveSettings(settings);
+      sec.querySelectorAll('#be-lay-imgmode .be-radio-opt').forEach(b => b.classList.toggle('active', b === btn));
+    }));
     sec.querySelector('#be-tpl-import')?.addEventListener('click', () => openImportTemplateDialog());
     sec.querySelector('#be-tpl-import-batch')?.addEventListener('click', importTemplatesBatch);
     sec.querySelector('#be-tl-toggle')?.addEventListener('click', () => {
@@ -11634,13 +11736,14 @@ $(() => {
   }
 
   // ---------- 自由排版（版式模板：整页富文本 + 浮动贴纸） ----------
-  // 页面是一份连续的可编辑文档（参考 Zine）：段落直接点进去输入，回车分段，选中文字时只改选中部分。
-  // 图片 / 分割图 / 竖排文字 / 分隔线 / 留白是嵌在文档里的整体元素（内部不放光标，点击后弹菜单）。
-  // 摘录、想法是段落级占位；角色名 / 用户名 / 作者 / 书名 / 章名 / 日期是行内占位。导出时都替换成当次内容。
+  // 页面是一份连续的可编辑文档：段落直接点进去输入，回车分段，选中文字时只改选中部分。
+  // 图片 / 竖排文字 / 分隔线 / 留白是嵌在文档里的整体元素（内部不放光标，点击后弹菜单）。
+  // 摘录、想法是段落级占位（也可以是竖排文字）；角色名 / 用户名 / 作者 / 书名 / 章名 / 日期是行内占位。导出时都替换成当次内容。
   // 贴纸和浮动文字压在页面上，可拖动、缩放、旋转。
   // 模板存在 settings.layoutTemplates[]（v2：{id, name, v:2, page, doc, floats}），key 为 'layout-<id>'。
   // 渲染走 buildCardMarkup → renderLayoutInner，编辑器和导出共用同一份 DOM 结构。
-  // html2canvas 不支持 writing-mode / box-shadow / CSS filter：竖排在这里逐列排成单字，阴影和滤镜直接画进图片。
+  // html2canvas 不支持 writing-mode / box-shadow / CSS filter / clip-path：
+  //   竖排在这里逐列排成单字；裁剪、滤镜、异形遮罩、相框画进新图片；阴影是一张单独的小图垫在图片下面。
   const LAY_PS = {
     h1:    { name: '标题 1', size: 28, weight: 700, lh: 1.35 },
     h2:    { name: '标题 2', size: 22, weight: 700, lh: 1.45 },
@@ -11657,7 +11760,11 @@ $(() => {
   const LAY_DATEFMT = ['num', 'cn', 'en'];
   const LAY_STICKERS = ['❀', '✿', '❦', '✦', '✧', '★', '☆', '☾', '☀', '♡', '❤', '♪', '✎', '✉', '❝', '❞', '「', '」', '〔', '〕', '※', '◆', '◇', '●', '○', '✕', '〰', '⁂', '☁', '❄'];
   const LAY_DIVIDERS = { bar: '粗条', dots: '圆点', stars: '星号', flower: '花饰', wave: '波浪' };
-  const LAY_COLORS = ['#1f1f1f', '#555555', '#8a8a8a', '#ffffff', '#7a4a24', '#a83c36', '#c9772b', '#2b2f6b', '#2a6cb0', '#3d6b4f', '#6b4f8a', '#d98fa0'];
+  // 遮罩：无 / 圆角 / 圆形用 CSS；其余画进图片
+  const LAY_MASKS = { none: '无', round: '圆角', circle: '圆形', arch: '拱门', hex: '六边形', star: '星形', heart: '心形', scallop: '花边', torn: '撕纸边' };
+  const LAY_CSS_MASKS = ['none', 'round', 'circle'];
+  // 相框：画进图片
+  const LAY_FRAMES = { none: '无', polaroid: '拍立得', mat: '衬纸', vintage: '旧照片', corners: '相册贴角', tape: '胶带', stamp: '邮票' };
   // 竖排标点换成竖排写法（Unicode 竖排标点 FE10–FE19 / FE30–FE44）
   const LAY_VPUNCT = {
     '：': '︓', '；': '︔', '！': '︕', '？': '︖', '…': '︙', '—': '︱', '–': '︲',
@@ -11680,6 +11787,14 @@ $(() => {
     else if (FONTS[k] && k !== 'follow_theme') fam = FONTS[k].css;
     return fam ? String(fam).replace(/"/g, "'") : '';
   }
+  // 文字颜色那排：书摘自己的颜色（划线色系 + 卡片配色的字色）
+  function layTextColors() {
+    const out = [];
+    const add = c => { if (c && layColorOk(c) && !out.some(x => x.toLowerCase() === c.toLowerCase())) out.push(c); };
+    try { getPaletteColors().forEach(add); } catch (e) {}
+    COLOR_PRESETS.forEach(p => add(p.fg));
+    return out;
+  }
   function layGetTemplate(key) {
     const id = String(key || '').replace(/^layout-/, '');
     const t = (settings.layoutTemplates || []).find(x => x.id === id) || null;
@@ -11693,38 +11808,88 @@ $(() => {
       doc: [
         { t: 'p', ps: 'body', slot: 'excerpt', s: {}, html: smp ? escapeHtml(smp).replace(/\n+/g, '<br>') : '' },
         { t: 'p', ps: 'small', slot: 'thought', s: {}, html: '' },
-        { t: 'p', ps: 'small', s: { a: 'right' }, html: '—— <span data-tok="author"></span><span data-tok="book"></span>' }
+        { t: 'p', ps: 'small', s: {}, html: '—— <span data-tok="author"></span> <span data-tok="book"></span>' }
       ],
       floats: []
     };
   }
+  // 起手模板：新建时可以从这些开始改
+  const LAY_STARTERS = [
+    { k: 'basic', name: '基础', make: (smp) => { const d = layDefaultDraft(); d.doc[0].html = smp; return { page: d.page, doc: d.doc }; } },
+    { k: 'blank', name: '空白', make: (smp) => ({ page: { pad: 28, gap: 14 }, doc: [
+      { t: 'p', ps: 'body', slot: 'excerpt', s: {}, html: smp }] }) },
+    { k: 'book', name: '书页', make: (smp) => ({ page: { pad: 36, gap: 16 }, doc: [
+      { t: 'p', ps: 'h3', s: { a: 'center' }, html: '<span data-tok="book"></span>' },
+      { t: 'p', ps: 'small', s: { a: 'center' }, html: '<span data-tok="chapter"></span>' },
+      { t: 'hr', id: layNewId('a'), k: 'dots' },
+      { t: 'p', ps: 'body', slot: 'excerpt', s: { a: 'justify' }, html: smp },
+      { t: 'p', ps: 'small', slot: 'thought', s: { i: true }, html: '' },
+      { t: 'p', ps: 'small', s: { a: 'right' }, html: '—— <span data-tok="author"></span>' }] }) },
+    { k: 'polaroid', name: '拍立得', make: (smp) => ({ page: { pad: 30, gap: 16 }, doc: [
+      { t: 'img', id: layNewId('a'), src: '', orig: '', lay: 'center', wp: 74, frame: 'polaroid', sh: 1, filter: 'none', mask: 'none' },
+      { t: 'p', ps: 'body', slot: 'excerpt', s: { a: 'center' }, html: smp },
+      { t: 'p', ps: 'small', s: { a: 'center' }, html: '<span data-tok="date" data-fmt="cn"></span>' }] }) },
+    { k: 'letter', name: '信笺', make: (smp) => ({ page: { pad: 36, gap: 14 }, doc: [
+      { t: 'p', ps: 'body', s: {}, html: '致 <span data-tok="user"></span>：' },
+      { t: 'p', ps: 'body', slot: 'excerpt', s: {}, html: smp },
+      { t: 'p', ps: 'small', slot: 'thought', s: {}, html: '' },
+      { t: 'p', ps: 'body', s: { a: 'right' }, html: '<span data-tok="char"></span>' },
+      { t: 'p', ps: 'small', s: { a: 'right' }, html: '<span data-tok="date" data-fmt="cn"></span>' }] }) },
+    { k: 'verse', name: '竖排诗笺', make: (smp) => ({ page: { pad: 32, gap: 16 }, doc: [
+      { t: 'vt', id: layNewId('a'), slot: 'excerpt', text: '', s: { z: 20, a: 'right' }, vh: 300 },
+      { t: 'p', ps: 'small', s: {}, html: '<span data-tok="author"></span> <span data-tok="book"></span>' }] }) }
+  ];
   // 上一版（v1，按块排）的模板转成 v2 文档；直接改写原对象，存回设置时就是新格式
   function layEnsureV2(t) {
-    if (!t || (t.v === 2 && Array.isArray(t.doc))) return t;
-    const page = { ...(t.page || {}) };
-    if (typeof page.pad === 'string') page.pad = { n: 18, m: 28, w: 40 }[page.pad] || 28;
-    if (typeof page.gap === 'string') page.gap = { s: 8, m: 14, l: 22 }[page.gap] || 14;
-    const sOf = b => { const s = { ...(b.s || {}) }; delete s.p; return s; };
-    const tok = k => `<span data-tok="${k}"></span>`;
-    const doc = [];
-    (t.blocks || []).forEach(b => {
-      if (!b || !b.t) return;
-      const ps = LAY_PS[(b.s || {}).p] ? b.s.p : 'body';
-      if (b.t === 'text') doc.push({ t: 'p', ps, s: sOf(b), html: layCleanInline(b.html || '') });
-      else if (b.t === 'excerpt' || b.t === 'thought') doc.push({ t: 'p', ps, slot: b.t, s: sOf(b), html: '' });
-      else if (b.t === 'source') {
-        const o = b.o || { dash: true, author: true, book: true };
-        const parts = ['user', 'author', 'book', 'chapter'].filter(k => o[k]).map(tok);
-        doc.push({ t: 'p', ps, s: sOf(b), html: (o.dash ? '—— ' : '') + parts.join(' ') });
-      } else if (b.t === 'date') doc.push({ t: 'p', ps, s: sOf(b), html: `<span data-tok="date" data-fmt="${LAY_DATEFMT.includes((b.o || {}).fmt) ? b.o.fmt : 'num'}"></span>` });
-      else if (b.t === 'image') doc.push({ t: 'img', id: b.id || layNewId('a'), src: b.src || '', orig: b.orig || b.src || '', crop: b.crop || null, filter: b.filter || 'none', lay: b.lay || 'full', wp: b.wp, ar: b.ar, bw: b.bw || 0, bc: b.bc || '', mask: b.mask || 'none', sh: 0 });
-      else if (b.t === 'divider') doc.push({ t: 'hr', id: b.id || layNewId('a'), k: b.k || 'dots' });
-      else if (b.t === 'spacer') doc.push({ t: 'sp', id: b.id || layNewId('a'), h: b.h || 24 });
-    });
-    t.page = page;
-    t.doc = doc;
-    t.v = 2;
-    delete t.blocks;
+    if (!t) return t;
+    if (!(t.v === 2 && Array.isArray(t.doc))) {
+      const page = { ...(t.page || {}) };
+      if (typeof page.pad === 'string') page.pad = { n: 18, m: 28, w: 40 }[page.pad] || 28;
+      if (typeof page.gap === 'string') page.gap = { s: 8, m: 14, l: 22 }[page.gap] || 14;
+      const sOf = b => { const s = { ...(b.s || {}) }; delete s.p; return s; };
+      const tok = k => `<span data-tok="${k}"></span>`;
+      const doc = [];
+      (t.blocks || []).forEach(b => {
+        if (!b || !b.t) return;
+        const ps = LAY_PS[(b.s || {}).p] ? b.s.p : 'body';
+        if (b.t === 'text') doc.push({ t: 'p', ps, s: sOf(b), html: layCleanInline(b.html || '') });
+        else if (b.t === 'excerpt' || b.t === 'thought') doc.push({ t: 'p', ps, slot: b.t, s: sOf(b), html: '' });
+        else if (b.t === 'source') {
+          const o = b.o || { dash: true, author: true, book: true };
+          const parts = ['user', 'author', 'book', 'chapter'].filter(k => o[k]).map(tok);
+          doc.push({ t: 'p', ps, s: sOf(b), html: (o.dash ? '—— ' : '') + parts.join(' ') });
+        } else if (b.t === 'date') doc.push({ t: 'p', ps, s: sOf(b), html: `<span data-tok="date" data-fmt="${LAY_DATEFMT.includes((b.o || {}).fmt) ? b.o.fmt : 'num'}"></span>` });
+        else if (b.t === 'image') doc.push({ t: 'img', id: b.id || layNewId('a'), src: b.src || '', orig: b.orig || b.src || '', crop: b.crop || null, filter: b.filter || 'none', lay: b.lay || 'full', wp: b.wp, ar: b.ar, bw: b.bw || 0, bc: b.bc || '', mask: b.mask || 'none', sh: 0 });
+        else if (b.t === 'divider') doc.push({ t: 'hr', id: b.id || layNewId('a'), k: b.k || 'dots' });
+        else if (b.t === 'spacer') doc.push({ t: 'sp', id: b.id || layNewId('a'), h: b.h || 24 });
+      });
+      t.page = page;
+      t.doc = doc;
+      t.v = 2;
+      delete t.blocks;
+    }
+    // 上一轮 dev 的分割图（一个整体元素）拆成两张独立图片，中间文字变成普通段落
+    if ((t.doc || []).some(a => a && a.t === 'split')) {
+      const out = [];
+      t.doc.forEach(a => {
+        if (!a || a.t !== 'split') { out.push(a); return; }
+        const c = a.crop || { x: 0, y: 0, w: 1, h: 1 }, at = layNum(a.at, 0.5, 0.1, 0.9), v = a.dir === 'v';
+        const grp = layNewId('g');
+        const half = (part) => {
+          const first = part === 'a';
+          const crop = v
+            ? { x: first ? c.x : c.x + c.w * at, y: c.y, w: c.w * (first ? at : 1 - at), h: c.h }
+            : { x: c.x, y: first ? c.y : c.y + c.h * at, w: c.w, h: c.h * (first ? at : 1 - at) };
+          return { t: 'img', id: layNewId('a'), src: a.orig || a.src || '', orig: a.orig || a.src || '', crop, filter: a.filter || 'none', lay: v ? (first ? 'left' : 'right') : 'full', wp: v ? 36 : undefined, sh: a.sh || 0, mask: 'none', frame: 'none', grp, part, needBake: true };
+        };
+        out.push(half('a'));
+        if (v) out.push(half('b'));
+        out.push({ t: 'p', ps: LAY_PS[a.ps] ? a.ps : 'body', s: a.s || { a: 'center' }, html: a.mv ? escapeHtml(a.text || '') : (a.html || '') });
+        if (!v) out.push(half('b'));
+      });
+      t.doc = out;
+    }
+    if (t.page) { delete t.page.bgP; delete t.page.fgP; }
     return t;
   }
   // 段落样式 → 内联 style（字体 / 字号 / 粗斜 / 下划删除线 / 颜色 / 对齐 / 行距）
@@ -11875,7 +12040,7 @@ $(() => {
     css.push(`justify-content:${s.a === 'center' ? 'center' : s.a === 'left' ? 'flex-end' : 'flex-start'}`);
     return css.join(';');
   }
-  // 「跟随配色」可以指定一份保存过的配色（内置配色或自定义配色），不指定就跟书摘弹窗当前配色走
+  // 「跟随配色」在编辑器里预览用：内置配色 + 自定义配色
   function layPresetList() {
     const out = COLOR_PRESETS.filter(p => !(settings.hiddenColorPresets || []).includes(p.id)).map(p => ({ k: p.id, name: p.name, bg: p.bg, fg: p.fg }));
     (settings.customColors || []).forEach(c => {
@@ -11885,54 +12050,289 @@ $(() => {
     return out;
   }
   function layPreset(k) { return k ? (layPresetList().find(p => p.k === k) || null) : null; }
+
+  // ===== 图片处理（编辑器和书摘弹窗换图共用） =====
+  function layNeedBake(a) {
+    return !!(a.crop || (a.filter && a.filter !== 'none') || (a.mask && !LAY_CSS_MASKS.includes(a.mask)) || (a.frame && a.frame !== 'none'));
+  }
+  function layCanvas(w, h) { const c = mainDoc.createElement('canvas'); c.width = Math.max(1, Math.round(w)); c.height = Math.max(1, Math.round(h)); return c; }
+  function layImgSize(ref) {
+    return new Promise(resolve => {
+      let done = false;
+      const fin = v => { if (!done) { done = true; resolve(v); } };
+      const go = (u) => { const im = new mainWin.Image(); im.onload = () => fin({ w: im.naturalWidth, h: im.naturalHeight, img: im }); im.onerror = () => fin(null); im.src = u; };
+      const url = imgUrlSync(ref);
+      if (url) go(url); else imgUrlSync(ref, () => go(imgUrlSync(ref)));
+      setTimeout(() => fin(null), 6000);
+    });
+  }
+  // 由 id 得到稳定的伪随机数（撕纸边每次生成一样的锯齿）
+  function layRand(seed) {
+    let h = 2166136261;
+    for (const ch of String(seed || 'x')) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); }
+    return () => { h ^= h << 13; h ^= h >>> 17; h ^= h << 5; return ((h >>> 0) % 10000) / 10000; };
+  }
+  function layShapePath(ctx, x, y, w, h, mask, k, seed) {
+    ctx.beginPath();
+    if (mask === 'circle') { ctx.ellipse(x + w / 2, y + h / 2, w / 2, h / 2, 0, 0, Math.PI * 2); return; }
+    if (mask === 'round') {
+      const r = Math.min(12 * k, w / 2, h / 2);
+      ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+      return;
+    }
+    if (mask === 'arch') {
+      const r = Math.min(w / 2, h);
+      ctx.moveTo(x, y + h); ctx.lineTo(x, y + r); ctx.arc(x + w / 2, y + r, w / 2, Math.PI, 0); ctx.lineTo(x + w, y + h); ctx.closePath();
+      return;
+    }
+    if (mask === 'hex') {
+      [[0.25, 0], [0.75, 0], [1, 0.5], [0.75, 1], [0.25, 1], [0, 0.5]].forEach(([px, py], i) => ctx[i ? 'lineTo' : 'moveTo'](x + px * w, y + py * h));
+      ctx.closePath(); return;
+    }
+    if (mask === 'star') {
+      for (let i = 0; i < 10; i++) {
+        const ang = -Math.PI / 2 + i * Math.PI / 5, rr = i % 2 ? 0.46 : 1;
+        ctx[i ? 'lineTo' : 'moveTo'](x + w / 2 + Math.cos(ang) * w / 2 * rr, y + h * 0.52 + Math.sin(ang) * h / 2 * rr);
+      }
+      ctx.closePath(); return;
+    }
+    if (mask === 'heart') {
+      const P = (px, py) => [x + px * w, y + py * h];
+      ctx.moveTo(...P(0.5, 0.98));
+      ctx.bezierCurveTo(...P(0.1, 0.68), ...P(0, 0.4), ...P(0.12, 0.2));
+      ctx.bezierCurveTo(...P(0.26, 0.02), ...P(0.48, 0.06), ...P(0.5, 0.25));
+      ctx.bezierCurveTo(...P(0.52, 0.06), ...P(0.74, 0.02), ...P(0.88, 0.2));
+      ctx.bezierCurveTo(...P(1, 0.4), ...P(0.9, 0.68), ...P(0.5, 0.98));
+      ctx.closePath(); return;
+    }
+    if (mask === 'scallop') {
+      const r = Math.max(3, Math.min(w, h) * 0.045);
+      ctx.rect(x + r, y + r, w - 2 * r, h - 2 * r);
+      const along = (x1, y1, x2, y2) => {
+        const len = Math.hypot(x2 - x1, y2 - y1), n = Math.max(2, Math.round(len / (r * 2)));
+        for (let i = 0; i <= n; i++) { const t = i / n; ctx.moveTo(x1 + (x2 - x1) * t + r, y1 + (y2 - y1) * t); ctx.arc(x1 + (x2 - x1) * t, y1 + (y2 - y1) * t, r, 0, Math.PI * 2); }
+      };
+      along(x + r, y + r, x + w - r, y + r); along(x + r, y + h - r, x + w - r, y + h - r);
+      along(x + r, y + r, x + r, y + h - r); along(x + w - r, y + r, x + w - r, y + h - r);
+      return;
+    }
+    if (mask === 'torn') {
+      const rnd = layRand(seed), d = Math.min(w, h) * 0.035, step = Math.max(4, Math.min(w, h) * 0.03);
+      const pts = [];
+      for (let t = 0; t < w; t += step) pts.push([x + t, y + rnd() * d]);
+      for (let t = 0; t < h; t += step) pts.push([x + w - rnd() * d, y + t]);
+      for (let t = w; t > 0; t -= step) pts.push([x + t, y + h - rnd() * d]);
+      for (let t = h; t > 0; t -= step) pts.push([x + rnd() * d, y + t]);
+      pts.forEach(([px, py], i) => ctx[i ? 'lineTo' : 'moveTo'](px, py));
+      ctx.closePath(); return;
+    }
+    ctx.rect(x, y, w, h);
+  }
+  // 相框：在内容四周加边 / 贴角 / 胶带，返回新画布
+  function layFrameCanvas(src, frame, k, seed) {
+    const w = src.width, h = src.height;
+    if (frame === 'polaroid') {
+      const ps = Math.round(w * 0.06), pb = Math.round(w * 0.2);
+      const c = layCanvas(w + ps * 2, h + ps + pb), x = c.getContext('2d');
+      x.fillStyle = '#fbfaf6'; x.fillRect(0, 0, c.width, c.height);
+      x.drawImage(src, ps, ps);
+      return c;
+    }
+    if (frame === 'mat') {
+      const m = Math.round(w * 0.09), line = Math.max(1, Math.round(1.5 * k));
+      const c = layCanvas(w + m * 2, h + m * 2), x = c.getContext('2d');
+      x.fillStyle = '#f3eee2'; x.fillRect(0, 0, c.width, c.height);
+      x.strokeStyle = '#3b3833'; x.lineWidth = line * 2; x.strokeRect(0, 0, c.width, c.height);
+      x.drawImage(src, m, m);
+      x.strokeStyle = '#b8af9c'; x.lineWidth = line; x.strokeRect(m - line * 2, m - line * 2, w + line * 4, h + line * 4);
+      return c;
+    }
+    if (frame === 'vintage') {
+      const b = Math.round(w * 0.045);
+      const c = layCanvas(w + b * 2, h + b * 2), x = c.getContext('2d');
+      layShapePath(x, 0, 0, c.width, c.height, 'round', k * 0.5);
+      x.fillStyle = '#efe5cf'; x.fill();
+      x.drawImage(src, b, b);
+      // 微黄 + 四角压暗
+      x.save(); x.beginPath(); x.rect(b, b, w, h); x.clip();
+      x.globalCompositeOperation = 'multiply'; x.fillStyle = 'rgba(222,196,140,0.32)'; x.fillRect(b, b, w, h);
+      x.globalCompositeOperation = 'source-over';
+      const g = x.createRadialGradient(b + w / 2, b + h / 2, Math.min(w, h) * 0.3, b + w / 2, b + h / 2, Math.hypot(w, h) * 0.6);
+      g.addColorStop(0, 'rgba(60,40,10,0)'); g.addColorStop(1, 'rgba(60,40,10,0.32)');
+      x.fillStyle = g; x.fillRect(b, b, w, h);
+      x.restore();
+      return c;
+    }
+    if (frame === 'corners') {
+      const p = Math.round(Math.min(w, h) * 0.03), s = Math.round(Math.min(w, h) * 0.14);
+      const c = layCanvas(w + p * 2, h + p * 2), x = c.getContext('2d');
+      x.drawImage(src, p, p);
+      x.fillStyle = 'rgba(38,34,30,0.88)';
+      const tri = (ax, ay, bx, by, cx, cy) => { x.beginPath(); x.moveTo(ax, ay); x.lineTo(bx, by); x.lineTo(cx, cy); x.closePath(); x.fill(); };
+      tri(0, 0, s, 0, 0, s); tri(c.width, 0, c.width - s, 0, c.width, s);
+      tri(0, c.height, s, c.height, 0, c.height - s); tri(c.width, c.height, c.width - s, c.height, c.width, c.height - s);
+      return c;
+    }
+    if (frame === 'tape') {
+      const th = Math.round(w * 0.05);
+      const c = layCanvas(w, h + th), x = c.getContext('2d');
+      x.drawImage(src, 0, th);
+      const rnd = layRand(seed);
+      x.save();
+      x.translate(w / 2 + (rnd() - 0.5) * w * 0.1, th + th * 0.2);
+      x.rotate((-3 - rnd() * 3) * Math.PI / 180);
+      const tw = w * 0.34, tH = th * 1.9;
+      x.fillStyle = 'rgba(238,228,196,0.82)'; x.fillRect(-tw / 2, -tH / 2, tw, tH);
+      x.fillStyle = 'rgba(255,255,255,0.18)';
+      for (let i = -tw / 2; i < tw / 2; i += tH * 0.5) x.fillRect(i, -tH / 2, tH * 0.18, tH);
+      x.restore();
+      return c;
+    }
+    if (frame === 'stamp') {
+      const b = Math.round(w * 0.06), r = Math.max(2, w * 0.02);
+      const c = layCanvas(w + b * 2, h + b * 2), x = c.getContext('2d');
+      x.fillStyle = '#fffdf8'; x.fillRect(0, 0, c.width, c.height);
+      x.globalCompositeOperation = 'destination-out';
+      const holes = (x1, y1, x2, y2) => {
+        const len = Math.hypot(x2 - x1, y2 - y1), n = Math.max(2, Math.round(len / (r * 2.7)));
+        for (let i = 0; i <= n; i++) { const t = i / n; x.beginPath(); x.arc(x1 + (x2 - x1) * t, y1 + (y2 - y1) * t, r, 0, Math.PI * 2); x.fill(); }
+      };
+      holes(0, 0, c.width, 0); holes(0, c.height, c.width, c.height); holes(0, 0, 0, c.height); holes(c.width, 0, c.width, c.height);
+      x.globalCompositeOperation = 'source-over';
+      x.drawImage(src, b, b);
+      return c;
+    }
+    return src;
+  }
+  // 阴影小图：按内容的轮廓（含透明部分）生成，返回 {canvas, box:[left%, top%, width%, height%]}，拉伸垫在图片下面
+  function layShadowCanvas(alphaSrc, sh) {
+    const strong = Number(sh) >= 2;
+    const W = 160, H = Math.max(8, Math.round(160 * alphaSrc.height / alphaSrc.width));
+    const P = Math.round(Math.max(W, H) * 0.16);
+    const c = layCanvas(W + P * 2, H + P * 2), x = c.getContext('2d');
+    x.shadowColor = `rgba(0,0,0,${strong ? 0.42 : 0.26})`;
+    x.shadowBlur = P * (strong ? 0.7 : 0.5);
+    x.shadowOffsetX = 10000;
+    x.shadowOffsetY = P * (strong ? 0.3 : 0.2);
+    x.drawImage(alphaSrc, P - 10000, P, W, H);   // 内容画在画布外，只留下影子
+    return { canvas: c, box: [-P / W * 100, -P / H * 100, (W + 2 * P) / W * 100, (H + 2 * P) / H * 100].map(v => +v.toFixed(3)) };
+  }
+  async function layCanvasToRef(canvas, png) {
+    const type = png ? 'image/png' : 'image/jpeg';
+    const blob = await canvasToBlob(canvas, type, 0.9);
+    const ar = +(canvas.width / canvas.height).toFixed(4);
+    const data = await blob.arrayBuffer();
+    const key = `slot-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+    await imgPut(key, { type, data });
+    _imgUrlCache.set(key, mainWin.URL.createObjectURL(new mainWin.Blob([data], { type })));
+    return { ref: 'idb:' + key, ar };
+  }
+  // 同一次会话里同样的参数只算一次（来回切滤镜 / 阴影不重算）
+  const _layBakeCache = new Map();
+  // 按 a 的设置算出显示用的数据：{ src, ar, shd, shdBox }；dispW = 图片在页面上的显示宽度（px），按 2 倍处理
+  async function layProcessImage(a, dispW) {
+    const orig = a.orig || a.src;
+    if (!orig) return null;
+    const tw = Math.max(240, Math.min(1400, Math.round((dispW || 360) * 2)));
+    const key = JSON.stringify([orig, a.crop || 0, a.filter || 'none', a.mask || 'none', a.frame || 'none', LAY_CSS_MASKS.includes(a.mask || 'none') ? 0 : (a.bw || 0), LAY_CSS_MASKS.includes(a.mask || 'none') ? '' : (a.bc || ''), Number(a.sh) || 0, tw, a.id]);
+    if (_layBakeCache.has(key)) return _layBakeCache.get(key);
+    const sz = await layImgSize(orig);
+    if (!sz) return null;
+    const out = {};
+    let alphaSrc = null;
+    if (layNeedBake(a)) {
+      const c = a.crop || { x: 0, y: 0, w: 1, h: 1 };
+      const sx = Math.round(c.x * sz.w), sy = Math.round(c.y * sz.h);
+      const sw = Math.max(1, Math.round(c.w * sz.w)), shh = Math.max(1, Math.round(c.h * sz.h));
+      const kScale = Math.min(1, tw / sw);
+      let canvas = layCanvas(sw * kScale, shh * kScale);
+      let ctx = canvas.getContext('2d');
+      ctx.drawImage(sz.img, sx, sy, sw, shh, 0, 0, canvas.width, canvas.height);
+      const f = a.filter;
+      if (f && f !== 'none') {
+        const d = ctx.getImageData(0, 0, canvas.width, canvas.height), px = d.data;
+        for (let i = 0; i < px.length; i += 4) {
+          let r = px[i], g = px[i + 1], bl = px[i + 2];
+          const y = 0.299 * r + 0.587 * g + 0.114 * bl;
+          if (f === 'gray') { r = g = bl = y; }
+          else if (f === 'vintage') { r = Math.min(255, y * 1.07 + 18); g = Math.min(255, y * 0.95 + 10); bl = Math.min(255, y * 0.78); }
+          else if (f === 'contrast') { r = (r - 128) * 1.45 + 128; g = (g - 128) * 1.45 + 128; bl = (bl - 128) * 1.45 + 128; }
+          else if (f === 'fade') { r = r * 0.8 + 45; g = g * 0.8 + 45; bl = bl * 0.8 + 48; }
+          px[i] = r < 0 ? 0 : r > 255 ? 255 : r; px[i + 1] = g < 0 ? 0 : g > 255 ? 255 : g; px[i + 2] = bl < 0 ? 0 : bl > 255 ? 255 : bl;
+        }
+        ctx.putImageData(d, 0, 0);
+      }
+      const k = canvas.width / Math.max(60, dispW || 360);   // 页面上 1px 对应图片里多少像素
+      let alpha = false;
+      const mask = a.mask || 'none';
+      if (mask !== 'none' && !(LAY_CSS_MASKS.includes(mask) && (!a.frame || a.frame === 'none'))) {
+        const m = layCanvas(canvas.width, canvas.height), mx = m.getContext('2d');
+        layShapePath(mx, 0, 0, m.width, m.height, mask, k, a.id);
+        mx.save(); mx.clip(); mx.drawImage(canvas, 0, 0);
+        const bw = Number(a.bw) || 0;
+        if (bw > 0) { mx.lineWidth = bw * k * 2; mx.strokeStyle = layColorOk(a.bc) ? a.bc : '#ffffff'; layShapePath(mx, 0, 0, m.width, m.height, mask, k, a.id); mx.stroke(); }
+        mx.restore();
+        canvas = m; alpha = true;
+      }
+      if (a.frame && a.frame !== 'none') {
+        canvas = layFrameCanvas(canvas, a.frame, k, a.id);
+        if (['tape', 'stamp', 'vintage', 'corners'].includes(a.frame)) alpha = true;
+      }
+      alphaSrc = canvas;
+      const r = await layCanvasToRef(canvas, alpha);
+      out.src = r.ref; out.ar = r.ar; out.baked = true;
+    } else {
+      out.src = orig; out.ar = +(sz.w / sz.h).toFixed(4); out.baked = false;
+    }
+    if (Number(a.sh) > 0) {
+      if (!alphaSrc) {
+        // CSS 显示的图片（无遮罩 / 圆角 / 圆形）：按形状画一张轮廓
+        alphaSrc = layCanvas(200, Math.max(8, Math.round(200 / out.ar)));
+        const ax = alphaSrc.getContext('2d');
+        layShapePath(ax, 0, 0, alphaSrc.width, alphaSrc.height, a.mask || 'none', 200 / Math.max(60, dispW || 360), a.id);
+        ax.fillStyle = '#000'; ax.fill();
+      }
+      const s = layShadowCanvas(alphaSrc, a.sh);
+      const r = await layCanvasToRef(s.canvas, true);
+      out.shd = r.ref; out.shdBox = s.box;
+    }
+    _layBakeCache.set(key, out);
+    return out;
+  }
+
   function layImgCss(a, url) {
-    const lay = a.lay || 'full';
-    const wp = lay === 'full' ? 100 : layNum(a.wp, lay === 'center' ? 60 : 42, 15, 100);
     const ar = Number(a.ar) > 0 ? Number(a.ar) : 0.75;
-    const baked = Number(a.sh) > 0;
-    return [
-      `width:${wp}%`, `aspect-ratio:${+ar.toFixed(4)}`,
-      url ? `background-image:url('${url}')` : '',
-      baked && url ? 'background-size:100% 100%;background-color:transparent' : '',
-      !baked && a.bw ? `border:${Number(a.bw)}px solid ${layColorOk(a.bc) ? a.bc : '#ffffff'}` : '',
-      !baked ? (a.mask === 'circle' ? 'border-radius:50%' : (a.mask === 'round' ? 'border-radius:12px' : '')) : ''
-    ].filter(Boolean).join(';');
+    const css = [`aspect-ratio:${+ar.toFixed(4)}`];
+    if (url) css.push(`background-image:url('${url}')`, 'background-color:transparent');
+    if (!a.baked) {
+      if (a.bw) css.push(`border:${Number(a.bw)}px solid ${layColorOk(a.bc) ? a.bc : '#ffffff'}`);
+      if (a.mask === 'circle') css.push('border-radius:50%');
+      else if (a.mask === 'round') css.push('border-radius:12px');
+    }
+    return css.join(';');
   }
   function layAtomHtml(a, data, ed, innerW) {
-    const ea = ed ? ` data-aid="${a.id}" contenteditable="false"` : '';
+    const ea = ed ? ` data-aid="${a.id}" contenteditable="false"` : ` data-lay-aid="${a.id}"`;
     if (a.t === 'img') {
-      const url = a.src ? imgUrlSync(a.src, () => { layRerenderAfterImage(); }) : '';
-      return `<div class="be-la be-lay-img be-lay-img-${a.lay || 'full'}"${ea} style="${layImgCss(a, url)}">${!url ? '<span class="be-lay-ph">图片</span>' : ''}</div>`;
-    }
-    if (a.t === 'split') {
-      const ua = a.srcA ? imgUrlSync(a.srcA, () => { layRerenderAfterImage(); }) : '';
-      const ub = a.srcB ? imgUrlSync(a.srcB, () => { layRerenderAfterImage(); }) : '';
-      const arA = Number(a.arA) > 0 ? Number(a.arA) : 2, arB = Number(a.arB) > 0 ? Number(a.arB) : 2;
-      const band = (cls, u, ar, w) => `<div class="${cls}" style="aspect-ratio:${+ar.toFixed(4)}${w ? `;width:${w}%` : ''}${u ? `;background-image:url('${u}')` : ''}">${!u ? '<span class="be-lay-ph">图片</span>' : ''}</div>`;
-      const ps = LAY_PS[a.ps] ? a.ps : 'body';
-      let mid;
-      if (a.dir === 'v') {
-        const mw = layNum(a.mg, 30, 10, 70);
-        const wa = (100 - mw) * arA / (arA + arB), wb = (100 - mw) * arB / (arA + arB);
-        const bandH = innerW * (wa / 100) / arA;
-        const midInner = a.mv
-          ? `<div class="be-lay-vt" style="${layVertWrapCss({ ...(a.s || {}), a: (a.s || {}).a || 'center' })}">${layVertHtml(a.text || (ed ? '竖排文字' : ''), a.s, Math.max(40, bandH - 8))}</div>`
-          : (ed ? (layInlineRender(a.html, data, true).html || '<br>') : layInlineRender(a.html, data, false).html);
-        mid = a.mv
-          ? `<div class="be-lay-split-mid be-lay-split-midv" style="width:${mw}%">${midInner}</div>`
-          : `<div class="be-lp be-lay-split-mid" data-ps="${ps}" data-s="${escapeHtml(JSON.stringify(a.s || {}))}"${ed ? ' contenteditable="true"' : ''} style="width:${mw}%;${layParaCss(ps, a.s)}">${midInner}</div>`;
-        return `<div class="be-la be-lay-split be-lay-split-v"${ea}>${band('be-lay-sa', ua, arA, +wa.toFixed(3))}${mid}${band('be-lay-sb', ub, arB, +wb.toFixed(3))}</div>`;
-      }
-      const mg = layNum(a.mg, 24, 0, 200);
-      const midInner = ed ? (layInlineRender(a.html, data, true).html || '<br>') : layInlineRender(a.html, data, false).html;
-      mid = `<div class="be-lp be-lay-split-mid" data-ps="${ps}" data-s="${escapeHtml(JSON.stringify(a.s || {}))}"${ed ? ' contenteditable="true"' : ''} style="padding:${mg}px 0;${layParaCss(ps, a.s)}">${midInner}</div>`;
-      return `<div class="be-la be-lay-split be-lay-split-h"${ea}>${band('be-lay-sa', ua, arA)}${mid}${band('be-lay-sb', ub, arB)}</div>`;
+      // 书摘弹窗里「仅本次」换的图
+      const ov = !ed && data.imgOverride ? data.imgOverride[a.grp ? 'g:' + a.grp : a.id] : null;
+      const v = ov ? { ...a, ...(ov[a.id] || {}) } : a;
+      const url = v.src ? imgUrlSync(v.src, () => { layRerenderAfterImage(); }) : '';
+      if (!url && !ed && !data.preview) return '';
+      const lay = a.lay || 'full';
+      const wp = lay === 'full' ? 100 : layNum(a.wp, lay === 'center' ? 60 : 42, 10, 100);
+      const shdUrl = v.shd ? imgUrlSync(v.shd, () => { layRerenderAfterImage(); }) : '';
+      const b = Array.isArray(v.shdBox) ? v.shdBox : null;
+      const shd = shdUrl && b ? `<i class="be-lay-shd" style="left:${b[0]}%;top:${b[1]}%;width:${b[2]}%;height:${b[3]}%;background-image:url('${shdUrl}')"></i>` : '';
+      return `<div class="be-la be-lay-imgw be-lay-img-${lay}${a.grp ? ' be-lay-img-grp' : ''}"${ea} style="width:${wp}%">${shd}<div class="be-lay-img" style="${layImgCss(v, url)}">${!url ? `<span class="be-lay-ph">${ed ? '点击选择图片' : '图片'}</span>` : ''}</div></div>`;
     }
     if (a.t === 'vt') {
       const vh = layNum(a.vh, 240, 60, 900);
-      const txt = a.text || (ed ? '竖排文字' : '');
+      let txt;
+      if (a.slot && !ed) txt = a.slot === 'thought' ? (data.thoughtPlain || '') : (data.quotePlain || '');
+      else txt = a.text || (ed ? (a.slot ? LAY_SAMPLE[a.slot] : '竖排文字') : '');
       if (!txt) return '';
-      return `<div class="be-la be-lay-vt${!a.text && ed ? ' be-lay-vt-ph' : ''}"${ea} style="${layVertWrapCss(a.s)}">${layVertHtml(txt, a.s, vh)}</div>`;
+      return `<div class="be-la be-lay-vt${!a.text && ed ? ' be-lay-vt-ph' : ''}"${ea}${a.slot && ed ? ` data-vslot="${a.slot}"` : ''} style="${layVertWrapCss(a.s)}">${layVertHtml(txt, a.s, vh)}</div>`;
     }
     if (a.t === 'hr') {
       const k = a.k || 'dots';
@@ -11948,9 +12348,9 @@ $(() => {
     const css = layParaCss(ps, b.s);
     if (ed) {
       const slot = LAY_SLOTS[b.slot] ? b.slot : '';
-      let inner = layInlineRender(b.html, data, true).html;
-      if (!inner && slot) inner = escapeHtml(LAY_SAMPLE[slot]);
-      return `<div class="${cls}" data-ps="${ps}" data-s="${escapeHtml(JSON.stringify(b.s || {}))}"${slot ? ` data-slot="${slot}" data-label="${LAY_SLOTS[slot]} · 导出时替换"` : ''} style="${css}">${inner || '<br>'}</div>`;
+      const inner = layInlineRender(b.html, data, true).html;
+      const empty = !layPlainTextOf(inner) && !/data-tok/.test(inner);
+      return `<div class="${cls}${slot && empty ? ' be-lp-ph' : ''}" data-ps="${ps}" data-s="${escapeHtml(JSON.stringify(b.s || {}))}"${slot ? ` data-slot="${slot}" data-ph="${LAY_SAMPLE[slot]}"` : ''} style="${css}">${inner || '<br>'}</div>`;
     }
     if (b.slot === 'excerpt') return `<div class="${cls} be-quote" style="${css}">${data.quoteHtml || ''}</div>`;
     if (b.slot === 'thought') return data.thoughtHtml ? `<div class="${cls}" style="${css}">${data.thoughtHtml}</div>` : '';
@@ -11958,16 +12358,17 @@ $(() => {
     if (r.hide) return '';
     return `<div class="${cls}" style="${css}">${r.html || '<br>'}</div>`;
   }
-  // data：{ quoteHtml, thoughtHtml, charName, userName, authorName, bookName, chapter, wmText, preview, edit, pageW }
+  function layPlainTextOf(html) { const d = mainDoc.createElement('div'); d.innerHTML = html || ''; return (d.textContent || '').replace(/​/g, '').trim(); }
+  // data：{ quoteHtml, quotePlain, thoughtHtml, thoughtPlain, charName, userName, authorName, bookName, chapter, wmText, preview, edit, pageW, previewColors, imgOverride }
   function renderLayoutInner(tpl, data) {
     tpl = layEnsureV2(tpl) || layDefaultDraft();
     const page = tpl.page || {};
     const pad = layNum(page.pad, 28, 0, 80);
     const gap = layNum(page.gap, 14, 0, 60);
     const ed = !!data.edit;
-    const pp = layPreset(page.bgP), fp = layPreset(page.fgP);
-    const bg = pp ? pp.bg : page.bg;
-    const fg = fp ? fp.fg : page.fg;
+    const pv = data.previewColors || null;   // 编辑器里「跟随配色」的预览
+    const bg = page.bg || (pv && !page.bgImg ? pv.bg : '');
+    const fg = page.fg || (pv ? pv.fg : '');
     const bgImg = page.bgImg ? imgUrlSync(page.bgImg, () => { layRerenderAfterImage(); }) : '';
     const rootStyle = [
       `--lay-pad:${pad}px`, `--lay-gap:${gap}px`,
@@ -12001,7 +12402,7 @@ $(() => {
     const out = [];
     if (!tpl) return out;
     if (tpl.page && tpl.page.bgImg) out.push(tpl.page.bgImg);
-    (tpl.doc || []).forEach(a => ['src', 'orig', 'srcA', 'srcB'].forEach(k => { if (a && a[k]) out.push(a[k]); }));
+    (tpl.doc || []).forEach(a => ['src', 'orig', 'srcA', 'srcB', 'shd'].forEach(k => { if (a && a[k]) out.push(a[k]); }));
     (tpl.blocks || []).forEach(b => { if (b && b.t === 'image') { if (b.src) out.push(b.src); if (b.orig) out.push(b.orig); } });
     return out;
   }
@@ -12055,14 +12456,16 @@ $(() => {
         if (n.t === 'p') { n.html = layCleanInline(n.html); if (!LAY_PS[n.ps]) n.ps = 'body'; if (n.slot && !LAY_SLOTS[n.slot]) delete n.slot; }
         else {
           n.id = layNewId('a');
-          ['src', 'orig', 'srcA', 'srcB'].forEach(k => { if (n[k]) n[k] = fix(n[k]); });
-          if (n.t === 'split') n.html = layCleanInline(n.html);
+          ['src', 'orig', 'shd'].forEach(k => { if (n[k]) n[k] = fix(n[k]); });
           if (n.t === 'img' && !n.orig) n.orig = n.src;
         }
         return n;
       }),
       floats: (Array.isArray(j.floats) ? j.floats : []).filter(f => f && typeof f === 'object').map(f => ({ ...f, id: layNewId('f') }))
     };
+    // 同组的分割图导入后换成新的组号
+    const gmap = {};
+    tpl.doc.forEach(n => { if (n.grp) n.grp = gmap[n.grp] || (gmap[n.grp] = layNewId('g')); });
     tpl.page.bgImg = fix(tpl.page.bgImg);
     settings.layoutTemplates = (settings.layoutTemplates || []).concat(tpl);
     saveSettings(settings);
@@ -12070,8 +12473,8 @@ $(() => {
   }
 
   // ===== 编辑器 =====
-  const lay = { draft: null, isNew: false, fromModal: false, sel: null, tok: null, sheet: '', presetRow: '', undo: [], redo: [], dirty: false, range: null, typing: false, typingT: 0, sliding: false, composing: false };
-  const LAY_ATOM_NAMES = { img: '图片', split: '分割图', vt: '竖排文字', hr: '分隔线', sp: '留白' };
+  const lay = { draft: null, isNew: false, fromModal: false, sel: null, tok: null, slotEl: null, sheet: '', presetRow: '', preview: '', undo: [], redo: [], dirty: false, range: null, caret: null, typing: false, typingT: 0, sliding: false, composing: false };
+  const LAY_ATOM_NAMES = { img: '图片', vt: '竖排文字', hr: '分隔线', sp: '留白' };
   function layRoot() { return mainDoc.querySelector('#be-lay-pagewrap .be-lay-doc'); }
   function layParas() { const r = layRoot(); return r ? Array.from(r.querySelectorAll('.be-lp')) : []; }
   function layParaOf(node) {
@@ -12105,13 +12508,13 @@ $(() => {
     el.setAttribute('data-ps', ps);
     el.setAttribute('data-s', JSON.stringify(s || {}));
     LAY_PS_KEYS_CLS.forEach(k => el.classList.toggle('be-lp-' + k, k === ps));
-    el.setAttribute('style', (el.getAttribute('data-pre') || '') + layParaCss(ps, s));
+    el.setAttribute('style', layParaCss(ps, s));
   }
   const LAY_PS_KEYS_CLS = Object.keys(LAY_PS);
   function layMakePara(ps, s, html, slot) {
     const d = mainDoc.createElement('div');
     d.className = 'be-lp';
-    if (slot) { d.setAttribute('data-slot', slot); d.setAttribute('data-label', LAY_SLOTS[slot] + ' · 导出时替换'); }
+    if (slot) { d.setAttribute('data-slot', slot); d.setAttribute('data-ph', LAY_SAMPLE[slot]); }
     laySetPara(d, ps, s || {});
     d.innerHTML = html || '<br>';
     return d;
@@ -12139,7 +12542,10 @@ $(() => {
   function layGetCaret() {
     const sel = mainWin.getSelection();
     if (!sel || !sel.rangeCount) return null;
-    const r = sel.getRangeAt(0);
+    return layCaretOf(sel.getRangeAt(0));
+  }
+  function layCaretOf(r) {
+    if (!r) return null;
     const a = layParaOf(r.startContainer), b = layParaOf(r.endContainer);
     if (!a || !b) return null;
     const ps = layParas();
@@ -12153,10 +12559,14 @@ $(() => {
     const p1 = layPointAt(a, c.so), p2 = layPointAt(b, c.eo);
     const r = mainDoc.createRange();
     try { r.setStart(p1.node, p1.off); r.setEnd(p2.node, p2.off); } catch (e) { return null; }
-    if (focus) { try { layHostOf(a).focus({ preventScroll: true }); } catch (e) {} }
-    const sel = mainWin.getSelection();
-    sel.removeAllRanges(); sel.addRange(r);
     lay.range = r.cloneRange();
+    lay.caret = c;
+    // 只有文字区本来就有焦点（正在输入）时才把光标放回页面：Chrome 里往可编辑区放光标会顺带让它获得焦点，
+    // 手机上就会弹出键盘（点图片菜单、改图片设置时不该弹）
+    const ae = mainDoc.activeElement;
+    const typing = ae && ae.closest && ae.closest('.be-lay-doc');
+    if (focus) { try { layHostOf(a).focus({ preventScroll: true }); } catch (e) {} }
+    if (focus || typing) { const sel = mainWin.getSelection(); sel.removeAllRanges(); sel.addRange(r); }
     return r;
   }
   // 当前文字选区：优先用页面上实时的；点了底部面板后焦点不在页面里，就用最后一次记下的
@@ -12168,6 +12578,15 @@ $(() => {
     }
     const r = lay.range;
     if (r && r.startContainer.isConnected && layParaOf(r.startContainer) && layParaOf(r.endContainer)) return r;
+    const c = lay.caret;
+    if (c) {
+      const ps = layParas();
+      const a = ps[c.sb], b = ps[c.eb];
+      if (a && b) {
+        const p1 = layPointAt(a, c.so), p2 = layPointAt(b, c.eo);
+        try { const nr = mainDoc.createRange(); nr.setStart(p1.node, p1.off); nr.setEnd(p2.node, p2.off); lay.range = nr; return nr; } catch (e) {}
+      }
+    }
     return null;
   }
   function layParasInRange(r) {
@@ -12182,7 +12601,7 @@ $(() => {
     const root = layRoot();
     if (!root || !lay.draft || root._layId !== lay.draft.id) return;
     const old = new Map((lay.draft.doc || []).filter(b => b.t !== 'p').map(b => [b.id, b]));
-    const used = new Set(), seen = {};
+    const used = new Set();
     const out = [];
     Array.from(root.childNodes).forEach(n => {
       if (n.nodeType === 3) {
@@ -12196,15 +12615,10 @@ $(() => {
         if (!a) return;
         if (used.has(a)) { a = JSON.parse(JSON.stringify(a)); a.id = layNewId('a'); n.setAttribute('data-aid', a.id); }
         used.add(a);
-        if (a.t === 'split' && !a.mv) {
-          const mid = n.querySelector('.be-lay-split-mid.be-lp');
-          if (mid) { const pr = layReadPara(mid); a.html = pr.html; a.ps = pr.ps; a.s = pr.s; }
-        }
         out.push(a);
         return;
       }
       const p = layReadPara(n);
-      if (p.slot) { if (seen[p.slot]) delete p.slot; else seen[p.slot] = 1; }
       // 占位段落里还是默认示例文字就存成空
       if (p.slot && layPlainText(p.html) === LAY_SAMPLE[p.slot]) p.html = '';
       out.push(p);
@@ -12243,6 +12657,32 @@ $(() => {
     const last = root.lastElementChild;
     if (!last || last.classList.contains('be-la')) root.appendChild(layMakePara('body', {}, ''));
     if (moved && an && an.isConnected) { try { const r = mainDoc.createRange(); r.setStart(an, Math.min(ao, an.nodeType === 3 ? an.nodeValue.length : an.childNodes.length)); r.collapse(true); sel.removeAllRanges(); sel.addRange(r); } catch (e) {} }
+  }
+
+  function layUpdatePh(p) {
+    if (p && p.hasAttribute('data-slot')) p.classList.toggle('be-lp-ph', layIsEmptyPara(p));
+  }
+  // 占位段落的小标签：放在页面外层（不在卡片里，不会被导出），点击弹菜单
+  function layPlaceSlotTags() {
+    const wrap = mainDoc.getElementById('be-lay-pagewrap');
+    const root = layRoot();
+    if (!wrap) return;
+    wrap.querySelectorAll('.be-lay-slottag').forEach(n => n.remove());
+    if (!root) return;
+    const wr = wrap.getBoundingClientRect();
+    root.querySelectorAll('.be-lp[data-slot], .be-la[data-vslot]').forEach(el => {
+      const slot = el.getAttribute('data-slot') || el.getAttribute('data-vslot');
+      const r = el.getBoundingClientRect();
+      const t = mainDoc.createElement('button');
+      t.type = 'button';
+      t.className = 'be-lay-slottag';
+      t.textContent = LAY_SLOTS[slot] || '';
+      t.title = (LAY_SLOTS[slot] || '') + '占位（导出时替换）';
+      t.style.left = Math.max(2, r.left - wr.left) + 'px';
+      t.style.top = Math.max(0, r.top - wr.top - 16) + 'px';
+      t._target = el;
+      wrap.appendChild(t);
+    });
   }
 
   // ----- 撤销 / 重做：快照 = 文档数据 + 光标位置 -----
@@ -12290,7 +12730,8 @@ $(() => {
     lay.draft = tpl ? JSON.parse(JSON.stringify(tpl)) : layDefaultDraft(opts.name, opts.fromModal ? lastText : '');
     lay.isNew = !tpl;
     lay.fromModal = !!opts.fromModal;
-    lay.sel = null; lay.tok = null; lay.sheet = ''; lay.presetRow = ''; lay.undo = []; lay.redo = []; lay.dirty = !tpl; lay.range = null;
+    lay.sel = null; lay.tok = null; lay.slotEl = null; lay.sheet = ''; lay.presetRow = ''; lay.preview = ''; lay.undo = []; lay.redo = []; lay.dirty = !tpl; lay.range = null; lay.caret = null;
+    lay.sample = opts.fromModal ? String(lastText || '').trim().slice(0, 300) : '';
     layEndTyping();
     let mask = mainDoc.getElementById('be-lay-mask');
     if (mask && isStaleGen(mask)) { try { mask.remove(); } catch (e) {} mask = null; }
@@ -12327,6 +12768,37 @@ $(() => {
     layRenderSheet();
     laySyncUndoBtns();
     mask.querySelector('#be-lay-stage').scrollTop = 0;
+    if (lay.isNew) layOpenStarter();
+    (lay.draft.doc || []).filter(a => a.t === 'img' && a.needBake).forEach(a => { delete a.needBake; layApplyImage(a); });
+  }
+  // 起手模板：每个都用真实渲染缩小显示
+  function layOpenStarter() {
+    const mask = mainDoc.getElementById('be-lay-mask');
+    if (!mask) return;
+    mask.querySelector('.be-lay-starter')?.remove();
+    const box = mainDoc.createElement('div');
+    box.className = 'be-lay-starter';
+    const smp = lay.sample ? escapeHtml(lay.sample).replace(/\n+/g, '<br>') : '';
+    const w = 300;
+    const data = { edit: false, preview: true, pageW: w, quoteHtml: smp || escapeHtml(LAY_SAMPLE.excerpt), quotePlain: lay.sample || LAY_SAMPLE.excerpt, thoughtHtml: escapeHtml(LAY_SAMPLE.thought), charName: '角色名', userName: '用户名', authorName: '作者', bookName: '书名', chapter: '章名' };
+    box.innerHTML = `<div class="be-lay-starter-box"><div class="be-lay-starter-h">选择起始版式</div><div class="be-lay-starter-grid">${LAY_STARTERS.map(st => {
+      const t = st.make(smp);
+      return `<button type="button" class="be-lay-starter-item" data-st="${st.k}"><span class="be-lay-starter-pv"><span class="be-card tpl-layout" style="width:${w}px">${renderLayoutInner({ v: 2, page: t.page, doc: t.doc, floats: [] }, data)}</span></span><span class="be-lay-starter-name">${escapeHtml(st.name)}</span></button>`;
+    }).join('')}</div></div>`;
+    mask.appendChild(box);
+    box.addEventListener('click', e => {
+      if (e.target === box) { box.remove(); return; }   // 点空白处：保留默认版式
+      const b = e.target.closest('[data-st]');
+      if (!b) return;
+      const st = LAY_STARTERS.find(x => x.k === b.getAttribute('data-st'));
+      const t = st.make(smp);
+      lay.draft.page = t.page;
+      lay.draft.doc = t.doc;
+      const root = layRoot(); if (root) root._layId = null;
+      box.remove();
+      layRenderPage(false);
+      lay.undo = []; lay.redo = []; laySyncUndoBtns();
+    });
   }
   // 手机键盘弹出时可视区域变矮：编辑器跟着可视区域走，底部按钮条不被键盘挡住
   function layWatchViewport(on) {
@@ -12366,7 +12838,8 @@ $(() => {
       layReadDom();
     }
     const w = layPageWidth();
-    const built = buildCardMarkup(LAY_SAMPLE.excerpt, { tplKey: 'layout-' + lay.draft.id, layoutDraft: lay.draft, layEdit: true, layPageW: w, noId: true });
+    const pv = layPreset(lay.preview);
+    const built = buildCardMarkup(LAY_SAMPLE.excerpt, { tplKey: 'layout-' + lay.draft.id, layoutDraft: lay.draft, layEdit: true, layPageW: w, layPreview: pv ? { bg: pv.bg, fg: pv.fg } : null, noId: true });
     wrap.innerHTML = built.html;
     wrap.style.width = w + 'px';
     const card = wrap.querySelector('.be-card');
@@ -12375,24 +12848,17 @@ $(() => {
       if (isFinite(qSize) && qSize > 0) card.style.setProperty('--be-quote-size', qSize + 'px');
     }
     const root = layRoot();
-    if (root) {
-      root._layId = lay.draft.id;
-      // 分割图中间的文字：样式前缀（宽度 / 上下留白）记下来，改段落样式时保留
-      root.querySelectorAll('.be-lay-split-mid.be-lp').forEach(m => {
-        const st = m.getAttribute('style') || '';
-        const i = st.indexOf('font-');
-        m.setAttribute('data-pre', i > 0 ? st.slice(0, i) : '');
-      });
-    }
+    if (root) root._layId = lay.draft.id;
     laySyncSelection();
     shieldCardFonts(card);
     if (caret) laySetCaret(caret, false);
+    layPlaceSlotTags();
   }
   function laySyncSelection() {
     const wrap = mainDoc.getElementById('be-lay-pagewrap');
     if (!wrap) return;
     wrap.querySelectorAll('.be-lay-sel').forEach(n => n.classList.remove('be-lay-sel'));
-    wrap.querySelectorAll('.be-lay-grip, .be-lay-rot').forEach(n => n.remove());
+    wrap.querySelectorAll('.be-lay-grip, .be-lay-rot, .be-lay-rh').forEach(n => n.remove());
     if (!lay.sel || !layFindSel()) { lay.sel = null; return; }
     const el = lay.sel.k === 'f' ? wrap.querySelector(`[data-fid="${lay.sel.id}"]`) : wrap.querySelector(`.be-la[data-aid="${lay.sel.id}"]`);
     if (!el) return;
@@ -12402,6 +12868,15 @@ $(() => {
     if (lay.sel.k === 'f') { h.className = 'be-lay-rot'; h.title = '拖动缩放 / 旋转'; h.innerHTML = '<i class="fa-solid fa-up-right-and-down-left-from-center"></i>'; }
     else { h.className = 'be-lay-grip'; h.title = '按住拖动调整位置'; h.innerHTML = '<i class="fa-solid fa-grip-lines"></i>'; }
     el.appendChild(h);
+    if (lay.sel.k === 'a' && el.classList.contains('be-lay-imgw')) {
+      ['nw', 'ne', 'sw', 'se'].forEach(c => {
+        const r = mainDoc.createElement('span');
+        r.className = 'be-lay-rh be-lay-rh-' + c;
+        r.setAttribute('data-rh', c);
+        r.setAttribute('contenteditable', 'false');
+        el.appendChild(r);
+      });
+    }
   }
   function laySelect(sel, showMenu = true) {
     lay.sel = sel; lay.tok = null;
@@ -12414,12 +12889,8 @@ $(() => {
   function layMenuItems(it, isFloat) {
     const tail = [['dup', '复制'], ['del', '删除']];
     if (isFloat) return [['edit', it.k === 'text' ? '修改文字' : '更换符号'], ['style', '颜色 / 字体']].concat(tail);
-    if (it.t === 'img') return [['replace', '替换图片'], ['crop', '裁剪'], ['layout', '布局', 1], ['size', '大小', 1], ['border', '边框', 1], ['mask', '遮罩', 1], ['shadow', '阴影', 1], ['filter', '滤镜', 1], ['reset', '还原图片']].concat(tail);
-    if (it.t === 'split') return [['replace', '替换图片'], ['crop', '裁剪'], ['dir', '切分方向', 1], ['at', '切分位置', 1], ['mg', it.dir === 'v' ? '中间宽度' : '中间留白', 1]]
-      .concat(it.dir === 'v' ? [['mv', '中间文字方向', 1]] : [])
-      .concat(it.dir === 'v' && it.mv ? [['vtext', '编辑文字']] : [])
-      .concat([['style', '文字样式'], ['shadow', '阴影', 1], ['filter', '滤镜', 1]]).concat(tail);
-    if (it.t === 'vt') return [['vtext', '编辑文字'], ['vh', '列高', 1], ['style', '文字样式']].concat(tail);
+    if (it.t === 'img') return [['replace', '替换图片'], ['crop', '裁剪'], ['layout', '布局', 1], ['mask', '遮罩', 1], ['frame', '相框', 1], ['border', '边框', 1], ['shadow', '阴影', 1], ['filter', '滤镜', 1], ['reset', '还原图片']].concat(tail);
+    if (it.t === 'vt') return [['vslot', '内容', 1], ['vtext', it.slot ? '修改示例文字' : '编辑文字'], ['vh', '列高', 1], ['style', '文字样式']].concat(tail);
     if (it.t === 'hr') return [['divk', '样式', 1]].concat(tail);
     if (it.t === 'sp') return [['spaceh', '高度', 1]].concat(tail);
     return tail;
@@ -12439,11 +12910,22 @@ $(() => {
       layPlaceMenu();
       return;
     }
+    if (lay.slotEl) {
+      const slot = lay.slotEl.getAttribute('data-slot') || lay.slotEl.getAttribute('data-vslot');
+      const isPara = lay.slotEl.classList.contains('be-lp');
+      menu.innerHTML = `<div class="be-lay-mhead">${escapeHtml(LAY_SLOTS[slot] || '')}占位 · 导出时替换</div>` +
+        (isPara ? '<button type="button" data-m="slotstyle">文字样式</button><button type="button" data-m="slotplain">转为普通段落</button>' : '') +
+        '<button type="button" data-m="slotdel" class="danger">删除</button>';
+      menu._sub = null;
+      menu.hidden = false;
+      layPlaceMenu();
+      return;
+    }
     const it = layFindSel();
     if (!it) return layCloseMenu();
     const isFloat = lay.sel.k === 'f';
     if (!sub) {
-      const label = isFloat ? (it.k === 'text' ? '浮动文字' : '贴纸') : (LAY_ATOM_NAMES[it.t] || '');
+      const label = isFloat ? (it.k === 'text' ? '浮动文字' : '贴纸') : (it.t === 'vt' && it.slot ? `竖排${LAY_SLOTS[it.slot]}占位` : (LAY_ATOM_NAMES[it.t] || ''));
       menu.innerHTML = `<div class="be-lay-mhead">${escapeHtml(label)}</div>` + layMenuItems(it, isFloat).map(([k, name, more]) =>
         `<button type="button" data-m="${k}" class="${k === 'del' ? 'danger' : ''}">${name}${more ? '<span>›</span>' : ''}</button>`).join('');
       menu._sub = null;
@@ -12457,8 +12939,8 @@ $(() => {
       const s = sub.slider;
       menu.innerHTML = head + `<div class="be-lay-slider"><input type="range" min="${s.min}" max="${s.max}" step="${s.step || 1}" value="${s.val}"><input type="number" min="${s.min}" max="${s.max}" step="${s.step || 1}" value="${s.val}"><span>${escapeHtml(s.unit || '')}</span></div>`;
     } else {
-      menu.innerHTML = head + `<div class="be-lay-opts">${sub.opts.map(o =>
-        `<button type="button" data-o="${escapeHtml(String(o.v))}" class="${o.on ? 'on' : ''}">${o.name}</button>`).join('')}</div>`;
+      menu.innerHTML = head + `<div class="be-lay-opts${sub.grid ? ' be-lay-opts-grid' : ''}">${sub.opts.map(o =>
+        `<button type="button" data-o="${escapeHtml(String(o.v))}" class="${o.on ? 'on' : ''}">${o.icon ? `<i class="be-lay-oic">${o.icon}</i>` : ''}<span>${o.name}</span></button>`).join('')}</div>`;
     }
     menu._sub = sub;
   }
@@ -12466,7 +12948,7 @@ $(() => {
     const menu = mainDoc.getElementById('be-lay-menu');
     const mask = mainDoc.getElementById('be-lay-mask');
     if (!menu || menu.hidden || !mask) return;
-    const el = lay.tok && lay.tok.isConnected ? lay.tok : mask.querySelector('.be-lay-sel');
+    const el = lay.tok && lay.tok.isConnected ? lay.tok : (lay.slotEl && lay.slotEl.isConnected ? lay.slotEl : mask.querySelector('.be-lay-sel'));
     if (!el) return;
     const r = el.getBoundingClientRect(), mr = mask.getBoundingClientRect();
     const w = menu.offsetWidth, h = menu.offsetHeight;
@@ -12485,20 +12967,21 @@ $(() => {
     const menu = mainDoc.getElementById('be-lay-menu');
     if (menu) { menu.hidden = true; menu._sub = null; }
     lay.tok = null;
+    lay.slotEl = null;
   }
+  // 遮罩 / 相框选项旁的小图示
+  const LAY_MASK_ICONS = { none: '▭', round: '▢', circle: '◯', arch: '⌒', hex: '⬡', star: '☆', heart: '♡', scallop: '❀', torn: '≋' };
+  const LAY_FRAME_ICONS = { none: '▭', polaroid: '▯', mat: '▣', vintage: '◫', corners: '◸', tape: '▬', stamp: '⧈' };
   function laySubMenu(key, it) {
-    const o = (v, name, on) => ({ v, name, on });
+    const o = (v, name, on, icon) => ({ v, name, on, icon });
     const slider = (title, min, max, val, unit, step) => ({ key, title, slider: { min, max, val, unit, step } });
     if (key === 'layout') return { key, title: '布局', opts: [o('full', '通栏', (it.lay || 'full') === 'full'), o('left', '靠左·文字绕排', it.lay === 'left'), o('right', '靠右·文字绕排', it.lay === 'right'), o('center', '居中', it.lay === 'center')] };
-    if (key === 'size') return slider('大小（占页面宽度）', 15, 100, Math.round(layNum(it.wp, it.lay === 'center' ? 60 : 42, 15, 100)), '%');
     if (key === 'border') return { key, title: '边框', opts: [o('0', '无', !it.bw), o('4,#ffffff', '细白边', it.bw === 4 && it.bc === '#ffffff'), o('10,#ffffff', '宽白边', it.bw === 10 && it.bc === '#ffffff'), o('3,#1f1f1f', '细黑边', it.bw === 3 && it.bc === '#1f1f1f'), o('pick', '自选颜色…', false)] };
-    if (key === 'mask') return { key, title: '遮罩', opts: [o('none', '无', !it.mask || it.mask === 'none'), o('round', '圆角', it.mask === 'round'), o('circle', '圆形', it.mask === 'circle')] };
+    if (key === 'mask') return { key, title: '遮罩', grid: true, opts: Object.entries(LAY_MASKS).map(([k, n]) => o(k, n, (it.mask || 'none') === k, LAY_MASK_ICONS[k])) };
+    if (key === 'frame') return { key, title: '相框', grid: true, opts: Object.entries(LAY_FRAMES).map(([k, n]) => o(k, n, (it.frame || 'none') === k, LAY_FRAME_ICONS[k])) };
     if (key === 'shadow') return { key, title: '阴影', opts: [o('0', '无', !(Number(it.sh) > 0)), o('1', '轻', Number(it.sh) === 1), o('2', '中', Number(it.sh) === 2)] };
     if (key === 'filter') return { key, title: '滤镜', opts: [o('none', '原图', !it.filter || it.filter === 'none'), o('gray', '黑白', it.filter === 'gray'), o('vintage', '复古', it.filter === 'vintage'), o('contrast', '高对比', it.filter === 'contrast'), o('fade', '淡雅', it.filter === 'fade')] };
-    if (key === 'dir') return { key, title: '切分方向', opts: [o('h', '上下', it.dir !== 'v'), o('v', '左右', it.dir === 'v')] };
-    if (key === 'at') return slider('切分位置', 15, 85, Math.round(layNum(it.at, 0.5, 0.15, 0.85) * 100), '%');
-    if (key === 'mg') return it.dir === 'v' ? slider('中间宽度', 10, 70, Math.round(layNum(it.mg, 30, 10, 70)), '%') : slider('中间留白', 0, 160, Math.round(layNum(it.mg, 24, 0, 200)), 'px');
-    if (key === 'mv') return { key, title: '中间文字方向', opts: [o('0', '横排', !it.mv), o('1', '竖排', !!it.mv)] };
+    if (key === 'vslot') return { key, title: '内容', opts: [o('', '自定文字', !it.slot), o('excerpt', '摘录（导出时替换）', it.slot === 'excerpt'), o('thought', '想法（导出时替换）', it.slot === 'thought')] };
     if (key === 'vh') return slider('列高', 60, 600, Math.round(layNum(it.vh, 240, 60, 900)), 'px');
     if (key === 'divk') return { key, title: '分隔样式', opts: Object.entries(LAY_DIVIDERS).map(([k, n]) => o(k, n, (it.k || 'dots') === k)) };
     if (key === 'spaceh') return slider('留白高度', 4, 200, Math.round(layNum(it.h, 24, 4, 400)), 'px');
@@ -12510,6 +12993,32 @@ $(() => {
       const tk = lay.tok;
       if (m === 'del') { layPushUndo(); tk.remove(); layCloseMenu(); return; }
       if (m === 'datefmt') layOpenMenu(laySubMenu('datefmt', null));
+      return;
+    }
+    if (lay.slotEl) {
+      const el = lay.slotEl;
+      layCloseMenu();
+      if (m === 'slotdel') {
+        layPushUndo();
+        if (el.classList.contains('be-la')) { const a = layFindAtom(el.getAttribute('data-aid')); if (a) lay.draft.doc = lay.draft.doc.filter(x => x !== a); el.remove(); }
+        else el.remove();
+        layNormalizeRoot(); layRenderPage(false); layRenderSheet();
+        return;
+      }
+      if (m === 'slotplain') {
+        layPushUndo();
+        if (layIsEmptyPara(el)) el.innerHTML = '<br>';
+        el.removeAttribute('data-slot'); el.removeAttribute('data-ph'); el.classList.remove('be-lp-ph');
+        layRenderPage(false);
+        return;
+      }
+      if (m === 'slotstyle') {
+        try { layHostOf(el).focus({ preventScroll: true }); } catch (e) {}
+        const r = mainDoc.createRange(); r.selectNodeContents(el); r.collapse(true);
+        const sel = mainWin.getSelection(); sel.removeAllRanges(); sel.addRange(r);
+        lay.range = r.cloneRange();
+        lay.sheet = 'text'; layRenderSheet();
+      }
       return;
     }
     const it = layFindSel();
@@ -12524,6 +13033,7 @@ $(() => {
     if (m === 'dup') {
       layPushUndo();
       const copy = JSON.parse(JSON.stringify(it)); copy.id = layNewId(isFloat ? 'f' : 'a');
+      delete copy.grp; delete copy.part;
       const list = isFloat ? lay.draft.floats : lay.draft.doc;
       if (isFloat) { copy.x = Math.min(95, (Number(copy.x) || 50) + 6); copy.y = Math.min(95, (Number(copy.y) || 50) + 4); }
       list.splice(list.indexOf(it) + 1, 0, copy);
@@ -12541,15 +13051,20 @@ $(() => {
     }
     if (m === 'vtext') {
       layCloseMenu();
-      layAskText('竖排文字', it.text || '', v => { if (v == null) return; layPushUndo(); it.text = v.replace(/\r/g, ''); layRenderPage(true); laySelect({ k: 'a', id: it.id }, false); }, { multi: true });
+      layAskText(it.slot ? '示例文字（仅编辑时显示）' : '竖排文字', it.text || '', v => { if (v == null) return; layPushUndo(); it.text = v.replace(/\r/g, ''); layRenderPage(true); laySelect({ k: 'a', id: it.id }, false); }, { multi: true });
       return;
     }
     if (m === 'replace') {
       layCloseMenu();
-      layPickImage(async ref => { layPushUndo(); await layResetImage(it, ref); await layBakeAtom(it); layRenderPage(true); });
+      layPickImage(async ref => { layPushUndo(); await layResetImage(it, ref); await layApplyImage(it); });
       return;
     }
-    if (m === 'reset') { layCloseMenu(); layPushUndo(); await layResetImage(it, it.orig || it.src); await layBakeAtom(it); layRenderPage(true); return; }
+    if (m === 'reset') {
+      layCloseMenu(); layPushUndo();
+      it.crop = null; it.filter = 'none'; it.mask = 'none'; it.frame = 'none'; it.sh = 0; it.bw = 0;
+      await layApplyImage(it);
+      return;
+    }
     if (m === 'crop') { layCloseMenu(); layOpenCrop(it); return; }
     const sub = laySubMenu(m, it);
     if (sub) layOpenMenu(sub);
@@ -12568,25 +13083,26 @@ $(() => {
     const it = layFindSel();
     if (!it) return;
     if (sub.key === 'border' && v === 'pick') {
-      layPickColor(it.bc || '#ffffff', menu, async c => { it.bc = c; if (!it.bw) it.bw = 6; if (Number(it.sh) > 0) await layBakeAtom(it); layRenderPage(true); });
+      layPickColor(it.bc || '#ffffff', menu, c => { it.bc = c; if (!it.bw) it.bw = 6; layApplyImage(it); });
       return;
     }
     layPushUndo();
-    let bake = false;
+    let img = false;
     if (sub.key === 'layout') { it.lay = v; if (v !== 'full' && !it.wp) it.wp = v === 'center' ? 60 : 42; }
-    else if (sub.key === 'border') { const [w, c] = String(v).split(','); it.bw = Number(w) || 0; if (c) it.bc = c; bake = Number(it.sh) > 0; }
-    else if (sub.key === 'mask') { it.mask = v; bake = Number(it.sh) > 0; }
-    else if (sub.key === 'shadow') { it.sh = Number(v) || 0; bake = true; }
-    else if (sub.key === 'filter') { it.filter = v; bake = true; }
-    else if (sub.key === 'dir') { it.dir = v; it.mg = v === 'v' ? 30 : 24; bake = true; }
-    else if (sub.key === 'mv') it.mv = v === '1';
+    else if (sub.key === 'border') { const [w, c] = String(v).split(','); it.bw = Number(w) || 0; if (c) it.bc = c; img = true; }
+    else if (sub.key === 'mask') { it.mask = v; img = true; }
+    else if (sub.key === 'frame') { it.frame = v; img = true; }
+    else if (sub.key === 'shadow') { it.sh = Number(v) || 0; img = true; }
+    else if (sub.key === 'filter') { it.filter = v; img = true; }
+    else if (sub.key === 'vslot') { if (v) it.slot = v; else delete it.slot; }
     else if (sub.key === 'divk') it.k = v;
-    if (bake) await layBakeAtom(it);
+    // 菜单先换到新选项，图片在后台处理，处理完自动刷新
+    menu.querySelectorAll('[data-o]').forEach(b => b.classList.toggle('on', b.getAttribute('data-o') === String(v)));
+    if (img) { layApplyImage(it); return; }
     layRenderPage(true);
-    if (sub.key === 'dir' || sub.key === 'mv') layOpenMenu();
+    if (sub.key === 'vslot') layOpenMenu();
     else layOpenMenu(laySubMenu(sub.key, it));
   }
-  let _laySlideT = 0;
   function layMenuSlide(v, final) {
     const menu = mainDoc.getElementById('be-lay-menu');
     const sub = menu && menu._sub;
@@ -12596,19 +13112,10 @@ $(() => {
     if (!isFinite(n)) return;
     if (!lay.sliding) { layPushUndo(); lay.sliding = true; }
     menu.querySelectorAll('.be-lay-slider input').forEach(inp => { if (Number(inp.value) !== n) inp.value = n; });
-    if (sub.key === 'size') it.wp = n;
-    else if (sub.key === 'at') it.at = n / 100;
-    else if (sub.key === 'mg') it.mg = n;
-    else if (sub.key === 'vh') it.vh = n;
+    if (sub.key === 'vh') it.vh = n;
     else if (sub.key === 'spaceh') it.h = n;
-    if (sub.key === 'at') {
-      // 改切分位置要重新切图：拖动中节流，松手立即切
-      clearTimeout(_laySlideT);
-      _laySlideT = setTimeout(async () => { await layBakeAtom(it); layRenderPage(true); layPlaceMenu(); }, final ? 0 : 250);
-    } else {
-      layRenderPage(true);
-      layPlaceMenu();
-    }
+    layRenderPage(true);
+    layPlaceMenu();
     if (final) lay.sliding = false;
   }
 
@@ -12634,8 +13141,8 @@ $(() => {
     const r = sel.getRangeAt(0);
     const block = layParaOf(r.startContainer);
     if (!block) return;
-    // 分割图中间的文字和摘录 / 想法占位是单个段落：回车只换行
-    if (block.classList.contains('be-lay-split-mid') || block.hasAttribute('data-slot')) { mainDoc.execCommand('insertLineBreak'); return; }
+    // 摘录 / 想法占位是单个段落：回车只换行
+    if (block.hasAttribute('data-slot')) { mainDoc.execCommand('insertLineBreak'); return; }
     if (!r.collapsed) r.deleteContents();
     const after = mainDoc.createRange();
     after.setStart(r.startContainer, r.startOffset);
@@ -12680,8 +13187,7 @@ $(() => {
         const sc = sub.startContainer;
         const sp = sc.nodeType === 3 ? sc.parentElement : sc;
         if (!sp || sp === p || sp.tagName !== 'SPAN' || sp.hasAttribute('data-tok') || !sp.contains(sub.endContainer)) break;
-        const all = mainDoc.createRange(); all.selectNodeContents(sp);
-        if (sub.compareBoundaryPoints(0, all) > 0 || sub.compareBoundaryPoints(2, all) < 0) break;   // 0 = START_TO_START, 2 = END_TO_END
+        if (sub.toString() !== sp.textContent) break;
         sub.setStartBefore(sp); sub.setEndAfter(sp);
       }
       const frag = sub.extractContents();
@@ -12701,11 +13207,20 @@ $(() => {
       p.normalize();
     });
   }
+  // 行内占位：插在光标处；有选中文字就替换掉选中的字；光标在摘录 / 想法占位里或没有光标时，另起一段放进去
   function layInsertToken(tok) {
-    const r = layCurRange();
-    const p = r && layParaOf(r.startContainer);
-    if (!p || p.hasAttribute('data-slot')) { toast('请先将光标放在要插入的段落中（摘录、想法占位内除外）', 'info'); return; }
-    layPushUndo();
+    let r = layCurRange();
+    let p = r && layParaOf(r.startContainer);
+    if (!p || p.hasAttribute('data-slot')) {
+      const np = layMakePara('body', {}, '');
+      np.innerHTML = '';
+      const root = layRoot();
+      const after = p || (lay.sel && lay.sel.k === 'a' ? root.querySelector(`.be-la[data-aid="${lay.sel.id}"]`) : null);
+      layPushUndo();
+      if (after) layTopOf(after).after(np); else root.appendChild(np);
+      p = np;
+      r = mainDoc.createRange(); r.setStart(np, 0); r.collapse(true);
+    } else layPushUndo();
     try { layHostOf(p).focus({ preventScroll: true }); } catch (e) {}
     const sel = mainWin.getSelection();
     sel.removeAllRanges(); sel.addRange(r);
@@ -12741,7 +13256,7 @@ $(() => {
   }
   function layTextTarget() {
     if (lay.sel && lay.sel.k === 'f') { const f = layFindFloat(lay.sel.id); return f ? { float: f } : null; }
-    if (lay.sel && lay.sel.k === 'a') { const a = layFindAtom(lay.sel.id); return a && (a.t === 'vt' || a.t === 'split') ? { atom: a } : null; }
+    if (lay.sel && lay.sel.k === 'a') { const a = layFindAtom(lay.sel.id); return a && a.t === 'vt' ? { atom: a } : null; }
     const r = layCurRange();
     const p = r && layParaOf(r.startContainer);
     return p ? { range: r, para: p } : null;
@@ -12766,9 +13281,9 @@ $(() => {
         </div>
         <div class="be-lay-shead">段落占位</div>
         <div class="be-lay-insgrid">${item('excerpt', '❝', '摘录', 1)}${item('thought', '✎', '想法', 1)}${item('source', '⌖', '出处', 1)}</div>
-        <div class="be-lay-shead">行内占位</div>
+        <div class="be-lay-shead">行内占位${(() => { const r = layCurRange(); return r && !r.collapsed ? '（替换选中的文字）' : ''; })()}</div>
         <div class="be-lay-insgrid">${Object.entries(LAY_TOKENS).map(([k, n]) => item('tok-' + k, '{ }', n, 1)).join('')}</div>
-        <div class="be-lay-shint">绿色项为内容占位，导出时替换为当次书摘的对应内容。元素和段落占位插在光标所在段落之后，行内占位插在光标处。</div>`;
+        <div class="be-lay-shint">标色项为内容占位，导出时替换为当次书摘的对应内容。元素和段落占位插在光标所在段落之后；行内占位插在光标处，有选中文字时替换选中的文字。</div>`;
       return;
     }
     if (lay.sheet === 'sticker') {
@@ -12779,28 +13294,31 @@ $(() => {
     if (lay.sheet === 'page') {
       const p = lay.draft.page || {};
       const followBg = !p.bg && !p.bgImg;
-      const bp = layPreset(p.bgP), fp = layPreset(p.fgP);
-      const presetRow = (attr, cur, useFg) => `<div class="be-lay-row">${chip(attr, '', '当前配色', !cur)}${layPresetList().map(x => chip(attr, x.k, `<i class="be-lay-sw" style="background:${escapeHtml(useFg ? x.fg : x.bg)}"></i>${escapeHtml(x.name)}`, cur === x.k)).join('')}</div>`;
+      const pv = layPreset(lay.preview);
+      // 和书摘弹窗底部「颜色」一栏同样的配色块；点了只换编辑时的预览，不存进模板
+      const presetRow = () => `<div class="be-lay-row be-lay-prev-row"><button type="button" class="be-lay-pchip be-lay-pchip-cur ${!lay.preview ? 'on' : ''}" data-prev="" title="书摘弹窗当前配色">当前</button>${layPresetList().map(x =>
+        `<button type="button" class="be-lay-pchip ${lay.preview === x.k ? 'on' : ''}" data-prev="${escapeHtml(x.k)}" title="${escapeHtml(x.name)}" style="background:${escapeHtml(x.bg)};color:${escapeHtml(x.fg)}">A</button>`).join('')}</div>
+        <div class="be-lay-shint">只用于编辑时预览。模板使用时跟随书摘弹窗选择的配色。</div>`;
       const slider = (k, label, min, max, val) => `<div class="be-lay-prow"><span>${label}</span><div class="be-lay-slider be-lay-slider-inline"><input type="range" data-pk="${k}" min="${min}" max="${max}" step="1" value="${val}"><input type="number" data-pk="${k}" min="${min}" max="${max}" step="1" value="${val}"><span>px</span></div></div>`;
       sh.innerHTML = `<div class="be-lay-shead">页面</div>
         <div class="be-lay-prow"><span>背景</span><div class="be-lay-seg">
-          <button type="button" data-pbg="follow" class="${followBg ? 'on' : ''}">跟随配色${followBg && bp ? '·' + escapeHtml(bp.name) : ''}${followBg ? ' ▾' : ''}</button>
+          <button type="button" data-pbg="follow" class="${followBg ? 'on' : ''}">跟随配色${followBg && pv ? '·预览' + escapeHtml(pv.name) : ''}</button>
           <button type="button" data-pbg="color" class="${p.bg && !p.bgImg ? 'on' : ''}">纯色${p.bg ? `<i class="be-lay-sw" style="background:${escapeHtml(p.bg)}"></i>` : ''}</button>
           <button type="button" data-pbg="image" class="${p.bgImg ? 'on' : ''}">图片</button>
         </div></div>
-        ${lay.presetRow === 'bg' && followBg ? presetRow('data-pbgp', p.bgP || '', false) : ''}
+        ${lay.presetRow === 'bg' ? presetRow() : ''}
         ${p.bgImg ? `<div class="be-lay-prow"><span>背景图</span><div class="be-lay-seg">${[['cover', '铺满'], ['tile', '平铺']].map(([v, n]) => `<button type="button" data-pfit="${v}" class="${(p.bgFit === 'tile' ? 'tile' : 'cover') === v ? 'on' : ''}">${n}</button>`).join('')}</div></div>` : ''}
-        <div class="be-lay-prow"><span>文字颜色</span><div class="be-lay-seg"><button type="button" data-pfg="follow" class="${!p.fg ? 'on' : ''}">跟随配色${!p.fg && fp ? '·' + escapeHtml(fp.name) : ''}${!p.fg ? ' ▾' : ''}</button><button type="button" data-pfg="pick" class="${p.fg ? 'on' : ''}">自选${p.fg ? `<i class="be-lay-sw" style="background:${escapeHtml(p.fg)}"></i>` : ''}</button></div></div>
-        ${lay.presetRow === 'fg' && !p.fg ? presetRow('data-pfgp', p.fgP || '', true) : ''}
+        <div class="be-lay-prow"><span>文字颜色</span><div class="be-lay-seg"><button type="button" data-pfg="follow" class="${!p.fg ? 'on' : ''}">跟随配色${!p.fg && pv ? '·预览' + escapeHtml(pv.name) : ''}</button><button type="button" data-pfg="pick" class="${p.fg ? 'on' : ''}">自选${p.fg ? `<i class="be-lay-sw" style="background:${escapeHtml(p.fg)}"></i>` : ''}</button></div></div>
+        ${lay.presetRow === 'fg' ? presetRow() : ''}
         ${slider('pad', '页边距', 0, 64, layNum(p.pad, 28, 0, 80))}
         ${slider('gap', '段间距', 0, 40, layNum(p.gap, 14, 0, 60))}
-        <div class="be-lay-shint">宽度取「书摘卡片 → 宽度」设置，高度随内容。「跟随配色」默认随书摘弹窗当前配色，再次点击可指定一份保存过的配色。</div>`;
+        <div class="be-lay-shint">宽度取「书摘卡片 → 宽度」设置，高度随内容。</div>`;
       layBindSheetScroll(sh, keepScroll);
       return;
     }
     // 文字面板
     const tg = layTextTarget();
-    if (!tg) { sh.innerHTML = `<div class="be-lay-shead">文字</div><div class="be-lay-empty">将光标放在文字中，或选中文字、竖排文字、分割图后再设置样式。</div>`; return; }
+    if (!tg) { sh.innerHTML = `<div class="be-lay-shead">文字</div><div class="be-lay-empty">将光标放在文字中，或选中文字、竖排文字后再设置样式。</div>`; return; }
     if (tg.float) {
       const f = tg.float;
       const sizes = [6, 9, 12, 16, 22, 30];
@@ -12815,12 +13333,12 @@ $(() => {
     let ps, s, vertical = false, allowVt = false, isAtom = !!tg.atom;
     if (tg.atom) {
       const a = tg.atom;
-      vertical = a.t === 'vt' || (a.t === 'split' && a.mv);
+      vertical = true;
       ps = LAY_PS[a.ps] ? a.ps : 'body';
       s = a.s || {};
     } else {
       ({ ps, s } = layParaState(tg.para));
-      allowVt = !tg.para.hasAttribute('data-slot') && !tg.para.classList.contains('be-lay-split-mid');
+      allowVt = !tg.para.hasAttribute('data-slot');
     }
     const pr = LAY_PS[ps] || LAY_PS.body;
     const curSize = Number(s.z) > 0 ? Number(s.z) : 0;
@@ -12840,13 +13358,15 @@ $(() => {
         ${(vertical ? [['right', 'align-right'], ['center', 'align-center'], ['left', 'align-left']] : [['left', 'align-left'], ['center', 'align-center'], ['right', 'align-right'], ['justify', 'align-justify']]).map(([a, ic]) => `<button type="button" data-ta="${a}" class="${(s.a || (vertical ? 'right' : 'left')) === a ? 'on' : ''}"><i class="fa-solid fa-${ic}"></i></button>`).join('')}
         <button type="button" data-tl="1" title="行距">${vertical ? '列距' : '行距'} ${Number(s.lh) > 0 ? s.lh : (vertical ? 1.8 : pr.lh)}</button>
       </div>
-      <div class="be-lay-shint">${isAtom ? (vertical ? '作用于整段竖排文字。竖排列的位置从右往左排；对齐指整段靠右、居中或靠左。' : '作用于分割图中间的整段文字；选中其中几个字时只作用于选中部分。') : '有选中文字时只作用于选中部分，没有选中时作用于整段。'}</div>`;
+      <div class="be-lay-shint">${isAtom ? '作用于整段竖排文字。列从右往左排；对齐指整段靠右、居中或靠左。' : '有选中文字时只作用于选中部分，没有选中时作用于整段。'}</div>`;
     layBindSheetScroll(sh, keepScroll);
   }
   function layColorCells(cur, attr) {
-    return `<button type="button" class="be-lay-cell ${!cur ? 'on' : ''}" ${attr}="">跟随</button>` +
-      LAY_COLORS.map(c => `<button type="button" class="be-lay-cell ${cur === c ? 'on' : ''}" ${attr}="${c}"><i class="be-lay-sw" style="background:${c}"></i></button>`).join('') +
-      `<button type="button" class="be-lay-cell ${cur && !LAY_COLORS.includes(cur) ? 'on' : ''}" ${attr}="pick">${cur && !LAY_COLORS.includes(cur) ? `<i class="be-lay-sw" style="background:${escapeHtml(cur)}"></i>` : ''}取色器</button>`;
+    const cols = layTextColors();
+    const custom = cur && !cols.some(c => c.toLowerCase() === String(cur).toLowerCase());
+    return `<button type="button" class="be-lay-cell ${custom ? 'on' : ''}" ${attr}="pick">${custom ? `<i class="be-lay-sw" style="background:${escapeHtml(cur)}"></i>` : '<i class="be-lay-sw be-lay-sw-rainbow"></i>'}取色器</button>` +
+      `<button type="button" class="be-lay-cell ${!cur ? 'on' : ''}" ${attr}="">跟随</button>` +
+      cols.map(c => `<button type="button" class="be-lay-cell be-lay-cell-sw ${cur && cur.toLowerCase() === c.toLowerCase() ? 'on' : ''}" ${attr}="${c}"><i class="be-lay-dot" style="background:${c}"></i></button>`).join('');
   }
   function layBindSheetScroll(sh, keep) {
     sh.querySelectorAll('.be-lay-row').forEach((r, i) => {
@@ -12879,7 +13399,7 @@ $(() => {
       a.s = a.s || {};
       if (attr === 'data-tc' && v === 'pick') return layPickColor(a.s.c || '#1f1f1f', btn, c => { a.s.c = c; layRenderPage(true); });
       layPushUndo();
-      layEditStyle(a, attr, v, a.t === 'vt' || (a.t === 'split' && a.mv));
+      layEditStyle(a, attr, v, true);
       layRenderPage(true); layRenderSheet(); return;
     }
     const r = tg.range;
@@ -12894,7 +13414,7 @@ $(() => {
     const paras = layParasInRange(r);
     if (!paras.length) return;
     if (attr === 'data-tp' && v === 'vt') return layToVertical(paras);
-    const caret = (() => { const sel = mainWin.getSelection(); sel.removeAllRanges(); sel.addRange(r); return layGetCaret(); })();
+    const caret = layCaretOf(r);
     layPushUndo();
     if (attr === 'data-tb' && !r.collapsed) {
       const host = layHostOf(paras[0]);
@@ -12938,7 +13458,7 @@ $(() => {
   }
   // 段落转竖排：文字取纯文本（行内占位和行内样式不保留）
   function layToVertical(paras) {
-    const list = paras.filter(p => !p.hasAttribute('data-slot') && !p.classList.contains('be-lay-split-mid') && p.parentNode === layRoot());
+    const list = paras.filter(p => !p.hasAttribute('data-slot') && p.parentNode === layRoot());
     if (!list.length) return;
     layPushUndo();
     let firstId = '';
@@ -12985,6 +13505,7 @@ $(() => {
     lay.draft.doc.push(a);
     const ph = mainDoc.createElement('div'); ph.className = 'be-la'; ph.setAttribute('data-aid', a.id);
     layInsertNode(ph);
+    layNormalizeRoot();   // 插在最后时，后面补一个空段落可以继续打字
     layReadDom();
     lay.sel = { k: 'a', id: a.id };
     lay.sheet = '';
@@ -12997,19 +13518,37 @@ $(() => {
     if (kind.startsWith('tok-')) { layInsertToken(kind.slice(4)); return; }
     if (kind === 'sticker') { lay.sel = null; laySyncSelection(); layOpenSheet('sticker'); return; }
     if (kind === 'ftext') { layAddFloat({ k: 'text', txt: '文字', w: 5 }); return; }
-    if (kind === 'excerpt' || kind === 'thought') {
-      const root = layRoot();
-      if (root && root.querySelector(`.be-lp[data-slot="${kind}"]`)) { toast(`页面中已有「${LAY_SLOTS[kind]}」占位`, 'info'); return; }
-    }
-    if (kind === 'image' || kind === 'splith' || kind === 'splitv') {
+    if (kind === 'image') {
       layPickImage(async ref => {
         layPushUndo();
-        const a = kind === 'image'
-          ? { t: 'img', id: layNewId('a'), lay: 'full', sh: 0 }
-          : { t: 'split', id: layNewId('a'), dir: kind === 'splitv' ? 'v' : 'h', at: 0.5, mg: kind === 'splitv' ? 30 : 24, ps: 'body', s: { a: 'center' }, html: '', mv: kind === 'splitv', text: '', sh: 0 };
+        const a = { t: 'img', id: layNewId('a'), lay: 'full', sh: 0, filter: 'none', mask: 'none', frame: 'none' };
         await layResetImage(a, ref);
-        await layBakeAtom(a);
         layInsertAtom(a);
+      });
+      return;
+    }
+    if (kind === 'splith' || kind === 'splitv') {
+      // 分割图：一张图切成两张独立图片，中间是普通段落；两张图记住来自同一张原图（书摘弹窗里换图时一起换）
+      layPickImage(async ref => {
+        layPushUndo();
+        const v = kind === 'splitv', grp = layNewId('g');
+        const mk = (part) => ({ t: 'img', id: layNewId('a'), lay: v ? (part === 'a' ? 'left' : 'right') : 'full', wp: v ? 36 : undefined, sh: 0, filter: 'none', mask: 'none', frame: 'none', grp, part,
+          crop: v ? { x: part === 'a' ? 0 : 0.5, y: 0, w: 0.5, h: 1 } : { x: 0, y: part === 'a' ? 0 : 0.5, w: 1, h: 0.5 } });
+        const A = mk('a'), B = mk('b');
+        await layResetImage(A, ref, true); await layResetImage(B, ref, true);
+        lay.draft.doc.push(A, B);
+        const ph = (x) => { const d = mainDoc.createElement('div'); d.className = 'be-la'; d.setAttribute('data-aid', x.id); return d; };
+        const mid = layMakePara('body', { a: 'center' }, '');
+        const nA = ph(A), nB = ph(B);
+        layInsertNode(nA);
+        if (v) { nA.after(nB); nB.after(mid); } else { nA.after(mid); mid.after(nB); }
+        layReadDom();
+        lay.sel = null; lay.sheet = '';
+        layRenderPage(false);
+        layRenderSheet();
+        layApplyImage(A); layApplyImage(B);
+        const m = layRoot()?.querySelector(`.be-la[data-aid="${(v ? B : A).id}"]`)?.nextElementSibling;
+        if (m && m.classList.contains('be-lp')) { try { m.focus(); const r = mainDoc.createRange(); r.selectNodeContents(m); r.collapse(true); const sl = mainWin.getSelection(); sl.removeAllRanges(); sl.addRange(r); lay.range = r.cloneRange(); } catch (e) {} }
       });
       return;
     }
@@ -13024,10 +13563,11 @@ $(() => {
     if (kind === 'divider') { layInsertAtom({ t: 'hr', id: layNewId('a'), k: 'dots' }); return; }
     if (kind === 'spacer') { layInsertAtom({ t: 'sp', id: layNewId('a'), h: 24 }); return; }
     let p = null;
-    if (kind === 'excerpt') p = layMakePara('body', {}, escapeHtml(LAY_SAMPLE.excerpt), 'excerpt');
-    else if (kind === 'thought') p = layMakePara('small', {}, escapeHtml(LAY_SAMPLE.thought), 'thought');
-    else if (kind === 'source') p = layMakePara('small', { a: 'right' }, '—— ' + layInlineRender('<span data-tok="author"></span><span data-tok="book"></span>', {}, true).html);
+    if (kind === 'excerpt') p = layMakePara('body', {}, '', 'excerpt');
+    else if (kind === 'thought') p = layMakePara('small', {}, '', 'thought');
+    else if (kind === 'source') p = layMakePara('small', {}, '—— ' + layInlineRender('<span data-tok="author"></span> <span data-tok="book"></span>', {}, true).html);
     if (!p) return;
+    layUpdatePh(p);
     layInsertNode(p);
     layReadDom();
     lay.sel = null; lay.sheet = '';
@@ -13057,7 +13597,7 @@ $(() => {
     layRenderPage(true); layRenderSheet(); layOpenMenu();
   }
 
-  // ----- 图片：读取、裁剪 / 滤镜 / 阴影直接画进新图片、分割图切成两张 -----
+  // ----- 图片：读取、后台处理（裁剪 / 滤镜 / 遮罩 / 相框 / 阴影） -----
   function layPickImage(cb) {
     const input = mainDoc.createElement('input');
     input.type = 'file'; input.accept = 'image/*';
@@ -13069,132 +13609,31 @@ $(() => {
     });
     input.click();
   }
-  function layImgSize(ref) {
-    return new Promise(resolve => {
-      const url = imgUrlSync(ref);
-      const go = (u) => { const im = new mainWin.Image(); im.onload = () => resolve({ w: im.naturalWidth, h: im.naturalHeight, img: im }); im.onerror = () => resolve(null); im.src = u; };
-      if (url) go(url); else imgUrlSync(ref, () => go(imgUrlSync(ref)));
-      setTimeout(() => resolve(null), 4000);
-    });
-  }
-  async function layResetImage(a, ref) {
-    const olds = [a.src, a.srcA, a.srcB].filter(r => r && r !== a.orig && r !== ref);
-    a.orig = ref; a.src = ref; a.crop = null; a.filter = 'none';
-    delete a.srcA; delete a.srcB;
+  async function layResetImage(a, ref, keepCrop) {
+    a.orig = ref; a.src = ref;
+    if (!keepCrop) a.crop = null;
+    delete a.shd; delete a.shdBox; a.baked = false;
     const sz = await layImgSize(ref);
     a.ar = sz && sz.h ? +(sz.w / sz.h).toFixed(4) : 0.75;
-    olds.forEach(r => layForgetImageIfUnused(r));
+    if (layNeedBake(a) || Number(a.sh) > 0) a.ar = a.crop && sz ? +((a.crop.w * sz.w) / (a.crop.h * sz.h)).toFixed(4) : a.ar;
   }
-  function layCanvas(w, h) { const c = mainDoc.createElement('canvas'); c.width = Math.max(1, Math.round(w)); c.height = Math.max(1, Math.round(h)); return c; }
-  // 裁剪 + 滤镜后的底图（最长边限制在 1800px，避免存进浏览器的图片过大）
-  function layBaseCanvas(sz, crop, filter) {
-    const c = crop || { x: 0, y: 0, w: 1, h: 1 };
-    const sx = Math.round(c.x * sz.w), sy = Math.round(c.y * sz.h);
-    const sw = Math.max(1, Math.round(c.w * sz.w)), shh = Math.max(1, Math.round(c.h * sz.h));
-    const k = Math.min(1, 1800 / Math.max(sw, shh));
-    const canvas = layCanvas(sw * k, shh * k);
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(sz.img, sx, sy, sw, shh, 0, 0, canvas.width, canvas.height);
-    if (filter && filter !== 'none') {
-      const d = ctx.getImageData(0, 0, canvas.width, canvas.height), a = d.data;
-      for (let i = 0; i < a.length; i += 4) {
-        let r = a[i], g = a[i + 1], bl = a[i + 2];
-        const y = 0.299 * r + 0.587 * g + 0.114 * bl;
-        if (filter === 'gray') { r = g = bl = y; }
-        else if (filter === 'vintage') { r = Math.min(255, y * 1.07 + 18); g = Math.min(255, y * 0.95 + 10); bl = Math.min(255, y * 0.78); }
-        else if (filter === 'contrast') { r = (r - 128) * 1.45 + 128; g = (g - 128) * 1.45 + 128; bl = (bl - 128) * 1.45 + 128; }
-        else if (filter === 'fade') { r = r * 0.8 + 45; g = g * 0.8 + 45; bl = bl * 0.8 + 48; }
-        a[i] = Math.max(0, Math.min(255, r)); a[i + 1] = Math.max(0, Math.min(255, g)); a[i + 2] = Math.max(0, Math.min(255, bl));
-      }
-      ctx.putImageData(d, 0, 0);
-    }
-    return canvas;
-  }
-  function layShapePath(ctx, x, y, w, h, mask, rad) {
-    ctx.beginPath();
-    if (mask === 'circle') { ctx.ellipse(x + w / 2, y + h / 2, w / 2, h / 2, 0, 0, Math.PI * 2); return; }
-    const r = mask === 'round' ? Math.min(rad, w / 2, h / 2) : 0;
-    ctx.moveTo(x + r, y);
-    ctx.arcTo(x + w, y, x + w, y + h, r);
-    ctx.arcTo(x + w, y + h, x, y + h, r);
-    ctx.arcTo(x, y + h, x, y, r);
-    ctx.arcTo(x, y, x + w, y, r);
-    ctx.closePath();
-  }
-  // 加阴影：四周留出透明边，形状（矩形 / 圆角 / 圆形）带边框一起画进去
-  function layShadowCanvas(src, o) {
-    const w = src.width, h = src.height;
-    const strong = Number(o.sh) >= 2;
-    const pad = Math.round(Math.max(w, h) * (strong ? 0.07 : 0.045));
-    const k = w / Math.max(60, o.dispW || 360);   // 页面上 1px 对应图片里多少像素
-    const bw = Math.round((Number(o.bw) || 0) * k);
-    const out = layCanvas(w + pad * 2, h + pad * 2);
-    const ctx = out.getContext('2d');
-    ctx.save();
-    ctx.shadowColor = `rgba(0,0,0,${strong ? 0.38 : 0.24})`;
-    ctx.shadowBlur = pad * 0.8;
-    ctx.shadowOffsetY = pad * 0.3;
-    layShapePath(ctx, pad, pad, w, h, o.mask, 12 * k);
-    ctx.fillStyle = bw > 0 && layColorOk(o.bc) ? o.bc : '#ffffff';
-    ctx.fill();
-    ctx.restore();
-    ctx.save();
-    layShapePath(ctx, pad + bw, pad + bw, w - bw * 2, h - bw * 2, o.mask, Math.max(0, 12 * k - bw));
-    ctx.clip();
-    ctx.drawImage(src, pad + bw, pad + bw, w - bw * 2, h - bw * 2);
-    ctx.restore();
-    return out;
-  }
-  async function layCanvasToRef(canvas, png) {
-    const type = png ? 'image/png' : 'image/jpeg';
-    const blob = await canvasToBlob(canvas, type, 0.92);
-    const ar = +(canvas.width / canvas.height).toFixed(4);
-    canvas.width = canvas.height = 0;
-    const data = await blob.arrayBuffer();
-    const key = `slot-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
-    await imgPut(key, { type, data });
-    _imgUrlCache.set(key, mainWin.URL.createObjectURL(new mainWin.Blob([data], { type })));
-    return { ref: 'idb:' + key, ar };
-  }
-  // 按当前设置重新生成显示用的图片：普通图片 → a.src；分割图 → a.srcA / a.srcB 两张
-  async function layBakeAtom(a) {
-    const orig = a.orig || a.src;
-    if (!orig) return;
-    const sh = Number(a.sh) > 0;
-    const olds = [a.src, a.srcA, a.srcB].filter(r => r && r !== orig);
-    if (a.t === 'img' && !a.crop && (!a.filter || a.filter === 'none') && !sh) {
-      a.src = orig;
-      const sz = await layImgSize(orig);
-      if (sz && sz.h) a.ar = +(sz.w / sz.h).toFixed(4);
-      olds.forEach(r => layForgetImageIfUnused(r));
-      return;
-    }
-    const sz = await layImgSize(orig);
-    if (!sz) { toast('图片尚未读取完成，请稍后重试', 'warning'); return; }
-    const base = layBaseCanvas(sz, a.crop, a.filter);
-    const pageW = layPageWidth();
-    if (a.t === 'split') {
-      const at = layNum(a.at, 0.5, 0.1, 0.9);
-      const v = a.dir === 'v';
-      const cut = Math.round((v ? base.width : base.height) * at);
-      const c1 = v ? layCanvas(cut, base.height) : layCanvas(base.width, cut);
-      const c2 = v ? layCanvas(base.width - cut, base.height) : layCanvas(base.width, base.height - cut);
-      c1.getContext('2d').drawImage(base, 0, 0);
-      c2.getContext('2d').drawImage(base, v ? -cut : 0, v ? 0 : -cut);
-      const disp = v ? pageW * 0.35 : pageW;
-      const o1 = sh ? layShadowCanvas(c1, { sh: a.sh, dispW: disp }) : c1;
-      const o2 = sh ? layShadowCanvas(c2, { sh: a.sh, dispW: disp }) : c2;
-      const r1 = await layCanvasToRef(o1, sh), r2 = await layCanvasToRef(o2, sh);
-      a.srcA = r1.ref; a.arA = r1.ar; a.srcB = r2.ref; a.arB = r2.ar;
-      a.src = orig;
-    } else {
-      const disp = pageW * (a.lay === 'full' || !a.lay ? 1 : layNum(a.wp, 42, 15, 100) / 100);
-      const out = sh ? layShadowCanvas(base, { sh: a.sh, mask: a.mask, bw: a.bw, bc: a.bc, dispW: disp }) : base;
-      const r = await layCanvasToRef(out, sh);
-      a.src = r.ref; a.ar = r.ar;
-    }
-    base.width = base.height = 0;
-    olds.forEach(r => layForgetImageIfUnused(r));
+  const _laySeq = new Map();
+  // 后台处理图片；同一张图连续改设置时只应用最后一次的结果；处理中图片上显示加载状态
+  async function layApplyImage(a) {
+    const seq = (_laySeq.get(a.id) || 0) + 1;
+    _laySeq.set(a.id, seq);
+    const busy = (on) => { const el = mainDoc.querySelector(`#be-lay-pagewrap .be-la[data-aid="${a.id}"]`); if (el) el.classList.toggle('be-lay-busy', on); };
+    busy(true);
+    const dispW = layPageWidth() * ((a.lay || 'full') === 'full' ? 1 : layNum(a.wp, 42, 10, 100) / 100);
+    let r = null;
+    try { r = await layProcessImage(a, dispW); } catch (e) { console.warn('[BookExcerpt] layProcessImage failed:', e); }
+    if (_laySeq.get(a.id) !== seq) return;
+    busy(false);
+    if (!r) { toast('图片处理失败，请重试', 'warning'); return; }
+    a.src = r.src; a.ar = r.ar; a.baked = !!r.baked;
+    if (r.shd) { a.shd = r.shd; a.shdBox = r.shdBox; } else { delete a.shd; delete a.shdBox; }
+    lay.dirty = true;
+    if (lay.draft && layFindAtom(a.id) === a) { layRenderPage(true); layPlaceMenu(); }
   }
   // 图片只在没有别的模板 / 草稿 / 撤销记录引用时才删
   function layForgetImageIfUnused(ref) {
@@ -13203,6 +13642,7 @@ $(() => {
     (settings.layoutTemplates || []).forEach(t => layImageRefs(t).forEach(r => used.add(r)));
     if (lay.draft) layImageRefs(lay.draft).forEach(r => used.add(r));
     lay.undo.concat(lay.redo).forEach(sn => { try { layImageRefs(JSON.parse(sn).d).forEach(r => used.add(r)); } catch (e) {} });
+    for (const v of _layBakeCache.values()) { if (v.src) used.add(v.src); if (v.shd) used.add(v.shd); }
     if (!used.has(ref)) imgForget(ref);
   }
 
@@ -13221,7 +13661,7 @@ $(() => {
     const img = box.querySelector('img'), wrapEl = box.querySelector('.be-lay-crop-img'), rect = box.querySelector('.be-lay-crop-rect');
     img.src = imgUrlSync(orig);
     const stage = box.querySelector('.be-lay-crop-stage');
-    const maxW = stage.clientWidth - 24, maxH = stage.clientHeight - 24;
+    const maxW = stage.clientWidth - 48, maxH = stage.clientHeight - 48;
     const k = Math.min(maxW / sz.w, maxH / sz.h);
     const W = Math.round(sz.w * k), H = Math.round(sz.h * k);
     wrapEl.style.width = W + 'px'; wrapEl.style.height = H + 'px';
@@ -13281,14 +13721,55 @@ $(() => {
         layPushUndo();
         const full = c.w > 0.995 && c.h > 0.995;
         a.crop = full ? null : { x: +c.x.toFixed(4), y: +c.y.toFixed(4), w: +c.w.toFixed(4), h: +c.h.toFixed(4) };
-        await layBakeAtom(a);
-        layRenderPage(true);
+        box.remove();
+        layApplyImage(a);
+        return;
       }
       box.remove();
     });
   }
 
   // ----- 拖动：元素按住 ≡ 换位置；贴纸直接拖，右下角圆点缩放 + 旋转 -----
+  function layResizeDrag(e, el, corner) {
+    e.preventDefault(); e.stopPropagation();
+    const a = layFindAtom(el.getAttribute('data-aid'));
+    const root = layRoot();
+    if (!a || !root) return;
+    layCloseMenu();
+    const W = root.clientWidth || 1;
+    const r0 = el.getBoundingClientRect();
+    const sx = e.clientX;
+    const dirX = corner.includes('w') ? -1 : 1;
+    // 居中的图两边一起变，拖动距离按 2 倍算
+    const centered = (a.lay || 'full') === 'full' || a.lay === 'center';
+    const snap = laySnap();
+    let moved = false, wp = r0.width / W * 100;
+    const mv = ev => {
+      const dx = (ev.clientX - sx) * dirX * (centered ? 2 : 1);
+      if (!moved && Math.abs(dx) < 3) return;
+      moved = true;
+      wp = Math.max(15, Math.min(100, (r0.width + dx) / W * 100));
+      el.style.width = wp.toFixed(2) + '%';
+      if ((a.lay || 'full') === 'full' && wp < 99) { el.classList.remove('be-lay-img-full'); el.classList.add('be-lay-img-center'); }
+    };
+    const up = () => {
+      mainDoc.removeEventListener('pointermove', mv, true);
+      mainDoc.removeEventListener('pointerup', up, true);
+      mainDoc.removeEventListener('pointercancel', up, true);
+      if (!moved) { layOpenMenu(); return; }
+      layPushUndo(snap);
+      a.wp = Math.round(wp * 10) / 10;
+      if ((a.lay || 'full') === 'full' && a.wp < 99) a.lay = 'center';
+      if (a.lay === 'center' && a.wp >= 99.5) a.lay = 'full';
+      layRenderPage(true);
+      // 显示尺寸变了：按新尺寸重新处理（异形遮罩 / 相框 / 阴影的清晰度）
+      if (layNeedBake(a) || Number(a.sh) > 0) layApplyImage(a);
+      layOpenMenu();
+    };
+    mainDoc.addEventListener('pointermove', mv, true);
+    mainDoc.addEventListener('pointerup', up, true);
+    mainDoc.addEventListener('pointercancel', up, true);
+  }
   function layAtomDrag(e, atomEl) {
     e.preventDefault(); e.stopPropagation();
     layCloseMenu();
@@ -13381,8 +13862,15 @@ $(() => {
     stage.addEventListener('pointerdown', e => {
       const rot = e.target.closest('.be-lay-rot');
       if (rot) return layFloatDrag(e, rot.closest('[data-fid]'), 'rot');
+      const rh = e.target.closest('[data-rh]');
+      if (rh) return layResizeDrag(e, rh.closest('.be-la'), rh.getAttribute('data-rh'));
       const grip = e.target.closest('.be-lay-grip');
       if (grip) return layAtomDrag(e, grip.closest('.be-la'));
+      if (e.target.closest('.be-la, .be-lay-tok, .be-lay-slottag')) {
+        e.preventDefault();
+        const ae = mainDoc.activeElement;
+        if (ae && ae.closest && ae.closest('.be-lay-doc')) { try { ae.blur(); } catch (er) {} }
+      }
       const fl = e.target.closest('[data-fid]');
       if (fl) {
         const id = fl.getAttribute('data-fid');
@@ -13391,7 +13879,15 @@ $(() => {
       }
     });
     stage.addEventListener('click', e => {
-      if (e.target.closest('.be-lay-grip, .be-lay-rot, [data-fid]')) return;
+      if (e.target.closest('.be-lay-grip, .be-lay-rot, .be-lay-rh, [data-fid]')) return;
+      const tag = e.target.closest('.be-lay-slottag');
+      if (tag) {
+        lay.sel = null; laySyncSelection();
+        layCloseMenu();
+        lay.slotEl = tag._target;
+        layOpenMenu();
+        return;
+      }
       const tok = e.target.closest('.be-lay-tok');
       if (tok) {
         lay.sel = null; laySyncSelection();
@@ -13400,9 +13896,17 @@ $(() => {
         lay.tok = tok;   // layOpenMenu 走的是 lay.tok 分支，不会清掉它
         return;
       }
-      const mid = e.target.closest('.be-lay-split-mid.be-lp');
       const atom = e.target.closest('.be-la');
-      if (atom && !mid) { laySelect({ k: 'a', id: atom.getAttribute('data-aid') }); return; }
+      if (atom) {
+        const a = layFindAtom(atom.getAttribute('data-aid'));
+        // 还没选图片的图片位：点一下直接选图
+        if (a && a.t === 'img' && !a.src) {
+          layPickImage(async ref => { layPushUndo(); await layResetImage(a, ref); layApplyImage(a); laySelect({ k: 'a', id: a.id }); });
+          return;
+        }
+        laySelect({ k: 'a', id: atom.getAttribute('data-aid') });
+        return;
+      }
       if (inDoc(e.target)) {
         if (lay.sel || lay.tok) { lay.sel = null; laySyncSelection(); layCloseMenu(); }
         if (lay.sheet && lay.sheet !== 'text') { lay.sheet = ''; layRenderSheet(); }
@@ -13430,6 +13934,9 @@ $(() => {
       if (!inDoc(e.target)) return;
       lay.dirty = true;
       if (!e.isComposing) layNormalizeRoot();
+      const sel = mainWin.getSelection();
+      if (sel && sel.rangeCount) layUpdatePh(layParaOf(sel.getRangeAt(0).startContainer));
+      clearTimeout(lay.tagT); lay.tagT = setTimeout(layPlaceSlotTags, 120);
     });
     stage.addEventListener('compositionstart', () => { lay.composing = true; });
     stage.addEventListener('compositionend', () => { lay.composing = false; setTimeout(layNormalizeRoot, 0); });
@@ -13453,6 +13960,16 @@ $(() => {
       const r = sel.getRangeAt(0);
       const p = layParaOf(r.startContainer);
       if (!p || p.parentNode !== layRoot()) return;
+      if (e.key === 'Backspace' && p.hasAttribute('data-slot') && layIsEmptyPara(p)) {
+        e.preventDefault();
+        layPushUndo();
+        const prev = p.previousElementSibling;
+        p.remove();
+        layNormalizeRoot();
+        if (prev && prev.classList.contains('be-lp')) { const nr = mainDoc.createRange(); nr.selectNodeContents(prev); nr.collapse(false); sel.removeAllRanges(); sel.addRange(nr); }
+        layPlaceSlotTags();
+        return;
+      }
       const off = layOffsetIn(p, r.startContainer, r.startOffset);
       const len = (p.textContent || '').length;
       // 段首退格 / 段尾删除碰到图片等元素：先选中它，不直接删掉（再按一次菜单里删）
@@ -13474,6 +13991,7 @@ $(() => {
       const r = s.getRangeAt(0);
       if (!layParaOf(r.startContainer) || !layParaOf(r.endContainer)) return;
       lay.range = r.cloneRange();
+      lay.caret = layGetCaret();
       // 光标进了正文（页面有焦点）：取消对图片等元素的选中
       const ae = mainDoc.activeElement;
       if (lay.sel && lay.sel.k === 'a' && ae && ae.closest && ae.closest('.be-lay-doc')) { lay.sel = null; laySyncSelection(); layCloseMenu(); }
@@ -13481,6 +13999,9 @@ $(() => {
     };
     mainDoc.addEventListener('selectionchange', mainWin.__beLaySelFn);
     stage.addEventListener('scroll', () => layPlaceMenu(), { passive: true });
+    try {
+      if (mainWin.ResizeObserver) new mainWin.ResizeObserver(() => { if (lay.draft) layPlaceSlotTags(); }).observe(mask.querySelector('#be-lay-pagewrap'));
+    } catch (e) {}
     const menu = mask.querySelector('#be-lay-menu');
     menu.addEventListener('pointerdown', e => { if (e.target.closest('button')) e.preventDefault(); });
     menu.addEventListener('click', e => {
@@ -13511,30 +14032,32 @@ $(() => {
         return layAddFloat({ k: 'sym', txt: v, w: 12 });
       }
       const p = lay.draft.page = lay.draft.page || {};
+      // 「跟随配色」：点了展开配色块（和书摘弹窗那一排一样），只切换预览
       if (btn.hasAttribute('data-pbg')) {
         const v = btn.getAttribute('data-pbg');
         if (v === 'follow') {
-          if (!p.bg && !p.bgImg) { lay.presetRow = lay.presetRow === 'bg' ? '' : 'bg'; layRenderSheet(); return; }
-          layPushUndo(); p.bg = ''; delete p.bgP;
-          if (p.bgImg) { const old = p.bgImg; p.bgImg = ''; layForgetImageIfUnused(old); }
-          layRenderPage(true); layRenderSheet();
-        } else if (v === 'color') layPickColor(p.bg || '#f5f1e8', btn, c => { p.bg = c; delete p.bgP; layRenderPage(true); });
-        else layPickImage(ref => { layPushUndo(); const old = p.bgImg; p.bgImg = ref; delete p.bgP; if (old) layForgetImageIfUnused(old); layRenderPage(true); layRenderSheet(); });
-        return;
-      }
-      if (btn.hasAttribute('data-pbgp') || btn.hasAttribute('data-pfgp')) {
-        const isBg = btn.hasAttribute('data-pbgp');
-        const k = btn.getAttribute(isBg ? 'data-pbgp' : 'data-pfgp');
-        layPushUndo();
-        if (k) p[isBg ? 'bgP' : 'fgP'] = k; else delete p[isBg ? 'bgP' : 'fgP'];
-        layRenderPage(true); layRenderSheet();
+          if (p.bg || p.bgImg) {
+            layPushUndo(); p.bg = '';
+            if (p.bgImg) { const old = p.bgImg; p.bgImg = ''; layForgetImageIfUnused(old); }
+            layRenderPage(true);
+          }
+          lay.presetRow = lay.presetRow === 'bg' ? '' : 'bg';
+          layRenderSheet();
+        } else if (v === 'color') layPickColor(p.bg || '#f5f1e8', btn, c => { p.bg = c; layRenderPage(true); });
+        else layPickImage(ref => { layPushUndo(); const old = p.bgImg; p.bgImg = ref; if (old) layForgetImageIfUnused(old); layRenderPage(true); layRenderSheet(); });
         return;
       }
       if (btn.hasAttribute('data-pfg')) {
         if (btn.getAttribute('data-pfg') === 'follow') {
-          if (!p.fg) { lay.presetRow = lay.presetRow === 'fg' ? '' : 'fg'; layRenderSheet(); return; }
-          layPushUndo(); p.fg = ''; delete p.fgP; layRenderPage(true); layRenderSheet();
-        } else layPickColor(p.fg || '#1f1f1f', btn, c => { p.fg = c; delete p.fgP; layRenderPage(true); });
+          if (p.fg) { layPushUndo(); p.fg = ''; layRenderPage(true); }
+          lay.presetRow = lay.presetRow === 'fg' ? '' : 'fg';
+          layRenderSheet();
+        } else layPickColor(p.fg || '#1f1f1f', btn, c => { p.fg = c; layRenderPage(true); });
+        return;
+      }
+      if (btn.hasAttribute('data-prev')) {
+        lay.preview = btn.getAttribute('data-prev') || '';
+        layRenderPage(true); layRenderSheet();
         return;
       }
       if (btn.hasAttribute('data-pfit')) { layPushUndo(); p.bgFit = btn.getAttribute('data-pfit'); layRenderPage(true); layRenderSheet(); }
@@ -13555,7 +14078,7 @@ $(() => {
       const a = e.target.closest('[data-a]')?.getAttribute('data-a');
       if (!a) return;
       if (a === 'done') {
-        // 和 Zine 一样：正在输入 / 开着面板或菜单时先收起，再点一次才保存退出
+        // 正在输入 / 开着面板或菜单时先收起，再点一次才保存退出
         const menuOpen = !mask.querySelector('#be-lay-menu').hidden;
         const ae = mainDoc.activeElement;
         const typing = ae && ae.closest && ae.closest('.be-lay-doc');
@@ -13645,7 +14168,9 @@ $(() => {
       const keep = new Set(); (settings.layoutTemplates || []).forEach(t => layImageRefs(t).forEach(r => keep.add(r)));
       seen.forEach(r => { if (!keep.has(r)) imgForget(r); });
     }
-    lay.draft = null; lay.sel = null; lay.tok = null; lay.sheet = ''; lay.undo = []; lay.redo = []; lay.range = null;
+    lay.draft = null; lay.sel = null; lay.tok = null; lay.slotEl = null; lay.sheet = ''; lay.preview = ''; lay.undo = []; lay.redo = []; lay.range = null; lay.caret = null;
+    _layBakeCache.clear();
+    mask && mask.querySelector('.be-lay-starter')?.remove();
     if (_cp) closeColorPicker(true);
     layWatchViewport(false);
     if (mask) {
@@ -13660,6 +14185,93 @@ $(() => {
       if (drawer && drawer.classList.contains('show')) renderDrawer(drawer);
     }
     if (mainDoc.getElementById('be-panel')?.classList.contains('open') && panelView === 'settings') renderSettings();
+  }
+
+  // ----- 书摘弹窗里更换自由排版的图片 -----
+  // 三选一确认框（和 beConfirm 同样的外观）：options = [{v, label, primary}]，点空白处 = 取消（v 为 null）
+  function beChoose({ title = '', text = '', options = [], remember = '' } = {}) {
+    return new Promise(resolve => {
+      mainDoc.getElementById('be-confirm-mask')?.remove();
+      const mask = stampGen(mainDoc.createElement('div'));
+      mask.id = 'be-confirm-mask';
+      mask.className = 'be-import-tpl-mask open';
+      mask.innerHTML = `
+        <div class="be-import-tpl-box be-confirm-box">
+          ${title ? `<div class="be-src-title">${escapeHtml(title)}</div>` : ''}
+          ${text ? `<div class="be-confirm-text">${escapeHtml(text)}</div>` : ''}
+          ${remember ? `<label class="be-confirm-remember"><input type="checkbox" id="be-confirm-remember"> ${escapeHtml(remember)}</label>` : ''}
+          <div class="be-src-actions">
+            <button class="be-btn" data-v="">取消</button>
+            ${options.map(o => `<button class="be-btn ${o.primary ? 'primary' : ''}" data-v="${escapeHtml(o.v)}">${escapeHtml(o.label)}</button>`).join('')}
+          </div>
+        </div>`;
+      mainDoc.body.appendChild(mask);
+      detectAndApplyTheme();
+      const done = (v) => {
+        const rem = !!mask.querySelector('#be-confirm-remember')?.checked;
+        mask.remove();
+        resolve({ v: v || null, remember: !!v && rem });
+      };
+      mask.addEventListener('click', e => {
+        if (e.target === mask) return done(null);
+        const b = e.target.closest('[data-v]');
+        if (b) done(b.getAttribute('data-v'));
+      });
+    });
+  }
+  function layClearOnceImgs() {
+    const refs = [];
+    Object.values(_layOnceImgs).forEach(g => Object.values(g).forEach(m => Object.values(m).forEach(v => { if (v.orig) refs.push(v.orig); if (v.src) refs.push(v.src); if (v.shd) refs.push(v.shd); })));
+    Object.keys(_layOnceImgs).forEach(k => delete _layOnceImgs[k]);
+    if (!refs.length) return;
+    const keep = new Set(); (settings.layoutTemplates || []).forEach(t => layImageRefs(t).forEach(r => keep.add(r)));
+    [...new Set(refs)].forEach(r => { if (!keep.has(r)) imgForget(r); });
+    _layBakeCache.clear();
+  }
+  async function layModalReplaceImage(aid) {
+    const tpl = layGetTemplate(settings.template);
+    if (!tpl) return;
+    const a = (tpl.doc || []).find(x => x.t === 'img' && x.id === aid);
+    if (!a) return;
+    const ref = await new Promise(res => {
+      const input = mainDoc.createElement('input');
+      input.type = 'file'; input.accept = 'image/*';
+      input.addEventListener('change', async () => {
+        const f = input.files && input.files[0];
+        if (!f) return res(null);
+        try { res(await saveImageFile(f, 'slot')); } catch (e) { toast('图片读取失败：' + (e?.message || e), 'error'); res(null); }
+      });
+      input.click();
+    });
+    if (!ref) return;
+    let mode = settings.layoutImgReplace || 'ask';
+    if (mode === 'ask') {
+      const r = await beChoose({ title: '更换图片', text: a.grp ? '这是一组分割图，两部分会一起更换。' : '', options: [{ v: 'once', label: '仅本次导出' }, { v: 'save', label: '保存到模板', primary: true }], remember: '记住选择（可在 设置 → 书摘卡片 → 模板 中修改）' });
+      if (!r.v) { imgForget(ref); return; }
+      mode = r.v;
+      if (r.remember) { settings.layoutImgReplace = mode; saveSettings(settings); }
+    }
+    const group = (tpl.doc || []).filter(x => x.t === 'img' && (a.grp ? x.grp === a.grp : x === a));
+    const cw = Number(settings.cardWidth) > 0 ? Number(settings.cardWidth) : 420;
+    const pad = layNum((tpl.page || {}).pad, 28, 0, 80);
+    toast('正在处理图片…', 'info');
+    if (mode === 'save') {
+      for (const x of group) {
+        x.orig = ref; x.src = ref; delete x.shd; delete x.shdBox;
+        const r = await layProcessImage(x, (cw - pad * 2) * ((x.lay || 'full') === 'full' ? 1 : layNum(x.wp, 42, 10, 100) / 100));
+        if (r) { x.src = r.src; x.ar = r.ar; x.baked = !!r.baked; if (r.shd) { x.shd = r.shd; x.shdBox = r.shdBox; } }
+      }
+      saveSettings(settings);
+    } else {
+      const key = a.grp ? 'g:' + a.grp : a.id;
+      const m = {};
+      for (const x of group) {
+        const r = await layProcessImage({ ...x, orig: ref, src: ref }, (cw - pad * 2) * ((x.lay || 'full') === 'full' ? 1 : layNum(x.wp, 42, 10, 100) / 100));
+        if (r) m[x.id] = { orig: ref, src: r.src, ar: r.ar, baked: !!r.baked, shd: r.shd, shdBox: r.shdBox };
+      }
+      (_layOnceImgs[tpl.id] = _layOnceImgs[tpl.id] || {})[key] = m;
+    }
+    if (mainDoc.getElementById('be-card')) renderCard(lastText);
   }
 
   // ---------- 菜单入口 ----------
