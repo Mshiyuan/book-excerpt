@@ -234,4 +234,4 @@ https://github.com/Mshiyuan/book-excerpt
 - 截图库：html2canvas 1.4.1，随仓库分发在 `lib/` 目录，加载时本地文件优先，4 个 CDN 镜像（staticfile / bootcdn / jsdelivr / unpkg）作为兜底
 - 卡片渲染：clone 到隔离 iframe 后再截图，避免扫描主文档样式表；头像预处理为高分辨率方形 PNG
 - 导出倍率按「保存清晰度」2x~5x，canvas 用后释放，避免移动端 OOM
-- 自由排版依赖 interact.js 1.10.27（拖拽/缩放/吸附）与 Cropper.js 1.6.2（图片裁剪），同样随仓库分发在 `lib/` 目录本地加载；三个第三方库的版权声明见 [THIRD-PARTY-NOTICES.md](./THIRD-PARTY-NOTICES.md)
+- 「自己排」版式编辑器不依赖第三方库（拖动、裁剪、滤镜都是书摘自己实现的）；html2canvas 的版权声明见 [THIRD-PARTY-NOTICES.md](./THIRD-PARTY-NOTICES.md)
