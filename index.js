@@ -4232,6 +4232,8 @@ $(() => {
     .be-lay-sw-rainbow { width: 16px; height: 16px; border-radius: 50%; border: 0; background: conic-gradient(#e85d5d, #e8c35d, #6fd26f, #5dc4e8, #7a6be8, #e85dc6, #e85d5d); }
     .be-lay-cell-sw { min-width: 44px; padding: 0 8px; }
     .be-lay-dot { display: inline-block; width: 20px; height: 20px; border-radius: 50%; border: 1px solid rgba(128,128,128,0.35); }
+    .be-lay-dot-pick { position: relative; border: 0; background: conic-gradient(#e85d5d, #e8c35d, #6fd26f, #5dc4e8, #7a6be8, #e85dc6, #e85d5d); }
+    .be-lay-dot-pick > i { position: absolute; inset: 4px; border-radius: 50%; border: 1px solid rgba(255,255,255,0.7); }
     /* 跟随配色的预览块：和书摘弹窗「颜色」一栏同样的样子 */
     .be-lay-prev-row { padding-top: 2px; padding-bottom: 6px; }
     .be-lay-pchip { flex: 0 0 auto; width: 52px; height: 40px; border-radius: 10px; border: 2px solid transparent; font-size: 16px; font-family: serif; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: inset 0 0 0 1px rgba(128,128,128,0.25); }
@@ -4280,10 +4282,10 @@ $(() => {
     .be-lay-starter { position: absolute; inset: 0; z-index: 28; background: rgba(0,0,0,0.45); display: flex; align-items: flex-end; justify-content: center; }
     .be-lay-starter-box { width: 100%; max-width: 560px; max-height: 82%; overflow-y: auto; background: var(--be-panel-bg, #fff); border-radius: 16px 16px 0 0; padding: 14px 12px calc(16px + env(safe-area-inset-bottom, 0px)); box-sizing: border-box; }
     .be-lay-starter-h { font-size: 14px; font-weight: 600; padding: 2px 4px 12px; }
-    .be-lay-starter-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 12px; }
+    .be-lay-starter-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; align-items: start; }
     .be-lay-starter-item { border: 1px solid var(--be-panel-input-border, rgba(0,0,0,0.12)); border-radius: 10px; background: transparent; color: inherit; padding: 8px; cursor: pointer; display: flex; flex-direction: column; gap: 6px; align-items: stretch; }
     .be-lay-starter-pv { display: block; height: 170px; overflow: hidden; border-radius: 6px; position: relative; pointer-events: none; }
-    .be-lay-starter-pv > .be-card { position: absolute; left: 0; top: 0; transform: scale(0.38); transform-origin: 0 0; margin: 0; box-shadow: none; }
+    .be-lay-starter-pv > .be-card { position: absolute; left: 0; top: 0; transform-origin: 0 0; margin: 0; box-shadow: none; max-width: none; }
     .be-lay-starter-name { font-size: 13px; text-align: center; }
     /* 模板栏里的「＋ 自由排版」和排版模板上的 ✎ */
     #be-drawer .be-drawer-chip.be-drawer-new { background: transparent; border: 1px dashed var(--be-accent); color: var(--be-accent); }
@@ -11994,6 +11996,9 @@ $(() => {
           sp.className = 'be-lay-tok';
           sp.setAttribute('contenteditable', 'false');
           sp.textContent = layTokenLabel(tok, fmt);
+          // 前后补零宽空格文字节点：段首 / 两个占位相邻时，占位前面也能放光标、打字（保存时 layCleanInline 会去掉）
+          if (!sp.previousSibling || sp.previousSibling.nodeType !== 3) sp.before(mainDoc.createTextNode('​'));
+          if (!sp.nextSibling || sp.nextSibling.nodeType !== 3) sp.after(mainDoc.createTextNode('​'));
         } else {
           toks++;
           const v = layTokenHtml(tok, fmt, data);
@@ -12219,7 +12224,7 @@ $(() => {
   }
   async function layCanvasToRef(canvas, png) {
     const type = png ? 'image/png' : 'image/jpeg';
-    const blob = await canvasToBlob(canvas, type, 0.9);
+    const blob = await canvasToBlob(canvas, type, 0.95);
     const ar = +(canvas.width / canvas.height).toFixed(4);
     const data = await blob.arrayBuffer();
     const key = `slot-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
@@ -12233,7 +12238,9 @@ $(() => {
   async function layProcessImage(a, dispW) {
     const orig = a.orig || a.src;
     if (!orig) return null;
-    const tw = Math.max(240, Math.min(1400, Math.round((dispW || 360) * 2)));
+    // 处理后的图片宽度 = 显示宽度 × 导出倍率（导出时按这个倍率截图，低了会糊）
+    const kx = Math.max(2, Math.min(4, Number(settings.exportScale) || 3));
+    const tw = Math.max(240, Math.min(2000, Math.round((dispW || 360) * kx)));
     const key = JSON.stringify([orig, a.crop || 0, a.filter || 'none', a.mask || 'none', a.frame || 'none', LAY_CSS_MASKS.includes(a.mask || 'none') ? 0 : (a.bw || 0), LAY_CSS_MASKS.includes(a.mask || 'none') ? '' : (a.bc || ''), Number(a.sh) || 0, tw, a.id]);
     if (_layBakeCache.has(key)) return _layBakeCache.get(key);
     const sz = await layImgSize(orig);
@@ -12247,6 +12254,7 @@ $(() => {
       const kScale = Math.min(1, tw / sw);
       let canvas = layCanvas(sw * kScale, shh * kScale);
       let ctx = canvas.getContext('2d');
+      ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
       ctx.drawImage(sz.img, sx, sy, sw, shh, 0, 0, canvas.width, canvas.height);
       const f = a.filter;
       if (f && f !== 'none') {
@@ -12521,21 +12529,57 @@ $(() => {
   }
 
   // ----- 光标位置：按「第几个段落 + 段内第几个字」记，重画页面后能放回原处 -----
+  // 段内计数：文字每字算 1（零宽空格不算，重画后它们的位置会变），换行 <br> 算 1，行内占位整体算 1。
+  // 换行必须计数：否则「上一行末尾」和「下一行开头」、两个换行之间的空行都会算成同一个位置，光标放回去就跑到别的行
+  const layZw = s => s.replace(/​/g, '').length;
+  function layIsTokEl(n) { return n.nodeType === 1 && (n.classList.contains('be-lay-tok') || n.hasAttribute('data-tok')); }
   function layOffsetIn(p, node, off) {
-    try { const r = mainDoc.createRange(); r.setStart(p, 0); r.setEnd(node, off); return r.toString().length; } catch (e) { return 0; }
-  }
-  function layPointAt(p, off) {
-    const w = mainDoc.createTreeWalker(p, NodeFilter.SHOW_TEXT);
-    let n, pos = 0;
-    while ((n = w.nextNode())) {
-      const len = n.nodeValue.length;
-      if (off <= pos + len) {
-        const tok = n.parentElement && n.parentElement.closest('.be-lay-tok');
-        if (tok) return { node: tok.parentNode, off: Array.prototype.indexOf.call(tok.parentNode.childNodes, tok) + 1 };
-        return { node: n, off: off - pos };
+    let pos = 0;
+    const visit = (par) => {
+      const kids = par.childNodes;
+      for (let i = 0; i < kids.length; i++) {
+        if (par === node && i === off) return true;
+        const n = kids[i];
+        if (n.nodeType === 3) {
+          if (n === node) { pos += layZw(n.nodeValue.slice(0, off)); return true; }
+          pos += layZw(n.nodeValue);
+        } else if (n.nodeType === 1) {
+          if (n.nodeName === 'BR') pos += 1;
+          else if (layIsTokEl(n)) { pos += 1; if (n === node || n.contains(node)) return true; }
+          else if (visit(n)) return true;
+        }
       }
-      pos += len;
-    }
+      return par === node;
+    };
+    visit(p);
+    return pos;
+  }
+  function layParaLen(p) { return layOffsetIn(p, null, 0); }
+  function layPointAt(p, off) {
+    let pos = 0, res = null;
+    const visit = (par) => {
+      const kids = par.childNodes;
+      for (let i = 0; i < kids.length; i++) {
+        const n = kids[i];
+        if (n.nodeType === 3) {
+          const v = n.nodeValue, L = layZw(v);
+          if (L > 0 && off <= pos + L) {
+            let need = off - pos, idx = 0;
+            while (idx < v.length && need > 0) { if (v[idx] !== '​') need--; idx++; }
+            res = { node: n, off: idx };
+            return true;
+          }
+          pos += L;
+        } else if (n.nodeType === 1) {
+          if (n.nodeName === 'BR' || layIsTokEl(n)) {
+            if (off === pos) { res = { node: par, off: i }; return true; }
+            pos += 1;
+          } else if (visit(n)) return true;
+        }
+      }
+      return false;
+    };
+    if (visit(p)) return res;
     const last = p.lastChild;
     return { node: p, off: last && last.nodeName === 'BR' ? p.childNodes.length - 1 : p.childNodes.length };
   }
@@ -12779,13 +12823,22 @@ $(() => {
     const box = mainDoc.createElement('div');
     box.className = 'be-lay-starter';
     const smp = lay.sample ? escapeHtml(lay.sample).replace(/\n+/g, '<br>') : '';
-    const w = 300;
-    const data = { edit: false, preview: true, pageW: w, quoteHtml: smp || escapeHtml(LAY_SAMPLE.excerpt), quotePlain: lay.sample || LAY_SAMPLE.excerpt, thoughtHtml: escapeHtml(LAY_SAMPLE.thought), charName: '角色名', userName: '用户名', authorName: '作者', bookName: '书名', chapter: '章名' };
+    // 预览按卡片设定宽度排版，再按格子宽度整体缩小；底色、字色用书摘弹窗当前的配色，看起来和真实卡片一致
+    const w = Number(settings.cardWidth) > 0 ? Number(settings.cardWidth) : 420;
+    const pvText = lay.sample || PREVIEW_SAMPLE_TEXT;
+    const cc = resolveColors();
+    const data = { edit: false, preview: true, pageW: w, quoteHtml: escapeHtml(pvText).replace(/\n+/g, '<br>'), quotePlain: pvText, thoughtHtml: escapeHtml(LAY_SAMPLE.thought), charName: '角色名', userName: '用户名', authorName: '作者', bookName: '书名', chapter: '章名' };
     box.innerHTML = `<div class="be-lay-starter-box"><div class="be-lay-starter-h">选择起始版式</div><div class="be-lay-starter-grid">${LAY_STARTERS.map(st => {
       const t = st.make(smp);
-      return `<button type="button" class="be-lay-starter-item" data-st="${st.k}"><span class="be-lay-starter-pv"><span class="be-card tpl-layout" style="width:${w}px">${renderLayoutInner({ v: 2, page: t.page, doc: t.doc, floats: [] }, data)}</span></span><span class="be-lay-starter-name">${escapeHtml(st.name)}</span></button>`;
+      return `<button type="button" class="be-lay-starter-item" data-st="${st.k}"><span class="be-lay-starter-pv"><span class="be-card tpl-layout" style="width:${w}px;background:${cc.bg};color:${cc.fg}">${renderLayoutInner({ v: 2, page: t.page, doc: t.doc, floats: [] }, data)}</span></span><span class="be-lay-starter-name">${escapeHtml(st.name)}</span></button>`;
     }).join('')}</div></div>`;
     mask.appendChild(box);
+    box.querySelectorAll('.be-lay-starter-pv').forEach(pv => {
+      const card = pv.firstElementChild;
+      const k = pv.clientWidth / w;
+      card.style.transform = `scale(${k})`;
+      pv.style.height = Math.round(Math.min(card.offsetHeight, w * 1.5) * k) + 'px';
+    });
     box.addEventListener('click', e => {
       if (e.target === box) { box.remove(); return; }   // 点空白处：保留默认版式
       const b = e.target.closest('[data-st]');
@@ -12833,6 +12886,9 @@ $(() => {
     if (!wrap || !lay.draft) return;
     const root0 = layRoot();
     let caret = null;
+    // 重画前文字区有焦点（正在打字）：重画后把焦点和光标还回去，否则旧节点被替换后焦点丢失，接着打的字没地方去、手机键盘也会收起
+    const ae0 = mainDoc.activeElement;
+    const hadFocus = !!(root0 && ae0 && ae0.closest && ae0.closest('.be-lay-doc'));
     if (root0 && root0._layId === lay.draft.id) {
       if (keepCaret) caret = layGetCaret();
       layReadDom();
@@ -12851,7 +12907,7 @@ $(() => {
     if (root) root._layId = lay.draft.id;
     laySyncSelection();
     shieldCardFonts(card);
-    if (caret) laySetCaret(caret, false);
+    if (caret) laySetCaret(caret, hadFocus);
     layPlaceSlotTags();
   }
   function laySyncSelection() {
@@ -13135,14 +13191,38 @@ $(() => {
   }
 
   // ----- 文字：回车分段、粘贴、行内样式 -----
+  // 光标在占位段落的哪一头：'before'（开头，且段落有内容）/ 'after'（末尾，或段落是空的）/ ''（中间）
+  function laySlotEdge(block, r) {
+    if (layIsEmptyPara(block)) return 'after';
+    const off = layOffsetIn(block, r.startContainer, r.startOffset);
+    if (off === 0) return 'before';
+    const rest = mainDoc.createRange();
+    try { rest.setStart(r.endContainer, r.endOffset); rest.setEnd(block, block.childNodes.length); } catch (e) { return ''; }
+    return rest.toString().replace(/​/g, '') ? '' : 'after';
+  }
   function layInsertParagraph() {
     const sel = mainWin.getSelection();
     if (!sel || !sel.rangeCount) return;
     const r = sel.getRangeAt(0);
     const block = layParaOf(r.startContainer);
     if (!block) return;
-    // 摘录 / 想法占位是单个段落：回车只换行
-    if (block.hasAttribute('data-slot')) { mainDoc.execCommand('insertLineBreak'); return; }
+    // 摘录 / 想法占位是单个段落：在开头回车，上方新建普通段落；在末尾回车，下方新建普通段落（光标进新段落）；在中间回车只换行
+    if (block.hasAttribute('data-slot')) {
+      const where = laySlotEdge(block, r);
+      if (!where) { mainDoc.execCommand('insertLineBreak'); return; }
+      const nb = layMakePara('body', {}, '');
+      const top = block.parentNode === layRoot() ? block : layTopOf(block);
+      if (where === 'before') top.before(nb); else top.after(nb);
+      const nr = mainDoc.createRange();
+      if (where === 'before') { const pt = layPointAt(block, 0); nr.setStart(pt.node, pt.off); } else nr.setStart(nb, 0);
+      nr.collapse(true);
+      sel.removeAllRanges(); sel.addRange(nr);
+      lay.range = nr.cloneRange();
+      lay.dirty = true;
+      layPlaceSlotTags();
+      try { nb.scrollIntoView({ block: 'nearest' }); } catch (e) {}
+      return;
+    }
     if (!r.collapsed) r.deleteContents();
     const after = mainDoc.createRange();
     after.setStart(r.startContainer, r.startOffset);
@@ -13216,8 +13296,12 @@ $(() => {
       np.innerHTML = '';
       const root = layRoot();
       const after = p || (lay.sel && lay.sel.k === 'a' ? root.querySelector(`.be-la[data-aid="${lay.sel.id}"]`) : null);
+      // 占位段落的内容导出时整段换成摘录 / 想法，行内占位放不进去：光标在开头就插在它上方，否则插在下方
+      const edge = p ? laySlotEdge(p, r) : 'after';
+      if (p && !edge) toast(`${LAY_SLOTS[p.getAttribute('data-slot')] || '占位'}段落导出时整段替换，已插在它的下一段`, 'info');
       layPushUndo();
-      if (after) layTopOf(after).after(np); else root.appendChild(np);
+      if (after && edge === 'before') layTopOf(after).before(np);
+      else if (after) layTopOf(after).after(np); else root.appendChild(np);
       p = np;
       r = mainDoc.createRange(); r.setStart(np, 0); r.collapse(true);
     } else layPushUndo();
@@ -13233,6 +13317,8 @@ $(() => {
     sp.setAttribute('contenteditable', 'false');
     sp.textContent = layTokenLabel(tok, 'num');
     r.insertNode(sp);
+    // 占位前后各留一个文字节点：段首的占位前面才能放光标、打字
+    if (!sp.previousSibling || sp.previousSibling.nodeType !== 3) sp.before(mainDoc.createTextNode('​'));
     const z = mainDoc.createTextNode('​');
     sp.after(z);
     const nr = mainDoc.createRange(); nr.setStart(z, 1); nr.collapse(true);
@@ -13280,7 +13366,7 @@ $(() => {
           ${item('divider', '✦', '分隔线')}${item('spacer', '⬚', '留白')}${item('sticker', '❀', '贴纸')}${item('ftext', 't', '浮动文字')}
         </div>
         <div class="be-lay-shead">段落占位</div>
-        <div class="be-lay-insgrid">${item('excerpt', '❝', '摘录', 1)}${item('thought', '✎', '想法', 1)}${item('source', '⌖', '出处', 1)}</div>
+        <div class="be-lay-insgrid">${item('excerpt', '❝', '摘录', 1)}${item('thought', '✎', '想法', 1)}</div>
         <div class="be-lay-shead">行内占位${(() => { const r = layCurRange(); return r && !r.collapsed ? '（替换选中的文字）' : ''; })()}</div>
         <div class="be-lay-insgrid">${Object.entries(LAY_TOKENS).map(([k, n]) => item('tok-' + k, '{ }', n, 1)).join('')}</div>
         <div class="be-lay-shint">标色项为内容占位，导出时替换为当次书摘的对应内容。元素和段落占位插在光标所在段落之后；行内占位插在光标处，有选中文字时替换选中的文字。</div>`;
@@ -13364,8 +13450,8 @@ $(() => {
   function layColorCells(cur, attr) {
     const cols = layTextColors();
     const custom = cur && !cols.some(c => c.toLowerCase() === String(cur).toLowerCase());
-    return `<button type="button" class="be-lay-cell ${custom ? 'on' : ''}" ${attr}="pick">${custom ? `<i class="be-lay-sw" style="background:${escapeHtml(cur)}"></i>` : '<i class="be-lay-sw be-lay-sw-rainbow"></i>'}取色器</button>` +
-      `<button type="button" class="be-lay-cell ${!cur ? 'on' : ''}" ${attr}="">跟随</button>` +
+    return `<button type="button" class="be-lay-cell ${!cur ? 'on' : ''}" ${attr}="">跟随</button>` +
+      `<button type="button" class="be-lay-cell be-lay-cell-sw ${custom ? 'on' : ''}" ${attr}="pick" title="取色器" aria-label="取色器"><i class="be-lay-dot be-lay-dot-pick">${custom ? `<i style="background:${escapeHtml(cur)}"></i>` : ''}</i></button>` +
       cols.map(c => `<button type="button" class="be-lay-cell be-lay-cell-sw ${cur && cur.toLowerCase() === c.toLowerCase() ? 'on' : ''}" ${attr}="${c}"><i class="be-lay-dot" style="background:${c}"></i></button>`).join('');
   }
   function layBindSheetScroll(sh, keep) {
@@ -13971,7 +14057,20 @@ $(() => {
         return;
       }
       const off = layOffsetIn(p, r.startContainer, r.startOffset);
-      const len = (p.textContent || '').length;
+      const len = layParaLen(p);
+      // 摘录 / 想法占位和普通段落之间不合并（合并后普通段落里的字和行内占位会进到占位段落里，导出时被摘录整段替换掉）
+      const nbP = e.key === 'Backspace' ? (off === 0 ? p.previousElementSibling : null) : (off >= len ? p.nextElementSibling : null);
+      if (nbP && nbP.classList.contains('be-lp') && (p.hasAttribute('data-slot') || nbP.hasAttribute('data-slot'))) {
+        e.preventDefault();
+        const toEnd = (el, end) => { const nr = mainDoc.createRange(); const pt = end ? layPointAt(el, layParaLen(el)) : layPointAt(el, 0); nr.setStart(pt.node, pt.off); nr.collapse(true); sel.removeAllRanges(); sel.addRange(nr); };
+        const back = e.key === 'Backspace';
+        if (!p.hasAttribute('data-slot') && layIsEmptyPara(p)) { layPushUndo(); p.remove(); toEnd(nbP, back); }
+        else if (!nbP.hasAttribute('data-slot') && layIsEmptyPara(nbP)) { layPushUndo(); nbP.remove(); }
+        else toEnd(nbP, back);
+        layNormalizeRoot(); layPlaceSlotTags();
+        lay.dirty = true;
+        return;
+      }
       // 段首退格 / 段尾删除碰到图片等元素：先选中它，不直接删掉（再按一次菜单里删）
       const nb = e.key === 'Backspace' ? (off === 0 ? p.previousElementSibling : null) : (off >= len ? p.nextElementSibling : null);
       if (nb && nb.classList.contains('be-la')) {
@@ -14262,6 +14361,9 @@ $(() => {
         if (r) { x.src = r.src; x.ar = r.ar; x.baked = !!r.baked; if (r.shd) { x.shd = r.shd; x.shdBox = r.shdBox; } }
       }
       saveSettings(settings);
+      // 之前「仅本次导出」换过的图会盖在模板图片上面，保存到模板后要去掉，预览才显示新图
+      const ov = _layOnceImgs[tpl.id];
+      if (ov) delete ov[a.grp ? 'g:' + a.grp : a.id];
     } else {
       const key = a.grp ? 'g:' + a.grp : a.id;
       const m = {};
