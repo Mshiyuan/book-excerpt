@@ -2398,7 +2398,9 @@ $(() => {
     .be-flip-glare { position: absolute; inset: 0; pointer-events: none; border-radius: inherit; opacity: 0; transition: opacity 0.3s ease-out;
       background: radial-gradient(circle at var(--gx, 50%) var(--gy, 50%), rgba(255,255,255,0.38), rgba(255,255,255,0) 58%); }
     .be-flip-lit .be-flip-glare { opacity: 1; transition-duration: 0.1s; }
-    .be-flip-scroll { max-height: min(52vh, 440px); overflow-y: auto; scrollbar-width: none; overscroll-behavior: contain; }
+    /* 内容区是滚动容器：外层卡片的 touch-action:none 管不到滚动容器里面（浏览器规则），这里也要设，
+       否则翻到书摘面后手指一动就被浏览器当成滚动、取消卡片的指针事件，倾斜和高光断断续续。触摸滚动交给右侧滑动条 */
+    .be-flip-scroll { max-height: min(52vh, 440px); overflow-y: auto; scrollbar-width: none; overscroll-behavior: contain; touch-action: none; }
     .be-flip-scroll::-webkit-scrollbar { display: none; }
     .be-flip-txt .be-dr-quote { max-height: none; overflow: visible; }
     .be-flip-bar { position: absolute; top: 14px; bottom: 14px; right: 2px; width: 18px; display: none; justify-content: center; cursor: grab; touch-action: none; z-index: 2; }
