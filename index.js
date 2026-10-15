@@ -319,6 +319,9 @@ $(() => {
   const MIRROR_FILES = { notes: 'book-excerpt-notes.json', settings: 'book-excerpt-settings.json' };
   // 小文件，只记两份备份的保存时间：启动时只读它判断要不要提示 / 上传，不用把整份笔记下载下来
   const MIRROR_STAMP = 'book-excerpt-stamp.json';
+  // 历史备份（最多 3 份）：覆盖数据目录里的备份之前，先把原来的另存一份，误覆盖时还能找回
+  const MIRROR_HIST = n => `book-excerpt-history-${n}.json`;
+  const HIST_MAX = 3;
   const MIRROR_IMG_PREFIX = 'book-excerpt-img-';
   const LS_MIRROR = `${SCRIPT_ID}:mirror`;   // {synced:{notes,settings}, images:{key:file}, lastOk, lastErr}
   function mirrorMeta() {
@@ -375,6 +378,7 @@ $(() => {
         return;
       }
     }
+    if (!force) await mirrorSnapshot('daily', 20 * 3600 * 1000).catch(() => {});
     const data = kind === 'notes' ? loadNotes() : settings;
     const savedAt = Date.now();
     const payload = { app: 'book-excerpt', kind, v: 1, version: VERSION, savedAt, data };
@@ -388,7 +392,35 @@ $(() => {
     await mirrorWriteStamp(m.synced).catch(() => {});
   }
   function mirrorWriteStamp(synced) {
-    return mirrorUpload(MIRROR_STAMP, new TextEncoder().encode(JSON.stringify({ app: 'book-excerpt', notes: synced.notes || 0, settings: synced.settings || 0 })));
+    const hist = (mirrorMeta().history || []).map(h => ({ n: h.n, savedAt: h.savedAt, count: h.count }));
+    return mirrorUpload(MIRROR_STAMP, new TextEncoder().encode(JSON.stringify({ app: 'book-excerpt', notes: synced.notes || 0, settings: synced.settings || 0, history: hist })));
+  }
+  function countNotesIn(notesPayload) {
+    const d = notesPayload && notesPayload.data;
+    return d ? Object.values(d).reduce((a, c) => a + ((c && c.items) || []).length, 0) : 0;
+  }
+  // 把数据目录里现有的备份另存为一份历史。minGap：距离最新一份历史不足这么久就不另存
+  // （手动备份 1 小时、每天自动 20 小时；新浏览器首次同步、选「保留本地」这类有风险的覆盖为 0，总是另存）
+  async function mirrorSnapshot(reason, minGap) {
+    const m = mirrorMeta();
+    const hist = Array.isArray(m.history) ? m.history : [];
+    const newest = hist.reduce((a, h) => Math.max(a, h.at || 0), 0);
+    if (minGap && Date.now() - newest < minGap) return;
+    let remote;
+    try { remote = await mirrorFetchAll(); } catch (e) { return; }
+    if (!remote.notes && !remote.settings) return;
+    const savedAt = Math.max((remote.notes && remote.notes.savedAt) || 0, (remote.settings && remote.settings.savedAt) || 0);
+    if (hist.some(h => h.savedAt === savedAt)) return;   // 这一版已经另存过
+    const used = new Set(hist.map(h => h.n));
+    let n = [1, 2, 3].slice(0, HIST_MAX).find(x => !used.has(x));
+    if (!n) n = hist.slice().sort((a, b) => a.savedAt - b.savedAt)[0].n;
+    const payload = { app: 'book-excerpt', kind: 'history', v: 1, savedAt, reason, notes: remote.notes, settings: remote.settings };
+    await mirrorUpload(MIRROR_HIST(n), new TextEncoder().encode(JSON.stringify(payload)));
+    const m2 = mirrorMeta();
+    m2.history = (m2.history || []).filter(h => h.n !== n)
+      .concat({ n, savedAt, at: Date.now(), count: countNotesIn(remote.notes), imgs: settingsImageRefs((remote.settings && remote.settings.data) || {}) })
+      .sort((a, b) => b.savedAt - a.savedAt);
+    saveMirrorMeta(m2);
   }
   const _mirrorT = {};
   let _mirrorSuspended = false;   // 恢复备份时暂停回写，免得把刚读回来的内容又覆盖一遍
@@ -423,6 +455,7 @@ $(() => {
     const m = mirrorMeta();
     const name = m.images[key];
     if (!name) return;
+    if ((m.history || []).some(h => (h.imgs || []).includes(key))) return;   // 历史备份里还用着这张图
     delete m.images[key]; saveMirrorMeta(m);
     const headers = mirrorHeaders();
     if (!headers || !mirrorOn()) return;
@@ -436,7 +469,9 @@ $(() => {
     ((st && st.layoutTemplates) || []).forEach(t => layImageRefs(t).forEach(add));
     return [...new Set(keys)];
   }
-  async function mirrorBackupNow() {
+  // reason：'manual' 手动「立即备份」（距上一份历史 1 小时以上才另存）；'risky' 首次同步 / 保留本地 / 刚打开同步（总是另存）
+  async function mirrorBackupNow(reason = 'manual') {
+    await mirrorSnapshot(reason, reason === 'manual' ? 3600 * 1000 : 0).catch(() => {});
     await mirrorWrite('notes', true);
     // 还没备份过的图片补传
     const m = mirrorMeta();
@@ -538,11 +573,11 @@ $(() => {
         await mirrorRestore(remote);
         toast('已从酒馆数据目录恢复', 'success');
       } else {
-        mirrorBackupNow().catch(mirrorFailed);
+        mirrorBackupNow('risky').catch(mirrorFailed);
       }
       return;
     }
-    if (!hasRemote || !(m.synced.notes || m.synced.settings)) { if (!localEmpty || !hasRemote) mirrorBackupNow().catch(mirrorFailed); return; }
+    if (!hasRemote || !(m.synced.notes || m.synced.settings)) { if (!localEmpty || !hasRemote) mirrorBackupNow('risky').catch(mirrorFailed); return; }
     const dirty = m.dirty || {};
     for (const k of ['notes', 'settings']) if (dirty[k]) await mirrorWrite(k).catch(mirrorFailed);
   }
@@ -4181,7 +4216,7 @@ $(() => {
     .be-confirm-box .be-src-title { font-size: 14px; letter-spacing: 0.1em; margin-bottom: 8px; opacity: 0.9; }
     .be-confirm-box .be-src-actions { display: flex; gap: 8px; justify-content: flex-end; }
     #be-confirm-mask { z-index: 2147483646; }   /* 确认框永远在最上层（自由排版编辑器、图片弹窗之上） */
-    .be-confirm-text { font-size: 14px; line-height: 1.7; margin: 4px 0 12px; word-break: break-word; }
+    .be-confirm-text { font-size: 14px; line-height: 1.7; margin: 4px 0 12px; word-break: break-word; white-space: pre-line; }
     .be-confirm-remember { display: flex; align-items: center; gap: 6px; font-size: 12px; opacity: 0.8; margin-bottom: 12px; cursor: pointer; }
     .be-note-share.be-note-jump { font-size: 11px; padding: 2px 6px; }
     /* ===== 自由排版：版式（卡片里的文档，编辑器和导出共用） ===== */
@@ -11513,19 +11548,35 @@ $(() => {
     body.querySelector('#be-dir-sync')?.addEventListener('change', e => {
       settings.dataDirSync = e.target.checked;
       saveSettings(settings);
-      if (settings.dataDirSync) mirrorBackupNow().then(() => renderSettings()).catch(e2 => { mirrorFailed(e2); renderSettings(); });
+      if (settings.dataDirSync) mirrorBackupNow('risky').then(() => renderSettings()).catch(e2 => { mirrorFailed(e2); renderSettings(); });
       else renderSettings();
     });
     body.querySelector('#be-dir-backup')?.addEventListener('click', async (e) => {
       e.target.disabled = true;
-      try { await mirrorBackupNow(); toast('已备份到酒馆数据目录', 'success'); } catch (err) { _mirrorWarned = false; mirrorFailed(err); }
+      try { await mirrorBackupNow('manual'); toast('已备份到酒馆数据目录', 'success'); } catch (err) { _mirrorWarned = false; mirrorFailed(err); }
       renderSettings();
     });
     body.querySelector('#be-dir-restore')?.addEventListener('click', async () => {
-      let remote;
-      try { remote = await mirrorFetchAll(); } catch (err) { toast('读取备份失败：' + (err?.message || err), 'error'); return; }
-      if (!remote.notes && !remote.settings) { toast('酒馆数据目录里还没有备份', 'info'); return; }
-      if (!(await beConfirm({ text: `用备份（${describeBackup(remote)}）覆盖当前浏览器的笔记和设置？`, okText: '覆盖' })).ok) return;
+      let remote, stamp = null;
+      try { remote = await mirrorFetchAll(); stamp = await mirrorFetch(MIRROR_STAMP).catch(() => null); } catch (err) { toast('读取备份失败：' + (err?.message || err), 'error'); return; }
+      const hist = ((stamp && Array.isArray(stamp.history) && stamp.history) || mirrorMeta().history || []).slice(0, HIST_MAX);
+      if (!remote.notes && !remote.settings && !hist.length) { toast('酒馆数据目录里还没有备份', 'info'); return; }
+      let pick = 'latest';
+      if (hist.length) {
+        const lines = [];
+        if (remote.notes || remote.settings) lines.push(`最新：${describeBackup(remote)}`);
+        hist.forEach((h, i) => lines.push(`历史 ${i + 1}：${h.count || 0} 条笔记，保存于 ${formatDateTime(h.savedAt)}`));
+        const opts = (remote.notes || remote.settings ? [{ v: 'latest', label: '最新', primary: true }] : []).concat(hist.map((h, i) => ({ v: 'h' + h.n, label: `历史 ${i + 1}` })));
+        const r = await beChoose({ title: '从数据目录恢复', text: lines.join('\n'), options: opts });
+        if (!r.v) return;
+        pick = r.v;
+      }
+      if (pick !== 'latest') {
+        const h = await mirrorFetch(MIRROR_HIST(Number(pick.slice(1)))).catch(() => null);
+        if (!h || h.app !== 'book-excerpt') { toast('读取这份历史备份失败', 'error'); return; }
+        remote = { notes: h.notes || null, settings: h.settings || null };
+      }
+      if (!(await beConfirm({ text: `用这份备份（${describeBackup(remote)}）覆盖当前浏览器的笔记和设置？`, okText: '覆盖' })).ok) return;
       await mirrorRestore(remote);
       toast('已从酒馆数据目录恢复', 'success');
       renderSettings();
