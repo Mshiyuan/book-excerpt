@@ -91,6 +91,7 @@ $(() => {
     lastDailyReview: '',           // 上次推送的日期（YYYY-MM-DD），一天只推一次
     jumpNoConfirm: false,          // 跳回原文要切换聊天/角色时不再弹确认（确认框里勾「以后不再提醒」）
     panelAnim: 'fade',             // 切换笔记本/设置、设置三个小类时的动画：fade 淡入淡出 / slide 滑动 / cube 滚筒
+    motionStyle: 'spring',         // 界面动效风格：spring 弹簧阻尼 / soft 柔和淡入
     panelHome: 'notes',            // 点「书摘笔记」先显示：notes 笔记本主页 / char 当前角色（没有笔记或没开聊天时回落主页）/ settings 设置
     heatScale: 'auto',             // 热力图深浅：auto 按记得最多的那天自适应 / fixed 固定上限
     heatMax: 50,                   // heatScale=fixed 时最深一格代表的条数
@@ -229,6 +230,7 @@ $(() => {
       const link = mainDoc.createElement('link');
       link.id = id;
       link.rel = 'stylesheet';
+      link.setAttribute('fetchpriority', 'low');   // 低优先级，不和酒馆自己的请求抢
       link.href = f.stylesheet;
       mainDoc.head.appendChild(link);
     });
@@ -3410,6 +3412,21 @@ $(() => {
     }
 
     /* 设置面板二级分组 tab：比上面的主 tab 弱一级，字更小、更紧凑，一眼看出是下一层级 */
+    .be-sub-mini-wrap { position: sticky; top: 0; height: 0; z-index: 6; display: flex; justify-content: center; pointer-events: none; }
+    .be-sub-mini {
+      margin-top: 6px; height: max-content; display: flex; gap: 2px; padding: 3px 6px; border-radius: 999px;
+      background: var(--be-panel-bg); border: 1px solid var(--be-panel-border); box-shadow: 0 6px 18px rgba(0,0,0,0.28);
+      opacity: 0; translate: 0 -10px; scale: 0.85; pointer-events: none;
+      transition: opacity var(--be-exit-dur) var(--be-exit-ease), translate var(--be-exit-dur) var(--be-exit-ease), scale var(--be-exit-dur) var(--be-exit-ease);
+    }
+    .be-sub-mini-wrap.show .be-sub-mini {
+      opacity: 1; translate: 0 0; scale: 1; pointer-events: auto;
+      transition: opacity 0.2s var(--be-out), translate var(--be-enter-dur) var(--be-enter-ease), scale var(--be-enter-dur) var(--be-enter-ease);
+    }
+    .be-sub-mini button { width: 36px; height: 24px; border: 0; padding: 0; background: transparent; display: flex; align-items: center; justify-content: center; cursor: pointer; }
+    .be-sub-mini button i { display: block; width: 18px; height: 4px; border-radius: 2px; background: var(--be-panel-sub); opacity: 0.5; transition: scale var(--be-enter-dur) var(--be-enter-ease), background-color 0.2s, opacity 0.2s; }
+    .be-sub-mini button.active i { background: var(--be-accent); opacity: 1; scale: 1.4 1; }
+    @media (prefers-reduced-motion: reduce) { .be-sub-mini, .be-sub-mini-wrap.show .be-sub-mini, .be-sub-mini button i { transition: none; } }
     .be-settings-subtabs {
       display: flex; gap: 4px;
       margin: 2px 0 18px;
@@ -4151,6 +4168,9 @@ $(() => {
     .be-lay-doc > .be-lay-img-full, .be-lay-doc > .be-lay-img-center, .be-lay-doc > .be-lay-div, .be-lay-doc > .be-lay-space, .be-lay-doc > .be-lay-vt { clear: both; }
     .be-lay-clear { clear: both; }
     .be-lay-vt { display: flex; flex-direction: row-reverse; flex-wrap: wrap; line-height: 1; }
+    .be-lay-doc > .be-lay-vt.be-lay-vt-right { float: right; clear: none; display: inline-flex; max-width: 60%; margin: 2px 0 6px 12px; }
+    .be-lay-doc > .be-lay-vt.be-lay-vt-left { float: left; clear: none; display: inline-flex; max-width: 60%; margin: 2px 12px 6px 0; }
+    .be-lay-edit .be-lay-vtok { color: var(--be-accent); }
     .be-lay-vcol { display: flex; flex-direction: column; align-items: center; flex: none; }
     .be-lay-vcol > span { display: block; width: 1.1em; text-align: center; line-height: 1.05; }
     .be-lay-vsh { position: relative; left: 0.5em; top: -0.55em; }
@@ -4333,65 +4353,92 @@ $(() => {
     #be-drawer .be-drawer-chip .be-lay-chip-edit { margin-left: 6px; opacity: 0.75; font-size: 11px; }
 
     /* ===== 动效：只动 transform（scale / translate 单独属性，不覆盖元素自己的定位 transform）和 opacity ===== */
-    /* 三档时长：按下 100ms / 小浮层 200ms / 面板和弹窗 280ms；关闭比打开快（150ms）。
-       曲线：一般用减速（前快后慢）；回弹只用在打开小浮层、弹窗、底部面板。 */
+    /* 两种动效风格，曲线和时长都写成变量，切换风格只换一组变量（设置 → 通用 → 插件界面 → 动效风格）：
+       弹簧阻尼：像被软弹簧拉过去，到位时只多冲一点点（刚度 170、阻尼 18、质量 1 采样的 linear() 曲线）；
+       柔和淡入：主要靠透明度，位移不超过 8px（Material 3 的强调减速曲线）。 */
     :root {
-      --be-spring: cubic-bezier(0.34, 1.3, 0.5, 1);
+      --be-spring-curve: linear(0, 0.0315, 0.1108, 0.2185, 0.3393, 0.4621, 0.579, 0.6848, 0.7766, 0.8534, 0.9152, 0.963, 0.9982, 1.0227, 1.0382, 1.0467, 1.0498, 1.049, 1.0455, 1.0404, 1.0345, 1.0283, 1.0224, 1.017, 1.0122, 1.0082, 1.0049, 1.0024, 1.0005, 0.9991, 0.9982, 0.9977, 0.9975, 0.9975, 0.9977, 0.9979, 0.9982, 0.9985, 0.9988, 0.9991, 1);
+      --be-page-curve: linear(0, 0.0425, 0.1412, 0.2642, 0.3915, 0.5114, 0.6176, 0.7079, 0.7821, 0.8413, 0.8874, 0.9224, 0.9484, 0.9672, 0.9805, 0.9895, 0.9955, 0.9993, 1.0015, 1.0026, 1.0031, 1.0031, 1.0029, 1.0025, 1.0021, 1.0017, 1.0014, 1.001, 1.0008, 1.0006, 1.0004, 1.0003, 1);
+      --be-enter-ease: var(--be-spring-curve); --be-enter-dur: 820ms;
+      --be-exit-ease: cubic-bezier(0.4, 0, 1, 1); --be-exit-dur: 220ms;
+      --be-enter-y: 28px; --be-enter-s: 0.94;
+      --be-pop-y: 10px; --be-pop-s: 0.94;
+      --be-press-s: 0.95; --be-press-dur: 90ms;
+      --be-release-ease: var(--be-spring-curve); --be-release-dur: 600ms;
+      --be-stagger: 45ms;
+      --be-spring: var(--be-spring-curve);
       --be-out: cubic-bezier(0.2, 0.8, 0.2, 1);
-      --be-in: cubic-bezier(0.4, 0, 1, 1);
+      --be-in: var(--be-exit-ease);
     }
-    @keyframes be-pop-in { from { opacity: 0; scale: 0.94; translate: 0 4px; } to { opacity: 1; scale: 1; translate: 0 0; } }
-    @keyframes be-box-in { from { opacity: 0; scale: 0.94; } to { opacity: 1; scale: 1; } }
-    @keyframes be-sheet-up { from { opacity: 0; translate: 0 18px; } to { opacity: 1; translate: 0 0; } }
-    @keyframes be-panel-in { from { opacity: 0; translate: 0 10px; scale: 0.985; } to { opacity: 1; translate: 0 0; scale: 1; } }
+    @supports not (animation-timing-function: linear(0, 1)) {
+      :root { --be-spring-curve: cubic-bezier(0.16, 1, 0.3, 1); --be-page-curve: cubic-bezier(0.16, 1, 0.3, 1); }
+    }
+    body.be-mot-soft {
+      --be-enter-ease: cubic-bezier(0.05, 0.7, 0.1, 1); --be-enter-dur: 400ms;
+      --be-exit-ease: cubic-bezier(0.3, 0, 0.8, 0.15); --be-exit-dur: 200ms;
+      --be-enter-y: 8px; --be-enter-s: 1;
+      --be-pop-y: 6px; --be-pop-s: 1;
+      --be-press-s: 0.98; --be-press-dur: 100ms;
+      --be-release-ease: cubic-bezier(0.2, 0, 0, 1); --be-release-dur: 250ms;
+      --be-stagger: 30ms;
+      --be-spring: cubic-bezier(0.05, 0.7, 0.1, 1);
+    }
+    @keyframes be-pop-in { from { opacity: 0; scale: var(--be-pop-s); translate: 0 var(--be-pop-y); } to { opacity: 1; scale: 1; translate: 0 0; } }
+    @keyframes be-box-in { from { opacity: 0; scale: var(--be-enter-s); translate: 0 var(--be-enter-y); } to { opacity: 1; scale: 1; translate: 0 0; } }
+    @keyframes be-sheet-up { from { opacity: 0; translate: 0 var(--be-enter-y); } to { opacity: 1; translate: 0 0; } }
+    @keyframes be-panel-in { from { opacity: 0; translate: 0 var(--be-enter-y); scale: var(--be-enter-s); } to { opacity: 1; translate: 0 0; scale: 1; } }
     @keyframes be-dim-in { from { opacity: 0; } to { opacity: 1; } }
-    /* 打开：浮动条、小菜单、取色器轻微回弹 */
+    @keyframes be-item-in { from { opacity: 0; translate: 0 var(--be-pop-y); } to { opacity: 1; translate: 0 0; } }
+    /* 打开：浮动条、小菜单、取色器 */
     #be-float-bar.show, #be-card-hl-bar.show, #be-hl-bar.show, #be-card-hl-pop.show, #be-slot-chooser.show,
-    .be-lay-menu:not([hidden]), #be-cpick { animation: be-pop-in 0.2s var(--be-spring); transform-origin: 50% 0; }
-    /* 打开：对话框遮罩淡入，框体回弹 */
-    .be-import-tpl-mask.open, #be-thought-mask.open, #be-source-mask.open, .be-lay-ask { animation: be-dim-in 0.18s var(--be-out); }
-    .be-import-tpl-mask.open > .be-import-tpl-box, #be-thought-mask.open #be-thought-box, #be-source-mask.open #be-source-box, .be-lay-askbox { animation: be-box-in 0.26s var(--be-spring); }
+    .be-lay-menu:not([hidden]), #be-cpick { animation: be-pop-in var(--be-enter-dur) var(--be-enter-ease); transform-origin: 50% 0; }
+    /* 打开：对话框遮罩淡入，框体弹入 */
+    .be-import-tpl-mask.open, #be-thought-mask.open, #be-source-mask.open, .be-lay-ask { animation: be-dim-in 0.2s var(--be-out); }
+    .be-import-tpl-mask.open > .be-import-tpl-box, #be-thought-mask.open #be-thought-box, #be-source-mask.open #be-source-box, .be-lay-askbox { animation: be-box-in var(--be-enter-dur) var(--be-enter-ease); }
     #be-mask.open { animation: be-dim-in 0.2s var(--be-out); }
-    #be-mask.open #be-modal { animation: be-box-in 0.28s var(--be-spring); }
-    #be-panel.open { animation: be-panel-in 0.28s var(--be-spring); }
+    #be-mask.open #be-modal { animation: be-box-in var(--be-enter-dur) var(--be-enter-ease); }
+    #be-panel.open { animation: be-panel-in var(--be-enter-dur) var(--be-enter-ease); }
     /* 底部面板 */
-    #be-drawer, #be-typo-sheet { transition: transform 0.3s var(--be-spring); }
-    .be-lay-sheet:not([hidden]), .be-lay-starter-box { animation: be-sheet-up 0.28s var(--be-spring); }
-    /* 关闭：以前是直接消失。支持 display 过渡的浏览器（Chrome 117+）先淡出缩小再隐藏，不支持的照旧直接消失。
-       关闭途中不接收点击，不挡住下面的操作 */
+    #be-drawer, #be-typo-sheet { transition: transform 0.42s var(--be-enter-ease); }
+    .be-lay-sheet:not([hidden]), .be-lay-starter-box { animation: be-sheet-up var(--be-enter-dur) var(--be-enter-ease); }
+    /* 列表依次进入（每项间隔 --be-stagger，最多前 12 项） */
+    .be-stg > * { animation: be-item-in var(--be-enter-dur) var(--be-enter-ease) both; animation-delay: calc(var(--be-i, 0) * var(--be-stagger)); }
+    /* 关闭：淡出缩小再隐藏（需要 Chrome 117+ 的 display 过渡，不支持的浏览器照旧直接消失）；关闭途中不接收点击 */
     @supports (transition-behavior: allow-discrete) {
       #be-mask, #be-panel, #be-thought-mask, .be-import-tpl-mask,
       #be-float-bar, #be-card-hl-bar, #be-hl-bar, #be-card-hl-pop, #be-slot-chooser, .be-lay-menu {
-        transition: opacity 0.15s var(--be-in), scale 0.15s var(--be-in), display 0.15s allow-discrete;
+        transition: opacity var(--be-exit-dur) var(--be-exit-ease), scale var(--be-exit-dur) var(--be-exit-ease), display var(--be-exit-dur) allow-discrete;
       }
       #be-mask:not(.open), #be-panel:not(.open), #be-thought-mask:not(.open), .be-import-tpl-mask:not(.open),
       #be-float-bar:not(.show), #be-card-hl-bar:not(.show), #be-hl-bar:not(.show), #be-card-hl-pop:not(.show), #be-slot-chooser:not(.show) {
         opacity: 0; pointer-events: none;
       }
       #be-panel:not(.open), #be-float-bar:not(.show), #be-card-hl-bar:not(.show), #be-hl-bar:not(.show), #be-card-hl-pop:not(.show), #be-slot-chooser:not(.show) { scale: 0.97; }
-      #be-mask #be-modal { transition: scale 0.15s var(--be-in); }
+      #be-mask #be-modal { transition: scale var(--be-exit-dur) var(--be-exit-ease); }
       #be-mask:not(.open) #be-modal { scale: 0.96; }
       .be-lay-menu[hidden] { display: none; opacity: 0; scale: 0.96; pointer-events: none; }
       /* 浮动条在选区变化时频繁开关：关得更快 */
-      #be-float-bar, #be-card-hl-bar, #be-hl-bar, #be-card-hl-pop { transition-duration: 0.1s; }
+      #be-float-bar, #be-card-hl-bar, #be-hl-bar, #be-card-hl-pop { transition-duration: 0.12s; }
     }
-    /* 按下反馈（颜色变化也在这里一起过渡，只列具体属性，不用 transition: all） */
-    .be-btn, .be-mini-btn, .be-drawer-chip, .be-radio-opt, .be-fbtn, .be-tl-btn, .be-p-tabs button, .be-settings-subtabs button,
+    /* 按压反馈：按下快速缩小，松开按风格回弹（弹簧）或平滑恢复；颜色变化一起过渡（只列具体属性，不用 transition: all） */
+    .be-btn, .be-mini-btn, .be-drawer-chip, .be-radio-opt, .be-fbtn, .be-tl-btn, .be-p-tabs button, .be-settings-subtabs button, .be-sub-mini button,
     .be-tpl-card, .be-font-card, .be-palette-card,
     .be-lay-cell, .be-lay-ins, .be-lay-bar button, .be-lay-opts button, .be-lay-pchip, .be-lay-starter-item, .be-lay-tbtn, .be-lay-seg button, .be-lay-stkgrid button {
-      transition: scale 0.1s var(--be-out), background-color 0.16s var(--be-out), color 0.16s var(--be-out), border-color 0.16s var(--be-out), opacity 0.16s var(--be-out);
+      transition: scale var(--be-release-dur) var(--be-release-ease), background-color 0.16s var(--be-out), color 0.16s var(--be-out), border-color 0.16s var(--be-out), opacity 0.16s var(--be-out);
     }
-    .be-btn:active, .be-mini-btn:active, .be-drawer-chip:active, .be-radio-opt:active, .be-fbtn:active, .be-tl-btn:active, .be-p-tabs button:active, .be-settings-subtabs button:active,
+    .be-btn:active, .be-mini-btn:active, .be-drawer-chip:active, .be-radio-opt:active, .be-fbtn:active, .be-tl-btn:active, .be-p-tabs button:active, .be-settings-subtabs button:active, .be-sub-mini button:active,
     .be-tpl-card:active, .be-font-card:active, .be-palette-card:active,
     .be-lay-cell:active, .be-lay-ins:active, .be-lay-bar button:active, .be-lay-opts button:active, .be-lay-pchip:active, .be-lay-starter-item:active, .be-lay-tbtn:active, .be-lay-seg button:active, .be-lay-stkgrid button:active {
-      scale: 0.96;
+      scale: var(--be-press-s);
+      transition: scale var(--be-press-dur) ease-out, background-color 0.16s var(--be-out), color 0.16s var(--be-out), border-color 0.16s var(--be-out), opacity 0.16s var(--be-out);
     }
     .be-lay-menu > button:active { background: var(--be-accent-soft); }
     @media (prefers-reduced-motion: reduce) {
       #be-float-bar.show, #be-card-hl-bar.show, #be-hl-bar.show, #be-card-hl-pop.show, #be-slot-chooser.show, .be-lay-menu:not([hidden]), #be-cpick,
       .be-import-tpl-mask.open, .be-import-tpl-mask.open > .be-import-tpl-box, #be-thought-mask.open #be-thought-box, #be-source-mask.open #be-source-box,
-      #be-mask.open, #be-mask.open #be-modal, #be-panel.open, .be-lay-sheet:not([hidden]), .be-lay-starter-box, .be-lay-askbox { animation: none; }
+      #be-mask.open, #be-mask.open #be-modal, #be-panel.open, .be-lay-sheet:not([hidden]), .be-lay-starter-box, .be-lay-askbox, .be-stg > * { animation: none; }
       #be-mask, #be-panel, #be-thought-mask, .be-import-tpl-mask, #be-float-bar, #be-card-hl-bar, #be-hl-bar, #be-card-hl-pop, #be-slot-chooser, .be-lay-menu, #be-mask #be-modal { transition: none; }
+      .be-btn:active, .be-mini-btn:active, .be-drawer-chip:active, .be-radio-opt:active, .be-fbtn:active, .be-tl-btn:active, .be-lay-cell:active { scale: 1; }
     }
     body #toast-container { z-index: 2147483647 !important; }
     /* 切换笔记本/设置、设置小类：滑动（按切换方向从左或右平移淡入） */
@@ -4713,6 +4760,55 @@ $(() => {
     return `rgba(${r},${g},${b},${a})`;
   }
 
+  // ---- 启动只注入聊天页面要用的样式 ----
+  // 完整样式约 135KB，一次性注入会让浏览器对整个酒馆页面重算样式（手机上能占启动时的一大块时间）。
+  // 启动时只留划线、选词浮动栏、菜单入口等聊天页面用得到的规则；书摘界面（面板 / 弹窗 / 卡片 / 编辑器……）的规则
+  // 在第一次打开任何书摘界面前补上（detectAndApplyTheme 是各界面打开时的第一步），或启动后浏览器空闲时补上。
+  const STYLE_UI_SEL = /^(?:body(?:\.[\w-]+)*\s+)?(?:#be-(?:panel|mask|modal|card|drawer|typo-sheet|lay|cpick|source|thought-mask|thought-box|viewer|daily-review|confirm|imgpop|tpl-preview|export|p-|settings|slot-chooser|drawer-|nb|review|hm|actions|inspect-tip|css-float)|\.be-(?:card|lay|cp-|import-tpl|tpl|tpv|font|color|palette|btn|mini-btn|radio|slider|toggle|row|sec|subh|hint|p-|note|hm-|dr-|src|confirm|export|drawer|tl-|settings|vw-|rv-|cpick|swap|body-anim|slide|combo|avatar|watermark|quote|thought-main|head|meta|name|date|source|bd|ls-|pt-|vs-|empty|search|chip|grid|mask-pop|fav|imgpop|ask|preview|layout|mirror|dir-|stat|cal|filter|seg|tab|prow|tbtn|pchip|starter|sw|dot|cdot|oic|mlabel|fmt|fsep|ins|shead|shint|stk|opts|menu|mhead|mback|crop|busy|rh|grip|rot|float(?!-bar)|ph|vt|vcol|vsh|div|space|img|shd|tok|slottag|prev-row|lp|doc|clear|wm|merge-sheet|merge-box|merge-list|merge-item|merge-target|merge-hint|merge-remember|merge-check|mask-chip|text-in|typo|css-|about|char-|fb-|nb-|sub-mini))/;
+  function splitCssTop(css) {
+    const out = []; let i = 0; const n = css.length;
+    while (i < n) {
+      while (i < n && /\s/.test(css[i])) i++;
+      if (css.startsWith('/*', i)) { const e = css.indexOf('*/', i + 2); i = e < 0 ? n : e + 2; continue; }
+      if (i >= n) break;
+      const start = i; let depth = 0;
+      for (; i < n; i++) {
+        if (css.startsWith('/*', i)) { const e = css.indexOf('*/', i + 2); i = (e < 0 ? n : e + 2) - 1; continue; }
+        const c = css[i];
+        if (c === '{') depth++;
+        else if (c === '}') { depth--; if (depth === 0) { i++; break; } }
+        else if (c === ';' && depth === 0) { i++; break; }
+      }
+      out.push(css.slice(start, i));
+    }
+    return out;
+  }
+  function coreCss(css) {
+    const keep = [];
+    for (const st of splitCssTop(css)) {
+      const b = st.indexOf('{');
+      const head = st.slice(0, b < 0 ? st.length : b).replace(/\/\*[\s\S]*?\*\//g, '').trim();
+      if (head.startsWith('@media') || head.startsWith('@supports')) {
+        const k = coreCss(st.slice(b + 1, st.lastIndexOf('}')));
+        if (k.trim()) keep.push(head + ' {\n' + k + '\n}');
+        continue;
+      }
+      if (!head.startsWith('@')) {
+        const sels = head.split(',').map(x => x.trim()).filter(Boolean);
+        if (sels.length && sels.every(x => STYLE_UI_SEL.test(x))) continue;
+      }
+      keep.push(st);
+    }
+    return keep.join('\n');
+  }
+  let _styleFull = false;
+  function ensureFullStyle() {
+    if (_styleFull) return;
+    _styleFull = true;
+    const el = mainDoc.getElementById('be-style');
+    if (el) el.textContent = buildStyle();
+    try { loadFontStylesheets(); } catch (e) {}
+  }
   function injectStyle() {
     let el = mainDoc.getElementById('be-style');
     if (!el) {
@@ -4720,9 +4816,25 @@ $(() => {
       el.id = 'be-style';
       mainDoc.head.appendChild(el);
     }
-    el.textContent = buildStyle();
+    const css = buildStyle();
+    el.textContent = _styleFull ? css : coreCssCached(css);
     injectCustomTemplateStyles();
-    detectAndApplyTheme();
+    // 启动时（只有聊天页面样式）放到下一帧再读主题明暗，和浏览器本来要做的样式重算合并，不额外强制重算一次
+    if (_styleFull) applyLightThemeClass();
+    else (mainWin.requestAnimationFrame || setTimeout)(() => applyLightThemeClass());
+  }
+  // 拆好的聊天页面样式按完整样式的内容缓存在本地，样式没变（同版本、同主题色等）就直接用
+  function coreCssCached(css) {
+    let h = 2166136261;
+    for (let i = 0; i < css.length; i++) { h ^= css.charCodeAt(i); h = Math.imul(h, 16777619); }
+    const key = VERSION + ':' + css.length + ':' + (h >>> 0).toString(36);
+    try {
+      const c = JSON.parse(mainWin.localStorage.getItem(`${SCRIPT_ID}:corecss`) || 'null');
+      if (c && c.k === key && typeof c.css === 'string') return c.css;
+    } catch (e) {}
+    const out = coreCss(css);
+    try { mainWin.localStorage.setItem(`${SCRIPT_ID}:corecss`, JSON.stringify({ k: key, css: out })); } catch (e) {}
+    return out;
   }
   // 把所有自定义模板的 CSS 拼进单独的 <style>
   function injectCustomTemplateStyles() {
@@ -4971,7 +5083,12 @@ $(() => {
   }
 
   // 根据 ST 主题背景亮度判断当前是日间/夜间，给 body 加上 .be-light-theme
+  // 各书摘界面打开时调用：先补齐完整样式，再按酒馆主题明暗切换
   function detectAndApplyTheme() {
+    ensureFullStyle();
+    applyLightThemeClass();
+  }
+  function applyLightThemeClass() {
     try {
       const body = mainDoc.body;
       if (!body) return;
@@ -7839,6 +7956,8 @@ $(() => {
       mainDoc.body.appendChild(mask);
     }
     detectAndApplyTheme();
+    // 截图库在打开书摘弹窗时预加载（不再在酒馆启动时加载）
+    setTimeout(() => { loadH2C().catch(() => {}); }, 600);
     mask.classList.add('open');
     renderCard(text);
     if (currentEditable) toast('可直接点击文字进行修改，例如调整连接词', 'info');
@@ -7887,7 +8006,6 @@ $(() => {
   }
   function clearWarmup() { _saveWarmup = null; }
   function closeModal() {
-    markTypoDragging(260);   // 关闭淡出期间关掉背景模糊，避免低端机闪烁
     mainDoc.getElementById('be-mask')?.classList.remove('open');
     layClearOnceImgs();
     _apiSourceOverride = null;
@@ -8327,6 +8445,7 @@ $(() => {
   // 做法：把卡片复制进 Shadow DOM（外部样式表进不去，等同导出沙箱），读出每个元素本来的字体/字重，
   // 和预览里实际的不一样就用行内 !important 写回（行内 !important 优先于样式表 !important）。
   function shieldCardFonts(card) {
+    ensureFullStyle();
     if (!card || !card.isConnected || !card.attachShadow) return;
     let host = null;
     try {
@@ -8788,6 +8907,7 @@ $(() => {
   }
 
   async function renderInSandbox(card, bg, dpr, h2c) {
+    ensureFullStyle();
     const iframe = mainDoc.createElement('iframe');
     iframe.setAttribute('aria-hidden', 'true');
     // 导出宽度：优先用用户设定的整体宽度（竖屏排版），否则回退到卡片实际宽度
@@ -9034,12 +9154,13 @@ $(() => {
       mainDoc.body.appendChild(panel);
     }
     detectAndApplyTheme();
-    if (!panel.classList.contains('open')) markTypoDragging(380);
+    const wasOpen = panel.classList.contains('open');
     panel.classList.add('open');
     renderPanel();
+    // 打开面板时列表依次进入（已经开着时重画不再播）
+    if (!wasOpen) staggerIn(mainDoc.getElementById('be-notes-list') || mainDoc.getElementById('be-settings-content'));
   }
   function closePanel() {
-    markTypoDragging(260);
     mainDoc.getElementById('be-panel')?.classList.remove('open');
   }
   // 点「书摘笔记」：按设置先显示笔记本主页 / 当前角色 / 设置。
@@ -9061,6 +9182,17 @@ $(() => {
     openPanel('notes');
   }
 
+  function applyMotionStyle() { try { mainDoc.body.classList.toggle('be-mot-soft', settings.motionStyle === 'soft'); } catch (e) {} }
+  // 列表依次进入：给前 12 项标上序号，动画结束后摘掉（不影响之后的重排）
+  function staggerIn(container) {
+    if (!container) return;
+    try { if (mainWin.matchMedia('(prefers-reduced-motion: reduce)').matches) return; } catch (e) {}
+    Array.from(container.children).slice(0, 12).forEach((k, i) => k.style.setProperty('--be-i', i));
+    container.classList.remove('be-stg'); void container.offsetWidth;
+    container.classList.add('be-stg');
+    clearTimeout(container._beStgT);
+    container._beStgT = setTimeout(() => container.classList.remove('be-stg'), 1500);
+  }
   // 换内容 + 切换动画。
   // slide：旧内容拍一份快照，和新内容一起整页平移（旧的滑出、新的滑入），300ms 减速；
   // cube（滚筒）：两页像方块的两个面，绕各自的边转过去，结尾轻微回弹。只动 transform。
@@ -9095,21 +9227,34 @@ $(() => {
     container.classList.remove('be-body-anim', 'be-slide-l', 'be-slide-r');
     container.classList.add('be-swap-new');
     const cube = mode === 'cube';
-    const dur = cube ? 460 : 300;
-    markTypoDragging(dur + 80);
+    const soft = settings.motionStyle === 'soft';
     const d = dir < 0 ? -1 : 1;
+    // 曲线从 CSS 变量取（和其余动效同一套）；浏览器不认 linear() 时回退到 cubic-bezier
+    const cssVar = (k, fb) => { try { return mainWin.getComputedStyle(mainDoc.body).getPropertyValue(k).trim() || fb; } catch (e) { return fb; } };
+    const anim = (el, frames, o) => {
+      try { return el.animate(frames, o); }
+      catch (e) { return el.animate(frames, { ...o, easing: 'cubic-bezier(0.16, 1, 0.3, 1)' }); }
+    };
     let aNew, aOld;
     if (cube) {
+      // 滚筒：两页像方块的两个面绕边转过去；弹簧风格结尾轻微回弹，柔和风格不回弹
       host.style.perspective = '1400px';
       container.style.transformOrigin = d > 0 ? 'left center' : 'right center';
       old.style.transformOrigin = d > 0 ? 'right center' : 'left center';
-      const ease = 'cubic-bezier(0.3, 1.18, 0.55, 1)';
-      aNew = container.animate([{ transform: `translateX(${d * 100}%) rotateY(${d * 90}deg)` }, { transform: 'translateX(0) rotateY(0deg)' }], { duration: dur, easing: ease });
-      aOld = old.animate([{ transform: 'translateX(0) rotateY(0deg)' }, { transform: `translateX(${-d * 100}%) rotateY(${-d * 90}deg)` }], { duration: dur, easing: ease, fill: 'forwards' });
+      const ease = soft ? cssVar('--be-enter-ease', 'cubic-bezier(0.05, 0.7, 0.1, 1)') : cssVar('--be-spring-curve', 'cubic-bezier(0.16, 1, 0.3, 1)');
+      const dur = soft ? 420 : 640;
+      aNew = anim(container, [{ transform: `translateX(${d * 100}%) rotateY(${d * 90}deg)` }, { transform: 'translateX(0) rotateY(0deg)' }], { duration: dur, easing: ease });
+      aOld = anim(old, [{ transform: 'translateX(0) rotateY(0deg)', opacity: 1 }, { opacity: 1, offset: 0.6 }, { transform: `translateX(${-d * 100}%) rotateY(${-d * 90}deg)`, opacity: 0 }], { duration: dur, easing: ease, fill: 'forwards' });
+    } else if (soft) {
+      // 柔和：共享轴——旧页淡出并移开 24px，新页从 24px 外淡入，主要靠透明度
+      const exitE = cssVar('--be-exit-ease', 'cubic-bezier(0.3, 0, 0.8, 0.15)'), enterE = cssVar('--be-enter-ease', 'cubic-bezier(0.05, 0.7, 0.1, 1)');
+      aOld = anim(old, [{ transform: 'translateX(0)', opacity: 1 }, { transform: `translateX(${-d * 24}px)`, opacity: 0 }], { duration: 160, easing: exitE, fill: 'forwards' });
+      aNew = anim(container, [{ transform: `translateX(${d * 24}px)`, opacity: 0 }, { transform: 'translateX(0)', opacity: 1 }], { duration: 400, delay: 60, easing: enterE, fill: 'backwards' });
     } else {
-      const ease = 'cubic-bezier(0.2, 0.8, 0.2, 1)';
-      aNew = container.animate([{ transform: `translateX(${d * 100}%)` }, { transform: 'translateX(0)' }], { duration: dur, easing: ease });
-      aOld = old.animate([{ transform: 'translateX(0)' }, { transform: `translateX(${-d * 100}%)` }], { duration: dur, easing: ease, fill: 'forwards' });
+      // 弹簧：整页推入推出，接近临界阻尼（约 200ms 到位、几乎不过冲）；旧页在前半程淡出，结尾不会残留旧内容
+      const ease = cssVar('--be-page-curve', 'cubic-bezier(0.16, 1, 0.3, 1)');
+      aNew = anim(container, [{ transform: `translateX(${d * 100}%)` }, { transform: 'translateX(0)' }], { duration: 500, easing: ease });
+      aOld = anim(old, [{ transform: 'translateX(0)', opacity: 1 }, { opacity: 0, offset: 0.55 }, { transform: `translateX(${-d * 100}%)`, opacity: 0 }], { duration: 500, easing: ease, fill: 'forwards' });
     }
     const done = () => {
       try { old.remove(); } catch (e) {}
@@ -9125,7 +9270,6 @@ $(() => {
     el.classList.remove('be-body-anim', 'be-slide-l', 'be-slide-r');
     void el.offsetWidth;
     if (settings.panelAnim === 'slide') {
-      markTypoDragging(460);
       el.classList.add(dir < 0 ? 'be-slide-l' : 'be-slide-r');
     } else {
       el.classList.add('be-body-anim');
@@ -10142,7 +10286,10 @@ $(() => {
     if (!panelBody) return;
     let content = panelBody.querySelector('#be-settings-content');
     if (!content) {
+      // 分区标签滚出视野后，顶部吸附一个由三条横线组成的小条，可点击切换；滚回顶部时恢复文字标签
+      const groupNames = { card: '书摘卡片', highlight: '划线', general: '通用' };
       panelBody.innerHTML = `
+        <div class="be-sub-mini-wrap"><div class="be-sub-mini">${Object.entries(groupNames).map(([g, n]) => `<button type="button" data-g="${g}" class="${settingsGroup === g ? 'active' : ''}" title="${n}" aria-label="${n}"><i></i></button>`).join('')}</div></div>
         <div class="be-settings-subtabs">
           <button type="button" data-g="card" class="${settingsGroup==='card'?'active':''}">书摘卡片</button>
           <button type="button" data-g="highlight" class="${settingsGroup==='highlight'?'active':''}">划线</button>
@@ -10158,12 +10305,33 @@ $(() => {
           const dir = order.indexOf(g) < order.indexOf(settingsGroup) ? -1 : 1;
           settingsGroup = g;
           panelBody.querySelectorAll('.be-settings-subtabs button').forEach(b => b.classList.toggle('active', b === el));
+          panelBody.querySelectorAll('.be-sub-mini button').forEach(b => b.classList.toggle('active', b.getAttribute('data-g') === g));
           // 跟"笔记本/设置"顶部主 Tab 切换用同一套手法：内容瞬间换掉（没有旧内容残留/重叠这回事），
           // 只在新内容上补一个入场淡入，跟主 Tab 切换的手感保持一致——那个切换用户没意见，直接照搬。
           const sc = mainDoc.getElementById('be-settings-content');
           panelSwap(sc, () => renderSettingsGroupContent(sc), dir);
         });
       });
+      panelBody.querySelectorAll('.be-sub-mini button').forEach(b => b.addEventListener('click', () => {
+        const g = b.getAttribute('data-g');
+        // 点当前分区：回到顶部（文字标签重新出现）；点别的分区：切换（切换后也会回到顶部）
+        if (g === settingsGroup) { try { panelBody.scrollTo({ top: 0, behavior: 'smooth' }); } catch (e) { panelBody.scrollTop = 0; } return; }
+        panelBody.querySelector(`.be-settings-subtabs [data-g="${g}"]`)?.click();
+      }));
+      if (!panelBody._beMiniBound) {
+        panelBody._beMiniBound = true;
+        let raf = 0;
+        panelBody.addEventListener('scroll', () => {
+          if (raf) return;
+          raf = mainWin.requestAnimationFrame(() => {
+            raf = 0;
+            const tabs = panelBody.querySelector('.be-settings-subtabs');
+            const wrap = panelBody.querySelector('.be-sub-mini-wrap');
+            if (!tabs || !wrap) return;
+            wrap.classList.toggle('show', panelBody.scrollTop > tabs.offsetTop + tabs.offsetHeight - 4);
+          });
+        }, { passive: true });
+      }
       content = panelBody.querySelector('#be-settings-content');
     }
     renderSettingsGroupContent(content);
@@ -10543,9 +10711,16 @@ $(() => {
         </div>
         <div class="be-row">
           <div class="be-radio-group" id="be-panel-anim-group" style="width:100%;">
-            <button type="button" class="be-radio-opt ${settings.panelAnim !== 'slide' ? 'active' : ''}" data-v="fade">淡入淡出</button>
+            <button type="button" class="be-radio-opt ${!['slide', 'cube'].includes(settings.panelAnim) ? 'active' : ''}" data-v="fade">淡入淡出</button>
             <button type="button" class="be-radio-opt ${settings.panelAnim === 'slide' ? 'active' : ''}" data-v="slide">滑动</button>
             <button type="button" class="be-radio-opt ${settings.panelAnim === 'cube' ? 'active' : ''}" data-v="cube">滚筒</button>
+          </div>
+        </div>
+        <div class="be-row" style="margin-top:6px;"><label style="flex:1;">动效风格</label></div>
+        <div class="be-row">
+          <div class="be-radio-group" id="be-motion-group" style="width:100%;">
+            <button type="button" class="be-radio-opt ${settings.motionStyle !== 'soft' ? 'active' : ''}" data-v="spring">弹簧阻尼</button>
+            <button type="button" class="be-radio-opt ${settings.motionStyle === 'soft' ? 'active' : ''}" data-v="soft">柔和淡入</button>
           </div>
         </div>
         ${hint('切换「笔记本 / 设置」和设置里「书摘卡片 / 划线 / 通用」时的效果。')}
@@ -10758,6 +10933,12 @@ $(() => {
         body.querySelectorAll('#be-panel-home-group .be-radio-opt').forEach(b => b.classList.toggle('active', b === btn));
       });
     });
+    body.querySelectorAll('#be-motion-group .be-radio-opt').forEach(btn => btn.addEventListener('click', () => {
+      settings.motionStyle = btn.getAttribute('data-v') === 'soft' ? 'soft' : 'spring';
+      saveSettings(settings);
+      applyMotionStyle();
+      body.querySelectorAll('#be-motion-group .be-radio-opt').forEach(b => b.classList.toggle('active', b === btn));
+    }));
     body.querySelectorAll('#be-panel-anim-group .be-radio-opt').forEach(btn => {
       btn.addEventListener('click', () => {
         settings.panelAnim = ['slide', 'cube'].includes(btn.getAttribute('data-v')) ? btn.getAttribute('data-v') : 'fade';
@@ -12205,23 +12386,51 @@ $(() => {
     }
     return { html: box.innerHTML, hide };
   }
+  // 竖排文字里的行内占位写成 {书名} 这样：编辑时能看懂、能直接改，导出时换成当次的值
+  const LAY_VT_TOKS = { '角色名': ['char'], '用户名': ['user'], '作者': ['author'], '书名': ['book'], '章名': ['chapter'], '日期': ['date', 'num'], '日期·数字': ['date', 'num'], '日期·中文': ['date', 'cn'], '日期·英文': ['date', 'en'], '水印': ['wm'] };
+  const LAY_VT_TOK_RE = new RegExp('\\{(' + Object.keys(LAY_VT_TOKS).map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')\\}', 'g');
+  // 返回 { text, mark:Set(占位字符的下标), hide }；ed 时占位显示成名称，导出时换成值
+  function layVtResolve(raw, data, ed) {
+    let out = '', toks = 0, filled = 0;
+    const mark = new Set();
+    let last = 0;
+    String(raw || '').replace(LAY_VT_TOK_RE, (m, label, idx) => {
+      out += raw.slice(last, idx);
+      last = idx + m.length;
+      const [tok, fmt] = LAY_VT_TOKS[label];
+      toks++;
+      const v = ed ? label : layHtmlToPlain(layTokenHtml(tok, fmt || '', data || {}));
+      if (v) filled++;
+      const start = Array.from(out).length;
+      Array.from(v).forEach((_, i) => mark.add(start + i));
+      out += v;
+      return m;
+    });
+    out += String(raw || '').slice(last);
+    const hide = !ed && toks > 0 && !filled && !out.replace(/[\s\p{P}\p{S}]/gu, '');
+    return { text: out, mark, hide };
+  }
   // 竖排：按列高算出每列字数，逐列排成单字（从右往左）；标点换竖排写法
-  function layVertHtml(text, s, vh) {
+  function layVertHtml(text, s, vh, mark) {
     s = s || {};
     const z = Number(s.z) > 0 ? Number(s.z) : 18;
     const lh = Number(s.lh) > 0 ? Number(s.lh) : 1.8;
     const cell = z * 1.12;
     const per = Math.max(1, Math.floor(vh / cell));
     const cols = [];
+    let gi = 0;   // 在整段文字里的字符下标（用来标出占位的字）
     String(text || '').split('\n').forEach(line => {
-      const chars = Array.from(line);
+      const chars = Array.from(line).map(ch => ({ ch, i: gi++ }));
+      gi++;   // 换行
       if (!chars.length) { cols.push([]); return; }
       for (let i = 0; i < chars.length; i += per) cols.push(chars.slice(i, i + per));
     });
-    return cols.map(c => `<span class="be-lay-vcol" style="width:${(z * lh).toFixed(1)}px;height:${Math.round(vh)}px">${c.map(ch =>
-      LAY_VSHIFT[ch]
-        ? `<span style="height:${cell.toFixed(2)}px"><span class="be-lay-vsh">${LAY_VSHIFT[ch]}</span></span>`
-        : `<span style="height:${cell.toFixed(2)}px">${ch === ' ' ? '&nbsp;' : escapeHtml(LAY_VPUNCT[ch] || ch)}</span>`).join('')}</span>`).join('');
+    return cols.map(c => `<span class="be-lay-vcol" style="width:${(z * lh).toFixed(1)}px;height:${Math.round(vh)}px">${c.map(({ ch, i }) => {
+      const tk = mark && mark.has(i) ? ' class="be-lay-vtok"' : '';
+      return LAY_VSHIFT[ch]
+        ? `<span${tk} style="height:${cell.toFixed(2)}px"><span class="be-lay-vsh">${LAY_VSHIFT[ch]}</span></span>`
+        : `<span${tk} style="height:${cell.toFixed(2)}px">${ch === ' ' ? '&nbsp;' : escapeHtml(LAY_VPUNCT[ch] || ch)}</span>`;
+    }).join('')}</span>`).join('');
   }
   function layVertWrapCss(s) {
     s = s || {};
@@ -12688,12 +12897,20 @@ $(() => {
       return `<div class="be-la be-lay-imgw be-lay-img-${lay}${a.grp ? ' be-lay-img-grp' : ''}"${ea} style="width:${wp}%">${shd}<div class="be-lay-img" style="${layImgCss(v, url)}">${!url ? `<span class="be-lay-ph">${ed ? '点击选择图片' : '图片'}</span>` : ''}</div></div>`;
     }
     if (a.t === 'vt') {
-      const vh = layNum(a.vh, 240, 60, 900);
-      let txt;
+      let txt, mark = null;
       if (a.slot && !ed) txt = a.slot === 'thought' ? (data.thoughtPlain || '') : (data.quotePlain || '');
-      else txt = a.text || (ed ? (a.slot ? LAY_SAMPLE[a.slot] : '竖排文字') : '');
+      else if (a.text) {
+        const r = layVtResolve(a.text, data, ed);
+        if (r.hide) return '';
+        txt = r.text; mark = ed ? r.mark : null;
+      } else txt = ed ? (a.slot ? LAY_SAMPLE[a.slot] : '竖排文字') : '';
       if (!txt) return '';
-      return `<div class="be-la be-lay-vt${!a.text && ed ? ' be-lay-vt-ph' : ''}"${ea}${a.slot && ed ? ` data-vslot="${a.slot}"` : ''} style="${layVertWrapCss(a.s)}">${layVertHtml(txt, a.s, vh)}</div>`;
+      // 列高：0 / 未设 = 自动（按最长一行的字数，最高约 420px）；旧数据里设过的照旧
+      const z = Number((a.s || {}).z) > 0 ? Number(a.s.z) : 18, cell = z * 1.12;
+      const vh = Number(a.vh) > 0 ? layNum(a.vh, 240, 20, 900)
+        : Math.max(1, Math.min(Math.floor(420 / cell), Math.max(...txt.split('\n').map(l => Array.from(l).length), 1))) * cell + 0.5;
+      const vl = a.vlay === 'left' || a.vlay === 'right' ? ` be-lay-vt-${a.vlay}` : '';
+      return `<div class="be-la be-lay-vt${vl}${!a.text && ed ? ' be-lay-vt-ph' : ''}"${ea}${a.slot && ed ? ` data-vslot="${a.slot}"` : ''} style="${layVertWrapCss(a.s)}">${layVertHtml(txt, a.s, vh, mark)}</div>`;
     }
     if (a.t === 'hr') {
       const k = a.k || 'dots';
@@ -13306,7 +13523,7 @@ $(() => {
     const tail = [['dup', '复制'], ['del', '删除']];
     if (isFloat) return [['edit', it.k === 'text' ? '修改文字' : '更换符号'], ['style', '颜色 / 字体']].concat(tail);
     if (it.t === 'img') return [['replace', '替换图片'], ['crop', '裁剪'], ['layout', '布局', 1], ['mask', '遮罩', 1], ['frame', '相框', 1], ['border', '边框', 1], ['shadow', '阴影', 1], ['filter', '滤镜', 1], ['reset', '还原图片']].concat(tail);
-    if (it.t === 'vt') return [['vslot', '内容', 1], ['vtext', it.slot ? '修改示例文字' : '编辑文字'], ['vh', '列高', 1], ['style', '文字样式']].concat(tail);
+    if (it.t === 'vt') return [['vslot', '内容', 1], ['vtext', it.slot ? '修改示例文字' : '编辑文字'], ['vlay', '布局', 1], ['vh', '列高', 1], ['style', '文字样式']].concat(tail);
     if (it.t === 'hr') return [['divk', '样式', 1]].concat(tail);
     if (it.t === 'sp') return [['spaceh', '高度', 1]].concat(tail);
     return tail;
@@ -13421,7 +13638,8 @@ $(() => {
     if (key === 'shadow') return { key, title: '阴影', opts: [o('0', '无', !(Number(it.sh) > 0)), o('1', '轻', Number(it.sh) === 1), o('2', '中', Number(it.sh) === 2)] };
     if (key === 'filter') return { key, title: '滤镜', opts: [o('none', '原图', !it.filter || it.filter === 'none'), o('gray', '黑白', it.filter === 'gray'), o('vintage', '复古', it.filter === 'vintage'), o('contrast', '高对比', it.filter === 'contrast'), o('fade', '淡雅', it.filter === 'fade')] };
     if (key === 'vslot') return { key, title: '内容', opts: [o('', '自定文字', !it.slot), o('excerpt', '摘录（导出时替换）', it.slot === 'excerpt'), o('thought', '想法（导出时替换）', it.slot === 'thought')] };
-    if (key === 'vh') return slider('列高', 60, 600, Math.round(layNum(it.vh, 240, 60, 900)), 'px');
+    if (key === 'vh') return slider('列高（0 为按字数自动）', 0, 600, Math.round(Number(it.vh) > 0 ? layNum(it.vh, 240, 20, 900) : 0), 'px');
+    if (key === 'vlay') return { key, title: '布局', opts: [o('block', '独占一行', !it.vlay || it.vlay === 'block'), o('right', '靠右·文字绕排', it.vlay === 'right'), o('left', '靠左·文字绕排', it.vlay === 'left')] };
     if (key === 'divk') return { key, title: '分隔样式', opts: Object.entries(LAY_DIVIDERS).map(([k, n]) => o(k, n, (it.k || 'dots') === k)) };
     if (key === 'spaceh') return slider('留白高度', 4, 200, Math.round(layNum(it.h, 24, 4, 400)), 'px');
     if (key === 'datefmt') { const f = (lay.tok && lay.tok.getAttribute('data-fmt')) || 'num'; return { key, title: '日期格式', opts: [o('num', formatDate(), f === 'num'), o('cn', toChineseDate(new Date()), f === 'cn'), o('en', layDateText('en'), f === 'en')] }; }
@@ -13490,7 +13708,7 @@ $(() => {
     }
     if (m === 'vtext') {
       layCloseMenu();
-      layAskText(it.slot ? '示例文字（仅编辑时显示）' : '竖排文字', it.text || '', v => { if (v == null) return; layPushUndo(); it.text = v.replace(/\r/g, ''); layRenderPage(true); laySelect({ k: 'a', id: it.id }, false); }, { multi: true });
+      layAskText(it.slot ? '示例文字（仅编辑时显示）' : '竖排文字（{书名} {角色名} {用户名} {章名} {日期} {水印} 导出时替换）', it.text || '', v => { if (v == null) return; layPushUndo(); it.text = v.replace(/\r/g, ''); layRenderPage(true); laySelect({ k: 'a', id: it.id }, false); }, { multi: true });
       return;
     }
     if (m === 'replace') {
@@ -13536,6 +13754,7 @@ $(() => {
     else if (sub.key === 'filter') { it.filter = v; img = true; }
     else if (sub.key === 'vslot') { if (v) it.slot = v; else delete it.slot; }
     else if (sub.key === 'divk') it.k = v;
+    else if (sub.key === 'vlay') { if (v === 'block') delete it.vlay; else it.vlay = v; }
     // 菜单先换到新选项，图片在后台处理，处理完自动刷新
     menu.querySelectorAll('[data-o]').forEach(b => b.classList.toggle('on', b.getAttribute('data-o') === String(v)));
     if (img) { layApplyImage(it); return; }
@@ -13940,7 +14159,8 @@ $(() => {
     const list = paras.filter(p => !p.hasAttribute('data-slot') && p.parentNode === layRoot());
     if (!list.length) return;
     layPushUndo();
-    // 只选了一段里的几个字：把这段拆成「前 / 选中 / 后」三段，只把选中的字转竖排
+    // 只选了一段里的几个字：把这段拆成「前 / 选中 / 后」三段，只把选中的字转竖排（默认靠右，文字绕排）
+    let partial = false;
     if (list.length === 1 && r && !r.collapsed && layParaOf(r.startContainer) === list[0] && layParaOf(r.endContainer) === list[0]) {
       const p = list[0];
       const so = layOffsetIn(p, r.startContainer, r.startOffset), eo = layOffsetIn(p, r.endContainer, r.endOffset);
@@ -13954,23 +14174,22 @@ $(() => {
         p.innerHTML = ''; p.appendChild(fm);
         if (!layIsEmptyPara(pb)) p.before(pb);
         if (!layIsEmptyPara(pa)) p.after(pa);
+        partial = true;
       }
     }
     let firstId = '';
-    const dropped = [];
     list.forEach(p => {
-      p.querySelectorAll('.be-lay-tok').forEach(t => dropped.push(t.textContent));
       const { s } = layParaState(p);
       const tmp = p.cloneNode(true);
-      tmp.querySelectorAll('.be-lay-tok').forEach(t => t.remove());
+      tmp.querySelectorAll('.be-lay-tok').forEach(t => t.replaceWith(`{${t.textContent}}`));
       tmp.querySelectorAll('br').forEach(b => b.replaceWith('\n'));
-      const a = { t: 'vt', id: layNewId('a'), text: (tmp.textContent || '').replace(/​/g, '').trim(), s: { f: s.f, c: s.c, z: Number(s.z) > 0 ? s.z : 18 }, vh: 240 };
+      const a = { t: 'vt', id: layNewId('a'), text: (tmp.textContent || '').replace(/​/g, '').trim(), s: { f: s.f, c: s.c, z: Number(s.z) > 0 ? s.z : 18 }, vh: 0 };
+      if (partial) a.vlay = 'right';
       lay.draft.doc.push(a);
       const ph = mainDoc.createElement('div'); ph.className = 'be-la'; ph.setAttribute('data-aid', a.id);
       p.replaceWith(ph);
       if (!firstId) firstId = a.id;
     });
-    if (dropped.length) toast(`竖排文字不支持行内占位，已去掉：${[...new Set(dropped)].join('、')}`, 'info');
     layReadDom();
     lay.sel = firstId ? { k: 'a', id: firstId } : null;
     layRenderPage(false);
@@ -13986,7 +14205,11 @@ $(() => {
     if (a.s && a.s.f) s.f = a.s.f;
     if (a.s && a.s.c) s.c = a.s.c;
     const slot = LAY_SLOTS[a.slot] ? a.slot : '';
-    const np = layMakePara(LAY_PS[ps] ? ps : 'body', s, escapeHtml(a.text || '').replace(/\n/g, '<br>'), slot);
+    const html = escapeHtml(a.text || '').replace(/\n/g, '<br>').replace(LAY_VT_TOK_RE, (m, label) => {
+      const [tok, fmt] = LAY_VT_TOKS[label];
+      return `<span data-tok="${tok}"${tok === 'date' ? ` data-fmt="${fmt || 'num'}"` : ''} class="be-lay-tok" contenteditable="false">${escapeHtml(layTokenLabel(tok, fmt || 'num'))}</span>`;
+    });
+    const np = layMakePara(LAY_PS[ps] ? ps : 'body', s, html, slot);
     el.replaceWith(np);
     lay.sel = null;
     layReadDom();
@@ -15077,13 +15300,20 @@ $(() => {
       saveSettings(settings);
     }
   } catch (e) {}
-  loadFontStylesheets();
+  // 网络字体样式表：启动约 4 秒后浏览器空闲时以低优先级加载（第一次打开书摘界面时若还没加载会立即加载）
+  setTimeout(() => {
+    const go = () => { try { loadFontStylesheets(); } catch (e) {} };
+    if (mainWin.requestIdleCallback) mainWin.requestIdleCallback(go, { timeout: 4000 }); else go();
+  }, 4000);
+  applyMotionStyle();
   // 应用「有想法划线提升明度」class
   if (settings.thoughtBoost) {
     try { mainDoc.body.classList.add('be-thought-boost'); } catch (e) {}
   }
-  // 预加载截图库（不阻塞）
-  setTimeout(() => { loadH2C().catch(() => {}); }, 1500);
+  // 完整样式：启动 15 秒后浏览器空闲时补上（之前打开过书摘界面就已经补过了）
+  setTimeout(() => {
+    if (mainWin.requestIdleCallback) mainWin.requestIdleCallback(() => ensureFullStyle(), { timeout: 10000 }); else ensureFullStyle();
+  }, 15000);
 
   // 防抖还原（避免多个事件同时触发导致重复包裹）
   let _restoreTimer = null;
