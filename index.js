@@ -3420,14 +3420,14 @@ $(() => {
     }
     .be-sub-sticky.collapsed .be-settings-subtabs {
       scale: 1 0.06; opacity: 0; pointer-events: none;
-      transition: scale var(--be-exit-dur) var(--be-exit-ease), opacity var(--be-exit-dur) var(--be-exit-ease);
+      transition: scale var(--be-enter-dur) var(--be-enter-ease), opacity 0.18s var(--be-out);
     }
     /* 收起后的那条线：三段，当前分区用主题色；上下留出点击区域 */
     .be-sub-line {
       position: absolute; left: 16px; right: 16px; top: 0; height: 18px; padding: 0; border: 0; background: transparent;
       display: flex; gap: 4px; align-items: flex-start; cursor: pointer;
       opacity: 0; scale: 0.6 1; pointer-events: none; transform-origin: 50% 0;
-      transition: opacity var(--be-exit-dur) var(--be-exit-ease), scale var(--be-exit-dur) var(--be-exit-ease);
+      transition: opacity 0.16s var(--be-out), scale var(--be-enter-dur) var(--be-enter-ease);
     }
     .be-sub-line i { flex: 1; height: 3px; border-radius: 2px; background: var(--be-panel-sub); opacity: 0.35; }
     .be-sub-line i.active { background: var(--be-accent); opacity: 1; }
@@ -4406,16 +4406,11 @@ $(() => {
     .be-import-tpl-mask.open > .be-import-tpl-box, #be-thought-mask.open #be-thought-box, #be-source-mask.open #be-source-box, .be-lay-askbox { animation: be-box-in var(--be-enter-dur) var(--be-enter-ease); }
     #be-mask.open { animation: be-dim-in 0.2s var(--be-out); }
     #be-mask.open #be-modal { animation: be-box-in var(--be-enter-dur) var(--be-enter-ease); }
-    /* 面板本身带背景模糊：不对面板做位移 / 缩放 / 透明度动画（否则每一帧都要对整个酒馆页面重算一次模糊，手机上掉帧、闪），
-       打开时只让里面的内容依次淡入 */
-    #be-panel.be-opening > * { animation: be-item-in var(--be-enter-dur) var(--be-enter-ease) both; }
-    #be-panel.be-opening > :nth-child(2) { animation-delay: var(--be-stagger); }
-    #be-panel.be-opening > :nth-child(n+3) { animation-delay: calc(var(--be-stagger) * 2); }
+    /* 书摘面板打开不做动效：面板带背景模糊，对它做透明度动画时 Chromium 会先丢掉模糊、结束再补上；
+       让内容淡入则会先出现一大块空的模糊面板（聊天页背后内容多时像闪一下）。所以直接显示。 */
     /* 底部面板 */
     #be-drawer, #be-typo-sheet { transition: transform 0.42s var(--be-enter-ease); }
     .be-lay-sheet:not([hidden]), .be-lay-starter-box { animation: be-sheet-up var(--be-enter-dur) var(--be-enter-ease); }
-    /* 列表依次进入（每项间隔 --be-stagger，最多前 12 项） */
-    .be-stg > * { animation: be-item-in var(--be-enter-dur) var(--be-enter-ease) both; animation-delay: calc(var(--be-i, 0) * var(--be-stagger)); }
     /* 关闭：淡出缩小再隐藏（需要 Chrome 117+ 的 display 过渡，不支持的浏览器照旧直接消失）；关闭途中不接收点击 */
     @supports (transition-behavior: allow-discrete) {
       #be-mask, #be-thought-mask, .be-import-tpl-mask,
@@ -4449,7 +4444,7 @@ $(() => {
     @media (prefers-reduced-motion: reduce) {
       #be-float-bar.show, #be-card-hl-bar.show, #be-hl-bar.show, #be-card-hl-pop.show, #be-slot-chooser.show, .be-lay-menu:not([hidden]), #be-cpick,
       .be-import-tpl-mask.open, .be-import-tpl-mask.open > .be-import-tpl-box, #be-thought-mask.open #be-thought-box, #be-source-mask.open #be-source-box,
-      #be-mask.open, #be-mask.open #be-modal, #be-panel.be-opening > *, .be-lay-sheet:not([hidden]), .be-lay-starter-box, .be-lay-askbox, .be-stg > * { animation: none; }
+      #be-mask.open, #be-mask.open #be-modal, .be-lay-sheet:not([hidden]), .be-lay-starter-box, .be-lay-askbox { animation: none; }
       #be-mask, #be-thought-mask, .be-import-tpl-mask, #be-float-bar, #be-card-hl-bar, #be-hl-bar, #be-card-hl-pop, #be-slot-chooser, .be-lay-menu, #be-mask #be-modal { transition: none; }
       .be-btn:active, .be-mini-btn:active, .be-drawer-chip:active, .be-radio-opt:active, .be-fbtn:active, .be-tl-btn:active, .be-lay-cell:active { scale: 1; }
     }
@@ -9155,9 +9150,9 @@ $(() => {
   let noteFilter = 'all';
   let searchKey = '';
 
-  function openPanel(view = 'notes') {
+  function openPanel(view = 'notes', charKey = null) {
     panelView = view;
-    currentCharKey = null;
+    currentCharKey = charKey;
     let panel = mainDoc.getElementById('be-panel');
     if (!panel) {
       panel = mainDoc.createElement('div');
@@ -9167,14 +9162,8 @@ $(() => {
       mainDoc.body.appendChild(panel);
     }
     detectAndApplyTheme();
-    const wasOpen = panel.classList.contains('open');
     // 先在隐藏状态下把内容建好，再显示（只排一次版）
     renderPanel();
-    if (!wasOpen) {
-      panel.classList.add('be-opening');
-      clearTimeout(panel._beOpenT);
-      panel._beOpenT = setTimeout(() => panel.classList.remove('be-opening'), 1000);
-    }
     panel.classList.add('open');
   }
   function closePanel() {
@@ -9189,10 +9178,8 @@ $(() => {
       const ctx = getContext();
       const ch = loadNotes()[ctx.charKey];
       if (ctx.chatId && ch && Array.isArray(ch.items) && ch.items.some(it => it.type !== 'excerpt')) {
-        openPanel('notes');
-        currentCharKey = ctx.charKey;
-        panelView = 'char';
-        renderPanel();
+        // 直接以角色笔记本打开（之前先建一遍笔记本主页再整个换掉，白做一次）
+        openPanel('char', ctx.charKey);
         return;
       }
     }
@@ -9200,16 +9187,6 @@ $(() => {
   }
 
   function applyMotionStyle() { try { mainDoc.body.classList.toggle('be-mot-soft', settings.motionStyle === 'soft'); } catch (e) {} }
-  // 列表依次进入：给前 12 项标上序号，动画结束后摘掉（不影响之后的重排）
-  function staggerIn(container) {
-    if (!container) return;
-    try { if (mainWin.matchMedia('(prefers-reduced-motion: reduce)').matches) return; } catch (e) {}
-    Array.from(container.children).slice(0, 12).forEach((k, i) => k.style.setProperty('--be-i', i));
-    container.classList.remove('be-stg'); void container.offsetWidth;
-    container.classList.add('be-stg');
-    clearTimeout(container._beStgT);
-    container._beStgT = setTimeout(() => container.classList.remove('be-stg'), 1500);
-  }
   // 换内容 + 切换动画。
   // slide：旧内容拍一份快照，和新内容一起整页平移（旧的滑出、新的滑入），300ms 减速；
   // cube（滚筒）：两页像方块的两个面，绕各自的边转过去，结尾轻微回弹。只动 transform。
@@ -9246,7 +9223,6 @@ $(() => {
     container.classList.remove('be-body-anim', 'be-slide-l', 'be-slide-r');
     container.classList.add('be-swap-new');
     const cube = mode === 'cube';
-    const soft = settings.motionStyle === 'soft';
     const d = dir < 0 ? -1 : 1;
     // 曲线从 CSS 变量取（和其余动效同一套）；浏览器不认 linear() 时回退到 cubic-bezier
     const cssVar = (k, fb) => { try { return mainWin.getComputedStyle(mainDoc.body).getPropertyValue(k).trim() || fb; } catch (e) { return fb; } };
@@ -9256,19 +9232,14 @@ $(() => {
     };
     let aNew, aOld;
     if (cube) {
-      // 滚筒：两页像方块的两个面绕边转过去；弹簧风格结尾轻微回弹，柔和风格不回弹
+      // 滚筒：两页像方块的两个面绕边转过去，结尾轻微回弹（切换界面固定用弹簧，不受「动效风格」影响）
       host.style.perspective = '1400px';
       container.style.transformOrigin = d > 0 ? 'left center' : 'right center';
       old.style.transformOrigin = d > 0 ? 'right center' : 'left center';
-      const ease = soft ? cssVar('--be-enter-ease', 'cubic-bezier(0.05, 0.7, 0.1, 1)') : cssVar('--be-spring-curve', 'cubic-bezier(0.16, 1, 0.3, 1)');
-      const dur = soft ? 420 : 640;
+      const ease = cssVar('--be-spring-curve', 'cubic-bezier(0.16, 1, 0.3, 1)');
+      const dur = 640;
       aNew = anim(container, [{ transform: `translateX(${d * 100}%) rotateY(${d * 90}deg)` }, { transform: 'translateX(0) rotateY(0deg)' }], { duration: dur, easing: ease });
       aOld = anim(old, [{ transform: 'translateX(0) rotateY(0deg)', opacity: 1 }, { opacity: 1, offset: 0.6 }, { transform: `translateX(${-d * 100}%) rotateY(${-d * 90}deg)`, opacity: 0 }], { duration: dur, easing: ease, fill: 'forwards' });
-    } else if (soft) {
-      // 柔和：共享轴——旧页淡出并移开 24px，新页从 24px 外淡入，主要靠透明度
-      const exitE = cssVar('--be-exit-ease', 'cubic-bezier(0.3, 0, 0.8, 0.15)'), enterE = cssVar('--be-enter-ease', 'cubic-bezier(0.05, 0.7, 0.1, 1)');
-      aOld = anim(old, [{ transform: 'translateX(0)', opacity: 1 }, { transform: `translateX(${-d * 24}px)`, opacity: 0 }], { duration: 160, easing: exitE, fill: 'forwards' });
-      aNew = anim(container, [{ transform: `translateX(${d * 24}px)`, opacity: 0 }, { transform: 'translateX(0)', opacity: 1 }], { duration: 400, delay: 60, easing: enterE, fill: 'backwards' });
     } else {
       // 弹簧：整页推入推出，接近临界阻尼（约 200ms 到位、几乎不过冲）；旧页在前半程淡出，结尾不会残留旧内容
       const ease = cssVar('--be-page-curve', 'cubic-bezier(0.16, 1, 0.3, 1)');
@@ -9283,6 +9254,7 @@ $(() => {
       try { old.remove(); } catch (e) {}
       container.classList.remove('be-swap-new');
       container.style.transformOrigin = '';
+      container.style.willChange = '';
       host.style.perspective = '';
     };
     const cancel = () => { try { aNew.cancel(); } catch (e) {} try { aOld.cancel(); } catch (e) {} done(); };
@@ -9290,6 +9262,7 @@ $(() => {
     aNew.onfinish = done; aNew.oncancel = done;
     // 新内容很重时，渲染那一帧会很慢：动画先停在起点，等起点画出来后的下一帧再开始计时，不会一开始就跳过一截
     aNew.pause(); aOld.pause();
+    container.style.willChange = 'transform'; old.style.willChange = 'transform';
     void container.offsetHeight;
     const raf = mainWin.requestAnimationFrame || (f => setTimeout(f, 16));
     raf(() => raf(() => { if (!finished) { aNew.play(); aOld.play(); } }));
