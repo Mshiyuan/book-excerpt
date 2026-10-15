@@ -87,7 +87,7 @@ $(() => {
     savedSwatches: [],             // 取色器「我的色板」
     colorPickerTab: 'classic',     // 取色器上次用的方式：classic 经典 / disc 色盘 / value 参数 / palette 调色板
     dataDirSync: true,             // 同步到酒馆数据目录（data/<用户>/user/files/）：浏览器存储照旧，另存一份双保险
-    dailyReview: false,            // 随机回顾：每天第一次打开酒馆时推一条旧笔记
+    dailyReview: false,            // 打开酒馆时推一条旧笔记：false 关闭 / true 每天首次打开 / 'every' 每次打开
     lastDailyReview: '',           // 上次推送的日期（YYYY-MM-DD），一天只推一次
     jumpNoConfirm: false,          // 跳回原文要切换聊天/角色时不再弹确认（确认框里勾「以后不再提醒」）
     panelAnim: 'fade',             // 切换笔记本/设置、设置三个小类时的动画：fade 淡入淡出 / slide 滑动 / cube 滚筒
@@ -2360,12 +2360,20 @@ $(() => {
     .be-flip-hint { font-size: 11px; opacity: 0.7; margin-top: 4px; }
     .be-flip-glare { position: absolute; inset: 0; pointer-events: none; border-radius: inherit; opacity: 0; transition: opacity 0.3s ease-out;
       background: radial-gradient(circle at var(--gx, 50%) var(--gy, 50%), rgba(255,255,255,0.38), rgba(255,255,255,0) 58%); }
-    .be-flip-txt .be-flip-glare { background: radial-gradient(circle at var(--gxm, 50%) var(--gy, 50%), rgba(255,255,255,0.38), rgba(255,255,255,0) 58%); }
     .be-flip-lit .be-flip-glare { opacity: 1; transition-duration: 0.1s; }
+    .be-flip-scroll { max-height: min(52vh, 440px); overflow-y: auto; scrollbar-width: none; overscroll-behavior: contain; }
+    .be-flip-scroll::-webkit-scrollbar { display: none; }
+    .be-flip-txt .be-dr-quote { max-height: none; overflow: visible; }
+    .be-flip-bar { position: absolute; top: 14px; bottom: 14px; right: 2px; width: 18px; display: none; justify-content: center; cursor: grab; touch-action: none; z-index: 2; }
+    .be-flip-bar.show { display: flex; }
+    .be-flip-bar::before { content: ''; position: absolute; top: 0; bottom: 0; width: 3px; border-radius: 2px; background: var(--bar); opacity: 0.18; }
+    .be-flip-bar i { position: relative; display: block; width: 5px; border-radius: 3px; background: var(--bar); opacity: 0.6; transition: opacity 0.2s, width 0.2s; }
+    .be-flip-bar.drag i, .be-flip-bar:hover i { opacity: 0.9; width: 7px; }
+    .be-flip-bar.drag { cursor: grabbing; }
+    .be-flip-txt { padding-right: 24px; }
     .be-flip-face, .be-flip-face * { text-shadow: none !important; }
-    #be-viewer .be-vw-flip { margin-top: 26px; }
-    .be-flip-txt .be-rv-quote, .be-flip-txt .be-vw-quote, .be-flip-txt .be-dr-quote, .be-flip-txt .be-rv-thought { color: inherit; }
-    .be-flip-txt .be-rv-when, .be-flip-txt .be-rv-src, .be-flip-txt .be-dr-src, .be-flip-txt .be-vw-location, .be-flip-txt .be-rv-thought span { color: inherit; opacity: 0.62; }
+    .be-flip-txt .be-rv-quote, .be-flip-txt .be-dr-quote, .be-flip-txt .be-rv-thought { color: inherit; }
+    .be-flip-txt .be-rv-when, .be-flip-txt .be-rv-src, .be-flip-txt .be-dr-src, .be-flip-txt .be-rv-thought span { color: inherit; opacity: 0.62; }
     @media (prefers-reduced-motion: reduce) { .be-flip-card { transition: none !important; } }
     #be-viewer .be-vw-quote {
       font-size: 15px; line-height: 1.7;
@@ -3636,7 +3644,7 @@ $(() => {
       position: absolute; inset: 0;
       background: var(--be-panel-row-bg-hover);
       border-radius: 26px; cursor: pointer;
-      transition: background 0.22s ease;
+      transition: background var(--be-toggle-dur, 0.3s) ease;
     }
     .be-slider::before {
       content: '';
@@ -3646,7 +3654,7 @@ $(() => {
       background: #fff;
       border-radius: 50%;
       box-shadow: 0 1px 5px rgba(0,0,0,0.22);
-      transition: transform 0.22s cubic-bezier(0.34, 1.4, 0.64, 1);
+      transition: transform var(--be-toggle-dur, 0.3s) var(--be-toggle-ease, ease);
     }
     .be-toggle input:checked + .be-slider { background: var(--be-accent); }
     .be-toggle input:checked + .be-slider::before { transform: translateX(20px); }
@@ -4394,6 +4402,7 @@ $(() => {
       --be-press-s: 0.95; --be-press-dur: 90ms;
       --be-release-ease: var(--be-spring-curve); --be-release-dur: 600ms;
       --be-stagger: 45ms; --be-enter-blur: 0px;
+      --be-toggle-ease: var(--be-spring-curve); --be-toggle-dur: 0.6s;
       --be-spring: var(--be-spring-curve);
       --be-out: cubic-bezier(0.2, 0.8, 0.2, 1);
       --be-in: var(--be-exit-ease);
@@ -4410,6 +4419,7 @@ $(() => {
       --be-press-s: 0.97; --be-press-dur: 120ms;
       --be-release-ease: cubic-bezier(0.33, 1, 0.68, 1); --be-release-dur: 500ms;
       --be-stagger: 80ms;
+      --be-toggle-ease: cubic-bezier(0.33, 1, 0.68, 1); --be-toggle-dur: 0.55s;
       --be-spring: cubic-bezier(0.33, 1, 0.68, 1);
     }
     @keyframes be-pop-in { from { opacity: 0; scale: var(--be-pop-s); translate: 0 var(--be-pop-y); filter: blur(var(--be-enter-blur)); } to { opacity: 1; scale: 1; translate: 0 0; filter: blur(0); } }
@@ -7030,7 +7040,7 @@ $(() => {
 
   // ----- 划线查看抽屉（点击划线弹出）-----
 
-  // ---------- 3D 倾斜翻面卡片（随机回顾 / 每日回顾 / 笔记查看器） ----------
+  // ---------- 3D 倾斜翻面卡片（随机回顾 / 每日回顾） ----------
   // 一面是头像（跟随「头像类型」），一面是书摘；轻点翻面。手指按住或鼠标移过时按指针位置倾斜（最大 12°），
   // 高光跟着指针；松开 / 移出时高光淡出，卡片用弹簧曲线回到平面。只动 transform 和 opacity。
   // 卡片上 touch-action:none：在卡片上滑动只倾斜，不滚页面、不选字、不弹长按菜单。
@@ -7062,7 +7072,7 @@ $(() => {
           <div class="be-flip-hint" style="color:${c.sub}">轻点翻面</div>
           <i class="be-flip-glare"></i>
         </div>
-        <div class="be-flip-face be-flip-txt" style="${faceCss}">${textHtml}<i class="be-flip-glare"></i></div>
+        <div class="be-flip-face be-flip-txt" style="${faceCss}"><div class="be-flip-scroll">${textHtml}</div><div class="be-flip-bar" style="--bar:${c.sub}"><i></i></div><i class="be-flip-glare"></i></div>
       </div>
     </div>`;
   }
@@ -7086,7 +7096,6 @@ $(() => {
         const px = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)), py = Math.max(0, Math.min(1, (e.clientY - r.top) / r.height));
         set(-(py - 0.5) * 2 * MAX, (px - 0.5) * 2 * MAX, 'transform 100ms ease-out');
         el.style.setProperty('--gx', (px * 100).toFixed(1) + '%');
-        el.style.setProperty('--gxm', ((1 - px) * 100).toFixed(1) + '%');
         el.style.setProperty('--gy', (py * 100).toFixed(1) + '%');
         el.classList.add('be-flip-lit');
       };
@@ -7115,7 +7124,48 @@ $(() => {
       el.addEventListener('pointerleave', e => { if (!down) settle(); });
       el.addEventListener('contextmenu', e => e.preventDefault());
       el.addEventListener('click', e => e.stopPropagation());
+      bindFlipScroll(el);
     });
+  }
+  // 书摘面内容超出时显示右侧滑动条：拖滑块或点轨道滚动；操作滑动条时卡片不倾斜、不翻面
+  function bindFlipScroll(el) {
+    const sc = el.querySelector('.be-flip-scroll'), bar = el.querySelector('.be-flip-bar');
+    if (!sc || !bar) return;
+    const thumb = bar.querySelector('i');
+    const sync = () => {
+      const over = sc.scrollHeight - sc.clientHeight;
+      bar.classList.toggle('show', over > 2);
+      if (over <= 2) return;
+      const track = bar.clientHeight;
+      const th = Math.max(28, track * sc.clientHeight / sc.scrollHeight);
+      thumb.style.height = th + 'px';
+      thumb.style.transform = `translateY(${((track - th) * sc.scrollTop / over).toFixed(1)}px)`;
+    };
+    sc.addEventListener('scroll', sync, { passive: true });
+    let drag = null;
+    bar.addEventListener('pointerdown', e => {
+      e.stopPropagation(); e.preventDefault();
+      const r = bar.getBoundingClientRect();
+      const over = sc.scrollHeight - sc.clientHeight;
+      const th = thumb.offsetHeight;
+      const tr = thumb.getBoundingClientRect();
+      // 点在轨道上（不在滑块上）：先把滑块中心移到点击处
+      if (e.clientY < tr.top || e.clientY > tr.bottom) sc.scrollTop = Math.max(0, Math.min(over, ((e.clientY - r.top - th / 2) / Math.max(1, r.height - th)) * over));
+      drag = { y: e.clientY, top: sc.scrollTop, k: over / Math.max(1, r.height - th) };
+      try { bar.setPointerCapture(e.pointerId); } catch (er) {}
+      bar.classList.add('drag');
+    });
+    bar.addEventListener('pointermove', e => {
+      if (!drag) return;
+      e.stopPropagation();
+      sc.scrollTop = drag.top + (e.clientY - drag.y) * drag.k;
+    });
+    const end = e => { if (!drag) return; e.stopPropagation(); drag = null; bar.classList.remove('drag'); };
+    bar.addEventListener('pointerup', end);
+    bar.addEventListener('pointercancel', end);
+    bar.addEventListener('click', e => e.stopPropagation());
+    requestAnimationFrame(sync);
+    setTimeout(sync, 300);
   }
 
   function openHighlightViewer(noteId) {
@@ -7150,7 +7200,8 @@ $(() => {
       : '';
     viewer.innerHTML = `
       <button class="be-vw-close" id="be-vw-close">×</button>
-      ${flipCardHtml({ charKey: note.charKey, sub: formatDateTime(note.ts), face: 'text', cls: 'be-vw-flip', textHtml: `<div class="be-vw-quote">${escapeHtml(note.text || '')}</div>${_locationHtml}` })}
+      <div class="be-vw-quote">${escapeHtml(note.text || '')}</div>
+      ${_locationHtml}
       <div class="be-vw-actions">
         <button data-act="copy">复制</button>
         <button data-act="thought">写想法</button>
@@ -7172,7 +7223,6 @@ $(() => {
       </div>
     `;
     viewer.querySelector('#be-vw-close').addEventListener('click', () => mask.classList.remove('open'));
-    bindFlipCards(viewer);
     viewer.querySelectorAll('.be-vw-actions button').forEach(b => {
       b.addEventListener('click', () => {
         const act = b.getAttribute('data-act');
@@ -12012,9 +12062,11 @@ $(() => {
           <button class="be-btn" id="be-rv-thought">写想法</button>
           <button class="be-btn" id="be-rv-card">做成书摘</button>
         </div>` : `<div class="be-empty">还没有笔记</div>`}
-        <div class="be-row be-rv-daily">
-          <label style="flex:1;">每天首次打开酒馆时显示一条</label>
-          <label class="be-toggle"><input type="checkbox" id="be-rv-daily" ${settings.dailyReview ? 'checked' : ''}><span class="be-slider"></span></label>
+        <div class="be-row be-rv-daily"><label style="flex:1;">打开酒馆时显示一条</label></div>
+        <div class="be-row">
+          <div class="be-radio-group" id="be-rv-daily" style="width:100%;">
+            ${[['off', '关闭'], ['daily', '每天首次'], ['every', '每次打开']].map(([v, n]) => `<button type="button" class="be-radio-opt ${(settings.dailyReview === 'every' ? 'every' : settings.dailyReview ? 'daily' : 'off') === v ? 'active' : ''}" data-v="${v}">${n}</button>`).join('')}
+          </div>
         </div>
       </div>`;
     panel.querySelector('#be-back').addEventListener('click', () => { panelView = 'notes'; renderPanel(); });
@@ -12034,14 +12086,20 @@ $(() => {
       lastText = note.text;
       openExcerptModal(note.text, ths.length ? { thoughtText: ths[ths.length - 1].text || '' } : {});
     });
-    panel.querySelector('#be-rv-daily')?.addEventListener('change', e => { settings.dailyReview = e.target.checked; saveSettings(settings); });
+    panel.querySelectorAll('#be-rv-daily .be-radio-opt').forEach(b => b.addEventListener('click', () => {
+      const v = b.getAttribute('data-v');
+      settings.dailyReview = v === 'every' ? 'every' : v === 'daily';
+      saveSettings(settings);
+      panel.querySelectorAll('#be-rv-daily .be-radio-opt').forEach(x => x.classList.toggle('active', x === b));
+    }));
   }
-  // 每日推送：一天一次，至少有 3 条笔记才推；右下角一张小卡片，点开进随机回顾
+  // 打开酒馆时推一条：每天首次（一天一次）或每次打开；至少有 3 条笔记才推；点开进随机回顾
   function maybeDailyReview() {
     if (!settings.dailyReview) return;
+    const every = settings.dailyReview === 'every';
     const d = new Date();
     const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-    if (settings.lastDailyReview === today) return;
+    if (!every && settings.lastDailyReview === today) return;
     const notes = loadNotes();
     const total = Object.keys(notes).reduce((n, k) => n + notes[k].items.filter(it => it.type !== 'excerpt').length, 0);
     if (total < 3) return;
@@ -12055,7 +12113,7 @@ $(() => {
     const txt = String(picked.note.text || '');
     el.innerHTML = `
       <div class="be-dr-card">
-        <div class="be-dr-head"><i class="fa-solid fa-shuffle"></i> 今日回顾</div>
+        <div class="be-dr-head"><i class="fa-solid fa-shuffle"></i> ${every ? '回顾' : '今日回顾'}</div>
         ${flipCardHtml({ charKey: picked.charKey, sub: formatDateTime(picked.note.ts), face: 'avatar', cls: 'be-dr-flip', textHtml: `
           <div class="be-dr-quote">${escapeHtml(txt.slice(0, 200))}${txt.length > 200 ? '…' : ''}</div>
           <div class="be-dr-src">${escapeHtml((notes[picked.charKey] && notes[picked.charKey].name) || '')} · ${formatDateTime(picked.note.ts)}</div>` })}
