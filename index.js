@@ -70,6 +70,7 @@ $(() => {
     lastColor: '',                 // 上次实际用的划线颜色（空=用 style 对应的默认色）
     saveMode: 'download',          // 保存图片方式：download 下载文件 / popup 弹图长按保存（部分内嵌浏览器不支持下载时用）
     keepDelLine: false,            // 书摘卡片是否保留原文的删除线（del/s 划掉效果）
+    keepItalic: false,             // 书摘卡片是否保留原文的斜体（酒馆把 *……* 渲染成的 em / i）
     mergeEnabled: true,            // 划线合并：点划线可加入合并篮子 + 悬浮篮子入口（v1.4.0 起默认开，老用户已保存的选择不受影响）
     mergeDefaultTarget: '',        // 合并完成后默认动作：'' 每次询问 / 'note' 直接存为笔记 / 'card' 直接生成书摘
     mergeDeleteOriginal: '',       // 合并后原划线怎么处理：'' 每次询问 / 'delete' 删除原划线 / 'keep' 保留原划线
@@ -83,6 +84,11 @@ $(() => {
     templateOrder: [],             // 模板排序（默认+导入统一，存 key），只有 templateOrderManual 为 true 才生效
     templateOrderManual: false,    // 用户在模板列表里拖动过才为 true；否则固定 默认模板在前、导入模板在后
     templateFavorites: [],         // 收藏的模板 key 列表（跟 settings.template 同格式：'classic' / 'custom-<id>'），选模板时排在最前
+    tplFolders: [],                // 模板文件夹 [{id, name}]，按显示顺序
+    tplFolderOf: {},               // 模板 key -> 文件夹 id；没有的就是未分类
+    tplFolderClosed: {},           // 设置列表里折叠起来的文件夹 id -> true
+    drawerFolderTabs: true,        // 书摘弹窗的模板栏上方显示文件夹筛选（有文件夹时）
+    drawerFolder: '',              // 弹窗模板栏当前筛选：'' 全部 / 'fav' 收藏 / 'none' 未分类 / 文件夹 id
     floatBarCustom: false,         // 自定义悬浮栏按钮（高级设置，默认关）：开着时按 floatBarLayout 排序/隐藏
     floatBarLayout: [],            // [{id:'highlight'|'thought'|'excerpt'|'pick', hidden}]，没列到的按钮自动排在后面
     recentColors: [],              // 取色器「最近使用」（最多 16 个）
@@ -1655,8 +1661,10 @@ $(() => {
   // 楼层没渲染（酒馆只显示最近若干楼）时用 /chat-jump 让酒馆自己加载再滚过去。
   async function jumpToNote(note, charKey) {
     if (!canJumpToNote(note)) { toast('这条笔记没有记录楼层，无法跳转', 'info'); return; }
+    const rd = readerForNote(note, charKey || note.charKey);
+    if (rd) return jumpInReader(rd, note);
     const raw = stContext();
-    const ctx = getContext();
+    const ctx = getStContext();
     const notes = loadNotes();
     const key = charKey || note.charKey;
     // 聊天名一样就是同一个聊天，不再比角色：群聊里 charKey 记的是当时说话的角色名，比角色会误判成「别的角色」
@@ -1686,12 +1694,12 @@ $(() => {
       try {
         if (otherChar) {
           await raw.selectCharacterById(chIdx);
-          if (!await beWait(() => getContext().charKey === key, 6000)) { toast('切换角色失败，酒馆可能正在保存或生成', 'warning'); return; }
+          if (!await beWait(() => getStContext().charKey === key, 6000)) { toast('切换角色失败，酒馆可能正在保存或生成', 'warning'); return; }
         }
-        if (note.chatId && getContext().chatId !== note.chatId) {
+        if (note.chatId && getStContext().chatId !== note.chatId) {
           if (group) await stContext().openGroupChat(group.id, note.chatId);
           else await stContext().openCharacterChat(note.chatId);
-          if (!await beWait(() => getContext().chatId === note.chatId, 6000)) { toast(`没能打开聊天「${note.chatId}」，可能已被删除或改名`, 'warning'); return; }
+          if (!await beWait(() => getStContext().chatId === note.chatId, 6000)) { toast(`没能打开聊天「${note.chatId}」，可能已被删除或改名`, 'warning'); return; }
         }
       } catch (e) { toast('打开聊天失败：' + (e?.message || e), 'error'); return; }
       await new Promise(r => setTimeout(r, 500));
@@ -1836,7 +1844,46 @@ $(() => {
       : '原文位于这一楼的当前版本中，但未能标出划线（显示内容可能被正则或格式处理改动过），已定位到所在楼层', 'info');
   }
 
+  // ---------- 承接器（别的脚本自己的阅读界面）----------
+  // 用 var：启动早期就可能有代码调 getContext()，不能落进 let 的暂时性死区
+  var _readers = new Map();        // id -> 承接器
+  // 当前这条浮动栏 / 划线工具栏是从哪个承接器弹出来的（聊天里弹出时为 null）。
+  // 只在点按钮的那一刻读取，用来决定这一次操作记到谁名下；getContext() 不看它
+  var _activeReader = null;
+  // 这一次操作使用的角色 / 存档：openCard、renderCardImage 传入的 context，或从承接器里发起的书摘弹窗。
+  // 弹窗关闭时清空（closeModal）；没有设置时 getContext() 就是酒馆当前聊天，和没有承接器时完全一样
+  var _ctxOverride = null;
+  var _panelHost = null;           // mountNotebook 指定的容器
+  var _panelOnClose = null;
+  function readerAlive(r) {
+    const root = r && r.root();
+    return !!(root && root.isConnected && root.getClientRects().length);
+  }
+  // 点按钮时：浮动栏 / 工具栏来自承接器、且承接器还开着，返回它给的角色和存档；否则 null
+  function readerOpCtx() {
+    const r = _activeReader;
+    if (!r || !_readers.has(r.id) || !readerAlive(r)) return null;
+    return r.ctx();
+  }
+  // 在 fn 执行期间临时使用 ctx 作为「当前角色 / 存档」（同步执行，结束即恢复）
+  function withCtx(ctx, fn) {
+    if (!ctx) return fn();
+    const prev = _ctxOverride;
+    _ctxOverride = ctx;
+    try { return fn(); } finally { _ctxOverride = prev; }
+  }
+  // 当前角色/聊天：有本次操作指定的角色（见 _ctxOverride）就用它，否则用酒馆当前打开的
   function getContext() {
+    const ov = _ctxOverride;
+    const st = getStContext();
+    if (!ov) return st;
+    const charKey = ov.charKey || ov.charName || 'unknown';
+    return {
+      charName: ov.charName || '', charAvatar: ov.charAvatar || '', chatId: ov.chatId || '',
+      userName: ov.userName || st.userName, userAvatar: ov.userAvatar || st.userAvatar, charKey
+    };
+  }
+  function getStContext() {
     let charName = '', userName = '', charAvatar = '', userAvatar = '', charKey = '', chatId = '';
     try {
       const ctx = (typeof mainWin.SillyTavern !== 'undefined' && mainWin.SillyTavern.getContext)
@@ -2840,6 +2887,8 @@ $(() => {
       text-decoration: line-through;
       text-decoration-thickness: 1px;
     }
+    /* 原文斜体段（酒馆把 *……* 渲染成 em） */
+    .be-card em.be-em { font-style: italic; }
     /* 拖动排版滑块期间临时关掉背景模糊：backdrop-filter 在其背后内容变化时会被
        Chromium 反复重算，部分机型上间歇性闪白(行距最明显，字距偶发)。拖动时关掉、
        停手 200ms 后恢复——#be-mask 本身有 rgba(0,0,0,0.7) 底色，关掉模糊几乎无感。 */
@@ -3310,6 +3359,10 @@ $(() => {
       letter-spacing: 0.05em;
       white-space: nowrap;
     }
+    #be-drawer .be-drawer-ftabs { margin-bottom: 8px; }
+    #be-drawer .be-drawer-ftab { font-size: 12px; padding-top: 4px; padding-bottom: 4px; }
+    #be-drawer .be-drawer-ftab i { font-size: 11px; opacity: 0.8; }
+    #be-drawer .be-drawer-empty { font-size: 12px; white-space: nowrap; }
     #be-drawer .be-drawer-sep {
       flex: 0 0 auto;
       display: flex; align-items: center;
@@ -3588,6 +3641,58 @@ $(() => {
     .be-tl-body { padding-top: 8px; }
     .be-tl-list { display: flex; flex-direction: column; gap: 6px; }
     .be-tl-sep { text-align: center; opacity: 0.45; margin: 2px 0; line-height: 1; }
+    /* 模板文件夹：标题行和模板行同样的长条，内容缩进一点 */
+    .be-tl-body > .be-tl-folder, .be-tl-body > .be-tl-list + .be-tl-list { margin-top: 6px; }
+    .be-tl-folder + .be-tl-folder { margin-top: 6px; }
+    .be-tl-fhead {
+      display: flex; align-items: center; gap: 8px;
+      padding: 4px 4px 4px 12px; min-height: 38px; box-sizing: border-box; border-radius: 12px; cursor: pointer;
+      background: var(--be-panel-row-bg); font-size: 13px;
+      border: 1.5px dashed transparent;
+      -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent;
+    }
+    .be-tl-fhead:hover { background: var(--be-panel-row-bg-hover); }
+    .be-tl-fhead.be-drop { border-color: var(--be-accent); }
+    .be-tl-fhead .be-caret {
+      display: inline-block; width: 0; height: 0;
+      border-top: 4px solid transparent; border-bottom: 4px solid transparent;
+      border-left: 5px solid currentColor; opacity: 0.6; transition: transform 0.15s;
+    }
+    .be-tl-folder.open > .be-tl-fhead .be-caret { transform: rotate(90deg); }
+    .be-tl-fico { color: var(--be-accent); font-size: 13px; width: 16px; text-align: center; }
+    .be-tl-fname { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+    .be-tl-fcount { font-size: 11px; color: var(--be-panel-sub); opacity: 0.8; }
+    .be-tl-flist { display: none; padding: 6px 0 0 14px; }
+    .be-tl-folder.open > .be-tl-flist { display: flex; }
+    .be-tl-fempty { font-size: 11.5px; color: var(--be-panel-sub); opacity: 0.75; padding: 8px 10px; border-radius: 10px; border: 1px dashed rgba(128,128,128,0.35); }
+    .be-tl-sub { font-size: 11px; font-weight: 600; letter-spacing: 0.08em; color: var(--be-panel-sub); opacity: 0.75; margin: 12px 0 4px 4px; }
+    .be-tl-list[data-group="rest"]:empty { min-height: 0; }
+    .be-tl-newfolder {
+      display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%;
+      margin-top: 8px; padding: 8px 12px; border-radius: 12px; cursor: pointer;
+      background: transparent; color: var(--be-panel-sub); font-size: 12.5px; font-family: inherit;
+      border: 1.5px dashed rgba(128,128,128,0.35);
+      -webkit-tap-highlight-color: transparent;
+    }
+    .be-tl-newfolder:hover { color: var(--be-panel-fg); border-color: var(--be-accent); }
+    .be-tl-drawertabs { margin-top: 6px; }
+    /* 贴着按钮的小菜单（移到文件夹） */
+    #be-menu-pop {
+      position: absolute; z-index: 2147483647; min-width: 150px; max-width: 240px; max-height: 50vh; overflow: auto;
+      padding: 6px; border-radius: 12px; box-sizing: border-box;
+      background: var(--be-panel-bg, #1b1b1b); color: var(--be-panel-fg, #eee);
+      box-shadow: 0 10px 30px rgba(0,0,0,0.4); border: 1px solid rgba(128,128,128,0.25);
+      font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+    #be-menu-pop .be-menu-item {
+      display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+      padding: 8px 10px; border: 0; border-radius: 8px; background: transparent; color: inherit;
+      font-size: 13px; font-family: inherit; cursor: pointer;
+    }
+    #be-menu-pop .be-menu-item:hover { background: rgba(128,128,128,0.16); }
+    #be-menu-pop .be-menu-item > i, #be-menu-pop .be-menu-ck { width: 14px; flex: 0 0 14px; font-size: 11px; color: var(--be-accent); }
+    #be-menu-pop .be-menu-item > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #be-menu-pop .be-menu-sep { height: 1px; margin: 4px 6px; background: rgba(128,128,128,0.25); }
     .be-tl-row {
       position: relative; overflow: hidden; border-radius: 12px;
       background: var(--be-panel-row-bg);
@@ -5209,14 +5314,18 @@ $(() => {
   // 绝不写入笔记存储（存储一律用纯 text），也绝不进入最终 HTML（渲染时被替换/剥除）。
   const DEL_O = String.fromCharCode(1);
   const DEL_C = String.fromCharCode(2);
-  const stripDelMarks = (s) => String(s || '').split(DEL_O).join('').split(DEL_C).join('');
+  // 斜体段哨兵（U+0003/U+0004），规则同上：酒馆把 *……* 渲染成 <em>
+  const EM_O = String.fromCharCode(3);
+  const EM_C = String.fromCharCode(4);
+  const RICH_MARKS_RE = /[\u0001-\u0004]/g;
+  const stripDelMarks = (s) => String(s || '').replace(RICH_MARKS_RE, '');
 
   function isInsideChat(node) {
     if (!node) return false;
     const el = node.nodeType === 1 ? node : node.parentElement;
     if (!el) return false;
     if (el.closest('#be-float-bar, #be-mask, #be-panel, #be-thought-mask')) return false;
-    return !!el.closest('.mes_text, .mes_block, .mes');
+    return !!el.closest('.mes_text, .mes_block, .mes') || !!readerOf(el);
   }
 
   // 取选区文本：直接在原 DOM 上按 range 边界遍历真实 text node 的 nodeValue。
@@ -5242,9 +5351,11 @@ $(() => {
       const v = sliceText(node);
       if (!v) return;
       out += v;
-      let struck = false;
+      let struck = false, italic = false;
       try { struck = !!(node.parentElement && node.parentElement.closest('del, s, strike')); } catch (e) {}
-      rich += struck ? (DEL_O + v + DEL_C) : v;
+      try { italic = !!(node.parentElement && node.parentElement.closest('em, i')); } catch (e) {}
+      const seg = struck ? (DEL_O + v + DEL_C) : v;
+      rich += italic ? (EM_O + seg + EM_C) : seg;
     };
     const walk = (node) => {
       if (node.nodeType === 3) {
@@ -5263,8 +5374,8 @@ $(() => {
     else walk(root);
     const text = out.replace(/\n{2,}/g, '\n').trim();
     // 相邻标记对合并；没有删除线时 rich 置空（用真假值即可判断）
-    rich = rich.replace(new RegExp(DEL_C + DEL_O, "g"), '').replace(/\n{2,}/g, '\n').trim();
-    if (rich.indexOf(DEL_O) === -1) rich = '';
+    rich = rich.replace(new RegExp(EM_C + EM_O, "g"), '').replace(new RegExp(DEL_C + DEL_O, "g"), '').replace(/\n{2,}/g, '\n').trim();
+    if (rich.indexOf(DEL_O) === -1 && rich.indexOf(EM_O) === -1) rich = '';
     return { text, rich };
   }
 
@@ -5284,6 +5395,7 @@ $(() => {
     lastRichText = picked.rich;
     lastRange = range.cloneRange();
     lastRangeFrame = null;
+    _activeReader = readerOf(range.startContainer) || readerOf(range.endContainer);
     const rects = range.getClientRects();
     const rect = rects.length ? rects[rects.length - 1] : range.getBoundingClientRect();
     showBar(rect);
@@ -5347,6 +5459,8 @@ $(() => {
         const note = createHighlight(lastText, lastRange);
         if (note) toast('已划线', 'success');
       } else if (act === 'excerpt') {
+        const rc = readerOpCtx();
+        if (rc) _ctxOverride = rc;   // 从承接器里发起：这张卡用阅读器里的角色，关弹窗时清空
         openExcerptModal(lastText);
       } else if (act === 'thought') {
         // 已在划线上 → 在该 note 上新增一条想法
@@ -5699,6 +5813,7 @@ $(() => {
     const bar = ensureBar();
     applyTavernFloatStyle(bar, 'select');
     applyFloatBarLayout(bar);
+    renderCustomActions(bar);
     const pickBtn = bar.querySelector('.be-pick-btn');
     if (pickBtn) pickBtn.querySelector('span').textContent = pickPendingStart ? '设为结尾' : '设为开头';
     bar.classList.add('show');
@@ -5729,6 +5844,48 @@ $(() => {
     if (arrowBottom) bar.classList.add('arrow-bottom');
   }
 
+  // 登记表放在主窗口上：书摘热重载后按钮还在
+  function selectionActions() {
+    if (!mainWin.__bookExcerptActions) mainWin.__bookExcerptActions = {};
+    return mainWin.__bookExcerptActions;
+  }
+  function renderCustomActions(bar) {
+    bar.querySelectorAll('.be-fbtn-custom, .be-fdiv-custom').forEach(e => e.remove());
+    const where = _activeReader ? 'reader' : 'chat';
+    Object.values(selectionActions()).filter(a => a.where === 'all' || a.where === where).forEach(a => {
+      const d = mainDoc.createElement('span'); d.className = 'be-fbtn-divider be-fdiv-custom';
+      const b = mainDoc.createElement('button'); b.type = 'button'; b.className = 'be-fbtn be-fbtn-custom';
+      if (a.icon) { const i = mainDoc.createElement('i'); i.className = a.icon; b.appendChild(i); }
+      const s = mainDoc.createElement('span'); s.textContent = a.label; b.appendChild(s);
+      const handler = (e) => {
+        e.stopPropagation(); e.preventDefault();
+        if (b._beBusy) return;
+        b._beBusy = true; setTimeout(() => { b._beBusy = false; }, 300);
+        runCustomAction(a);
+      };
+      b.addEventListener('click', handler);
+      b.addEventListener('touchend', handler, { passive: false });
+      bar.appendChild(d); bar.appendChild(b);
+    });
+  }
+  function runCustomAction(a) {
+    if (!lastText) return;
+    const range = lastRange ? lastRange.cloneRange() : null;
+    const rd = _activeReader;
+    let mesId = '';
+    try {
+      if (rd) { const f = rd.floorOf(range.startContainer); mesId = f ? rd.mesIdOf(f) : ''; }
+      else {
+        const el = lastRangeFrame || (range.startContainer.nodeType === 1 ? range.startContainer : range.startContainer.parentElement);
+        mesId = (el && el.closest('.mes') && el.closest('.mes').getAttribute('mesid')) || '';
+      }
+    } catch (e) {}
+    const detail = { text: lastText, range, frame: lastRangeFrame || null, mesId, readerId: rd ? rd.id : '' };
+    pickPendingStart = null;
+    hideBar();
+    try { const r = a.onClick(detail); if (r && typeof r.catch === 'function') r.catch(e => console.warn('[书摘] 自定义按钮出错', a.id, e)); }
+    catch (e) { console.warn('[书摘] 自定义按钮出错', a.id, e); }
+  }
   function hideBar() {
     const bar = mainDoc.getElementById('be-float-bar');
     if (bar) bar.classList.remove('show');
@@ -6521,6 +6678,7 @@ $(() => {
     lastRichText = picked.rich;
     lastRange = range.cloneRange();
     lastRangeFrame = iframeEl;
+    _activeReader = null;
     const rects = range.getClientRects();
     const rect = rects.length ? rects[rects.length - 1] : range.getBoundingClientRect();
     const r2 = translateFrameRect(rect, iframeEl);
@@ -6584,6 +6742,13 @@ $(() => {
   // ---------- 划线 ----------
   function createHighlight(text, range, opts = {}) {
     if (!range) return null;
+    const rdHere = readerOf(range.startContainer);
+    if (!rdHere) return createHighlightIn(null, text, range, opts);
+    const rc = rdHere.ctx();
+    if (!rc) { toast('这个阅读界面没有提供角色和存档信息，无法记录', 'warning'); return null; }
+    return withCtx(rc, () => createHighlightIn(rdHere, text, range, opts));
+  }
+  function createHighlightIn(rdHere, text, range, opts) {
     const ctx = getContext();
     // 选区若来自状态栏 iframe，range 所在文档里没有 .mes 祖先（iframe 自己的 document 不认识这个 class），
     // 要回到 iframe 元素本身在主文档里的位置去找
@@ -6591,10 +6756,12 @@ $(() => {
     if (!msgEl && lastRangeFrame) {
       try { msgEl = lastRangeFrame.closest('.mes'); } catch (e) {}
     }
-    const msgId = msgEl?.getAttribute('mesid') || '';
+    const rdFloor = rdHere && rdHere.floorOf(range.startContainer);
+    const msgId = rdHere ? (rdFloor ? rdHere.mesIdOf(rdFloor) : '') : (msgEl?.getAttribute('mesid') || '');
     // 记下这条回复当时显示的是第几个 swipe：之后被重 roll 掉也能告诉用户它在哪个版本里
+    // 承接器里读的是存档文件，只有它正好是酒馆当前打开的聊天时才查得到 swipe
     let swipeId;
-    try {
+    if (!rdHere || (ctx.chatId && ctx.chatId === getStContext().chatId)) try {
       const m = stContext()?.chat?.[parseInt(msgId)];
       if (m && Number.isInteger(m.swipe_id)) swipeId = m.swipe_id;
     } catch (e) {}
@@ -6744,10 +6911,11 @@ $(() => {
   function restoreHighlights() {
     try { restoreHighlightsInner(); }
     catch (e) { console.warn('[BookExcerpt] restoreHighlights failed:', e); }
+    try { restoreReaders(); } catch (e) {}
     scanForStatusBarFrames(); // 同一批触发时机顺带扫一遍新出现的状态栏 iframe（消息渲染/切聊天/DOM 变化）
   }
   function restoreHighlightsInner() {
-    const ctx = getContext();
+    const ctx = getStContext();
     const notes = loadNotes();
     const ch = notes[ctx.charKey];
     if (!ch) return;
@@ -6756,6 +6924,13 @@ $(() => {
         if (!it.msgId) return;
         const mes = mainDoc.querySelector(`.mes[mesid="${it.msgId}"] .mes_text`);
         if (!mes) return;
+        restoreNoteIn(mes, it);
+      } catch (e) {}
+    });
+  }
+  // 在一楼的正文元素里还原一条划线（聊天和承接器共用）
+  function restoreNoteIn(mes, it) {
+      {
         const existing = mes.querySelectorAll(`.be-highlight[data-be-id="${it.id}"]`);
         if (existing.length) {
           // span 已在，但可能是上一个脚本实例包的（监听器已死）：克隆剥掉旧监听、重绑新的
@@ -6786,7 +6961,28 @@ $(() => {
         if ((it.thoughts || []).length || (it.thought || '').trim()) {
           mes.querySelectorAll(`.be-highlight[data-be-id="${it.id}"]`).forEach(el => el.classList.add('has-thought'));
         }
-      } catch (e) {}
+      }
+  }
+  // 承接器里的划线：按承接器给的角色 + 存档找笔记，按楼层号找正文元素
+  function restoreReaders() {
+    if (!_readers.size) return;
+    const notes = loadNotes();
+    _readers.forEach(r => {
+      try {
+        const root = r.root();
+        if (!root || !root.isConnected) return;
+        const c = r.ctx();
+        const ch = c && notes[c.charKey];
+        if (!ch) return;
+        const floors = r.floors(root);
+        if (!floors.size) return;
+        ch.items.forEach(it => {
+          if (it.type !== 'highlight' || !it.msgId) return;
+          if (c.chatId && it.chatId && it.chatId !== c.chatId) return;
+          const el = floors.get(String(it.msgId));
+          if (el) { try { restoreNoteIn(el, it); } catch (e) {} }
+        });
+      } catch (e) { console.warn('[书摘] 承接器还原划线失败', r.id, e); }
     });
   }
 
@@ -6820,6 +7016,9 @@ $(() => {
   // openThoughtEditor 新签名：(noteId, text, thoughtId | null)
   // thoughtId === null 表示新增一条；非空表示编辑指定一条
   function openThoughtEditor(noteId, text, thoughtId) {
+    const opCtx = readerOpCtx();   // 从承接器里打开的：之后「生成书摘」也用阅读器里的角色
+    // 想法记在这条划线自己所属的角色下（从笔记本打开别的角色的划线时，不能按当前角色找）
+    const ownerKey = () => (findNoteById(noteId) || {}).charKey || getContext().charKey;
     const mask = ensureThoughtMask();
     if (mask.parentNode !== mainDoc.body || mask.nextSibling) {
       mainDoc.body.appendChild(mask);
@@ -6863,10 +7062,11 @@ $(() => {
       // 关闭其他遮罩，确保 modal 在最上
       mainDoc.getElementById('be-viewer-mask')?.classList.remove('open');
       lastText = original;
+      if (opCtx) _ctxOverride = opCtx;
       openExcerptModal(original, { thoughtText: val });
     });
     reNew('#be-thought-save', () => {
-      const ctx = getContext();
+      const ctx = { charKey: ownerKey() };
       const val = ta.value.trim();
       if (!val) {
         // 空 → 视为取消（编辑时也不创建/不更新）
@@ -6893,11 +7093,10 @@ $(() => {
       }
       if (mainDoc.getElementById('be-panel')?.classList.contains('open')) renderPanel();
     });
-    reNew('#be-thought-del', () => {
+    reNew('#be-thought-del', async () => {
       if (!thoughtId) return;
-      if (!mainWin.confirm('删除这条想法？')) return;
-      const ctx = getContext();
-      removeThought(ctx.charKey, noteId, thoughtId);
+      if (!(await beConfirm({ text: '删除这条想法？', okText: '删除' })).ok) return;
+      removeThought(ownerKey(), noteId, thoughtId);
       const after = findNoteById(noteId);
       const hasAny = !!(after && after.thoughts && after.thoughts.length);
       mainDoc.querySelectorAll(`.be-highlight[data-be-id="${noteId}"]`).forEach(el => {
@@ -6915,14 +7114,14 @@ $(() => {
   // ----- 点击划线弹出的改样式工具栏 -----
   let _hlBarCloser = null;
   function openHlBar(noteId, anchorEl) {
+    _activeReader = anchorEl ? readerOf(anchorEl) : null;
     const note = findNoteById(noteId);
     if (!note) {
       // 笔记记录已丢失（多半是 localStorage 写失败），但 DOM 上的 span 还在 → 给条出路允许清掉
       const span = anchorEl || mainDoc.querySelector(`.be-highlight[data-be-id="${noteId}"]`);
       if (!span) return;
-      if (mainWin.confirm('这条划线的笔记记录已丢失（可能是浏览器存储权限被禁用或已满）。\n要清除它吗？')) {
-        deleteHighlightById(noteId);
-      }
+      beConfirm({ text: '这条划线的笔记记录已丢失（可能是浏览器存储权限被禁用或已满）。要清除它吗？', okText: '清除' })
+        .then(r => { if (r.ok) deleteHighlightById(noteId); });
       return;
     }
     let bar = mainDoc.getElementById('be-hl-bar');
@@ -7018,7 +7217,8 @@ $(() => {
           catch (e) { toast('复制失败', 'error'); }
           closeHlBar();
         } else if (act === 'del') {
-          if (mainWin.confirm('删除这条划线？')) { deleteHighlightById(noteId); closeHlBar(); }
+          closeHlBar();
+          beConfirm({ text: '删除这条划线？', okText: '删除' }).then(r => { if (r.ok) deleteHighlightById(noteId); });
         } else if (act === 'addline') {
           // 仅想法 → 转为带划线
           updateNote(fresh.charKey, noteId, { thoughtOnly: false });
@@ -7036,13 +7236,16 @@ $(() => {
         } else if (act === 'excerpt') {
           closeHlBar();
           lastText = fresh.text;
+          const rc = readerOpCtx();
+          if (rc) _ctxOverride = rc;
           openExcerptModal(fresh.text);
         } else if (act === 'merge') {
           // 不关闭工具条：允许连续点几条划线快速加入同一个篮子
           if (isInMergeBasket(noteId)) removeFromMergeBasket('note:' + noteId);
           else {
+            // 按这条划线自己所属的角色和聊天记（笔记里本来就存着），不受当前打开的是谁影响
             const mCtx = getContext();
-            addToMergeBasket({ text: fresh.text, source: 'note', noteId, charKey: mCtx.charKey, chatId: mCtx.chatId });
+            addToMergeBasket({ text: fresh.text, source: 'note', noteId, charKey: fresh.charKey || mCtx.charKey, chatId: fresh.chatId || mCtx.chatId });
           }
           renderHlBar(bar, noteId);
         }
@@ -7265,7 +7468,7 @@ $(() => {
     `;
     viewer.querySelector('#be-vw-close').addEventListener('click', () => mask.classList.remove('open'));
     viewer.querySelectorAll('.be-vw-actions button').forEach(b => {
-      b.addEventListener('click', () => {
+      b.addEventListener('click', async () => {
         const act = b.getAttribute('data-act');
         if (act === 'copy') {
           try { mainWin.navigator.clipboard.writeText(note.text || ''); toast('已复制', 'success'); }
@@ -7277,7 +7480,7 @@ $(() => {
           mask.classList.remove('open');
           openExcerptModal(note.text);
         } else if (act === 'del') {
-          if (!mainWin.confirm('删除这条划线和它的所有想法？')) return;
+          if (!(await beConfirm({ text: '删除这条划线和它的所有想法？', okText: '删除' })).ok) return;
           removeNote(note.charKey, noteId);
           unwrapHighlightSpans(noteId);
           mask.classList.remove('open');
@@ -7440,7 +7643,8 @@ $(() => {
       const n = mask.querySelectorAll('#be-src-mask-chips .be-mask-chip').length;
       sum('mask', `开 · ${n} 个词`);
     } else sum('mask', '关');
-    sum('other', `${q('#be-src-keepdel').checked ? '保留删除线' : '不留删除线'} · ${settings.saveMode === 'popup' ? '弹图长按' : '下载文件'}`);
+    const keeps = [q('#be-src-keepdel').checked && '删除线', q('#be-src-keepitalic').checked && '斜体'].filter(Boolean);
+    sum('other', `${keeps.length ? '保留' + keeps.join('、') : '不留格式'} · ${settings.saveMode === 'popup' ? '弹图长按' : '下载文件'}`);
     syncSourceStars(mask);
   }
   // 出处组合：用户名/作者/书名/章名/水印 存成一组，点一下全部填好（仍要点底部「保存」才生效）
@@ -7672,6 +7876,10 @@ $(() => {
                 <input type="checkbox" id="be-src-keepdel">
                 <label for="be-src-keepdel">保留原文删除线（书摘内显示划掉效果）</label>
               </div>
+              <div class="be-src-row">
+                <input type="checkbox" id="be-src-keepitalic">
+                <label for="be-src-keepitalic">保留原文斜体（*……* 显示为斜体）</label>
+              </div>
               <div class="be-src-field">
                 <label>保存图片方式（下载没反应时换「弹图长按」）</label>
                 <div class="be-radio-group" id="be-src-savemode">
@@ -7759,6 +7967,7 @@ $(() => {
     mask.querySelector('#be-src-mask-obj-user').checked = !!settings.maskUser;
     mask.querySelector('#be-src-mask-obj-char').checked = !!settings.maskChar;
     mask.querySelector('#be-src-keepdel').checked = !!settings.keepDelLine;
+    mask.querySelector('#be-src-keepitalic').checked = !!settings.keepItalic;
     mask.querySelector('#be-src-mask-chips')._beRender?.();
     mask.querySelectorAll('.be-src-group').forEach(g => {
       const b = g.querySelector('.be-src-gbody');
@@ -7862,9 +8071,9 @@ $(() => {
       });
       inp.click();
     });
-    reNew('#be-src-avatar-clear', () => {
+    reNew('#be-src-avatar-clear', async () => {
       if (!settings.customAvatar) { toast('还没上传头像', 'info'); return; }
-      if (!mainWin.confirm('清除自定义头像？')) return;
+      if (!(await beConfirm({ text: '清除自定义头像？', okText: '清除' })).ok) return;
       clearCustomAvatar();
       updateAvatarPreview();
       if (mainDoc.getElementById('be-card')) renderCard(lastText);
@@ -7888,6 +8097,7 @@ $(() => {
       settings.maskExtra = mask.querySelector('#be-src-mask-extra').value;
       settings.maskSource = mask.querySelector('#be-src-mask-source').checked;
       settings.keepDelLine = mask.querySelector('#be-src-keepdel').checked;
+      settings.keepItalic = mask.querySelector('#be-src-keepitalic').checked;
       saveSettings(settings);
       close();
       if (mainDoc.getElementById('be-card')) renderCard(lastText);
@@ -7930,22 +8140,50 @@ $(() => {
     drawer._closeFn = closeDrawer;
   }
 
+  // 弹窗模板栏上方的文件夹筛选：有文件夹、且设置里没关时才显示
+  function drawerFolderFilter() {
+    if (settings.drawerFolderTabs === false || !tplFolders().length) return '';
+    const v = settings.drawerFolder || '';
+    if (v && v !== 'fav' && v !== 'none' && !tplFolders().some(f => f.id === v)) return '';
+    return v;
+  }
+  function drawerFolderTabsHtml() {
+    if (settings.drawerFolderTabs === false || !tplFolders().length) return '';
+    const cur = drawerFolderFilter();
+    const { favs, rest } = getTemplatePickerEntries();
+    const shown = favs.concat(rest);
+    const tabs = [{ v: '', label: '全部' }];
+    if (favs.length) tabs.push({ v: 'fav', label: '★ 收藏' });
+    tplFolders().forEach(f => tabs.push({ v: f.id, label: f.name, ico: true }));
+    if (shown.some(e => !tplFolderOfKey(e.key))) tabs.push({ v: 'none', label: '未分类' });
+    return `<div class="be-drawer-row be-drawer-ftabs" id="be-drawer-tplf">${tabs.map(t => `<div class="be-drawer-chip be-drawer-ftab ${cur === t.v ? 'active' : ''}" data-f="${escapeHtml(t.v)}">${t.ico ? '<i class="fa-solid fa-folder"></i> ' : ''}${escapeHtml(t.label)}</div>`).join('')}</div>`;
+  }
+  function drawerTplChipsHtml() {
+    const { favs, rest } = getTemplatePickerEntries();
+    const chip = e => `<div class="be-drawer-chip ${settings.template===e.key?'active':''}" data-k="${e.key}">${e.fav?'★ ':''}${escapeHtml(e.name)}${e.lid ? `<span class="be-lay-chip-edit" data-ledit="${e.lid}" title="编辑排版"><i class="fa-solid fa-pen"></i></span>` : ''}</div>`;
+    const f = drawerFolderFilter();
+    const parts = [];
+    if (!f) {
+      parts.push(...favs.map(chip));
+      if (favs.length && rest.length) parts.push('<span class="be-drawer-sep">·</span>');
+      parts.push(...rest.map(chip));
+    } else {
+      // 文件夹里的模板全列出来（收藏的也在，带 ★）
+      const list = f === 'fav' ? favs
+        : favs.concat(rest).filter(e => f === 'none' ? !tplFolderOfKey(e.key) : tplFolderOfKey(e.key) === f);
+      parts.push(...list.map(chip));
+      if (!list.length) parts.push('<span class="be-drawer-sep be-drawer-empty">这个文件夹是空的</span>');
+    }
+    parts.push('<div class="be-drawer-chip be-drawer-new" data-new-layout="1"><i class="fa-solid fa-plus"></i> 自由排版</div>');
+    return parts.join('');
+  }
   function renderDrawer(drawer) {
     drawer.innerHTML = `
       <div class="be-drawer-handle"></div>
       <div class="be-sec">
         <h4>主题</h4>
-        <div class="be-drawer-row" id="be-drawer-tpl">
-          ${(() => {
-            const { favs, rest } = getTemplatePickerEntries();
-            const chip = e => `<div class="be-drawer-chip ${settings.template===e.key?'active':''}" data-k="${e.key}">${e.fav?'★ ':''}${escapeHtml(e.name)}${e.lid ? `<span class="be-lay-chip-edit" data-ledit="${e.lid}" title="编辑排版"><i class="fa-solid fa-pen"></i></span>` : ''}</div>`;
-            const parts = favs.map(chip);
-            if (favs.length && rest.length) parts.push('<span class="be-drawer-sep">·</span>');
-            parts.push(...rest.map(chip));
-            parts.push('<div class="be-drawer-chip be-drawer-new" data-new-layout="1"><i class="fa-solid fa-plus"></i> 自由排版</div>');
-            return parts.join('');
-          })()}
-        </div>
+        ${drawerFolderTabsHtml()}
+        <div class="be-drawer-row" id="be-drawer-tpl">${drawerTplChipsHtml()}</div>
       </div>
       <div class="be-sec">
         <h4>字体</h4>
@@ -7973,7 +8211,7 @@ $(() => {
       saveSettings(settings);
       renderCard(lastText);
     };
-    drawer.querySelectorAll('#be-drawer-tpl .be-drawer-chip').forEach(el => {
+    const bindTplChips = () => drawer.querySelectorAll('#be-drawer-tpl .be-drawer-chip').forEach(el => {
       el.addEventListener('click', (e) => {
         if (el.hasAttribute('data-new-layout')) { openLayoutEditor(null, { fromModal: true }); return; }
         const ed = e.target.closest('[data-ledit]');
@@ -7982,6 +8220,19 @@ $(() => {
         drawer.querySelectorAll('#be-drawer-tpl .be-drawer-chip').forEach(x => x.classList.remove('active'));
         el.classList.add('active');
         apply();
+      });
+    });
+    bindTplChips();
+    // 文件夹筛选：只换模板这一排，字体 / 颜色两排的滚动位置不动
+    drawer.querySelectorAll('#be-drawer-tplf .be-drawer-chip').forEach(el => {
+      el.addEventListener('click', () => {
+        settings.drawerFolder = el.getAttribute('data-f');
+        saveSettings(settings);
+        drawer.querySelectorAll('#be-drawer-tplf .be-drawer-chip').forEach(x => x.classList.toggle('active', x === el));
+        const row = drawer.querySelector('#be-drawer-tpl');
+        row.innerHTML = drawerTplChipsHtml();
+        row.scrollLeft = 0;
+        bindTplChips();
       });
     });
     drawer.querySelectorAll('#be-drawer-font .be-drawer-chip').forEach(el => {
@@ -8202,6 +8453,7 @@ $(() => {
     mainDoc.getElementById('be-mask')?.classList.remove('open');
     layClearOnceImgs();
     _apiSourceOverride = null;
+    _ctxOverride = null;
     currentThoughtText = '';
     currentRichText = '';
     currentEditable = false;
@@ -8245,17 +8497,34 @@ $(() => {
   // 把引文按空行/换行拆为多段，每段做一个 <p>
   // 段内若含删除线哨兵标记（…），把标记段渲染成 <s>，其余按原逻辑打码+转义；
   // 哨兵永远不会出现在最终 HTML 里（成对替换，收尾兜底剥除）。
+  // 斜体哨兵（…）同理渲染成 <em>，两种可以嵌套
   function quoteParaHtml(p) {
-    if (p.indexOf(DEL_O) === -1) return maskText(stripDelMarks(p));
-    const re = new RegExp(DEL_O + '([^' + DEL_O + DEL_C + ']*)' + DEL_C, 'g');
-    let html = '', last = 0, m;
-    while ((m = re.exec(p)) !== null) {
-      if (m.index > last) html += maskText(stripDelMarks(p.slice(last, m.index)));
-      if (m[1]) html += `<s class="be-del">${maskText(m[1])}</s>`;
-      last = m.index + m[0].length;
+    if (!/[\u0001-\u0004]/.test(p)) return maskText(p);
+    let html = '', buf = '', inDel = false, inEm = false;
+    const flush = () => {
+      if (!buf) return;
+      let h = maskText(buf);
+      if (inDel) h = `<s class="be-del">${h}</s>`;
+      if (inEm) h = `<em class="be-em">${h}</em>`;
+      html += h; buf = '';
+    };
+    for (const ch of p) {
+      if (ch === DEL_O) { flush(); inDel = true; }
+      else if (ch === DEL_C) { flush(); inDel = false; }
+      else if (ch === EM_O) { flush(); inEm = true; }
+      else if (ch === EM_C) { flush(); inEm = false; }
+      else buf += ch;
     }
-    if (last < p.length) html += maskText(stripDelMarks(p.slice(last)));
+    flush();
     return html;
+  }
+  // 按「保留删除线 / 保留斜体」两个开关去掉不需要的标记；都不需要时返回空串（按纯文本渲染）
+  function richForCard(richText, text) {
+    if (!richText || stripDelMarks(richText) !== text) return '';
+    let r = richText;
+    if (!settings.keepDelLine) r = r.split(DEL_O).join('').split(DEL_C).join('');
+    if (!settings.keepItalic) r = r.split(EM_O).join('').split(EM_C).join('');
+    return /[\u0001\u0003]/.test(r) ? r : '';
   }
   function quoteHtml(text) {
     const paras = String(text || '').split(/\n+/).map(s => s.trim()).filter(Boolean);
@@ -8421,8 +8690,8 @@ $(() => {
     //  · 普通：直接展示引文
     //  · 想法书摘：大字想法在上 + 小字原句在下（带引号边线）
     // 「保留原文删除线」开启且富文本与当前文本对应时，用带哨兵标记的富文本渲染
-    const useRich = !!settings.keepDelLine && richText && stripDelMarks(richText) === text;
-    const quotePart = quoteHtml(useRich ? richText : text);
+    const useRich = richForCard(richText, text);
+    const quotePart = quoteHtml(useRich || text);
     const q = thoughtText
       ? `<div class="be-thought-main">${maskText(thoughtText)}</div>
          <div class="be-quote-orig">${quotePart}</div>`
@@ -9124,10 +9393,14 @@ $(() => {
       idoc.open();
       idoc.write(`<!DOCTYPE html><html><head>
         <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width,initial-scale=1">
         ${fontLinks}
         ${themeLinks}
         <style>${themeFonts.faces}</style>
-        <style>html,body{margin:0;padding:0;background:${bg};}body{font-family:${mainWin.getComputedStyle(card).fontFamily};}</style>
+        <style>html,body{margin:0;padding:0;background:${bg};}
+        /* 关掉手机浏览器的文字自动放大（Firefox 安卓的 font inflation、部分 WebView 的 text autosizing）：
+           放大只改排版不改计算样式，html2canvas 按原字号画在放大后的位置上，导出图字变小、字距行距变大 */
+        html,body,body *{-webkit-text-size-adjust:100%!important;-moz-text-size-adjust:none!important;text-size-adjust:none!important;}body{font-family:${mainWin.getComputedStyle(card).fontFamily};}</style>
         <style>${styleText}</style>
       </head><body></body></html>`);
       idoc.close();
@@ -9338,21 +9611,31 @@ $(() => {
   function openPanel(view = 'notes', charKey = null) {
     panelView = view;
     currentCharKey = charKey;
+    // mountNotebook 指定了容器、且容器正显示着：嵌进去；否则照旧浮在页面上
+    const embed = (_panelHost && _panelHost.isConnected && _panelHost.getClientRects().length) ? _panelHost : null;
+    const host = embed || mainDoc.body;
     let panel = mainDoc.getElementById('be-panel');
     if (!panel) {
       panel = mainDoc.createElement('div');
       panel.id = 'be-panel';
-      mainDoc.body.appendChild(panel);
-    } else if (panel.parentNode !== mainDoc.body || panel.nextSibling) {
-      mainDoc.body.appendChild(panel);
+      host.appendChild(panel);
+    } else if (panel.parentNode !== host || (!embed && panel.nextSibling)) {
+      host.appendChild(panel);
     }
+    panel.classList.toggle('be-embedded', !!embed);
     detectAndApplyTheme();
     // 先在隐藏状态下把内容建好，再显示（只排一次版）
     renderPanel();
     panel.classList.add('open');
   }
   function closePanel() {
-    mainDoc.getElementById('be-panel')?.classList.remove('open');
+    const panel = mainDoc.getElementById('be-panel');
+    // 嵌在别人容器里时不自己藏起来，交给容器决定（比如跳回原文前把工作台收起）
+    if (panel && panel.classList.contains('be-embedded') && panel.classList.contains('open')) {
+      if (_panelOnClose) { try { _panelOnClose(); } catch (e) {} }
+      return;
+    }
+    panel?.classList.remove('open');
   }
   // 点「书摘笔记」：按设置先显示笔记本主页 / 当前角色 / 设置。
   // 选了「当前角色」但没开聊天、或这个角色还没有划线和想法时，回落到笔记本主页。
@@ -9785,6 +10068,76 @@ $(() => {
     const { favs, rest } = getTemplateListEntries();
     return { favs, rest };
   }
+  // ----- 模板文件夹 -----
+  function tplFolders() { return Array.isArray(settings.tplFolders) ? settings.tplFolders : []; }
+  // 模板所在的文件夹 id；文件夹已删除或没分类时返回 ''
+  function tplFolderOfKey(key) {
+    const fid = (settings.tplFolderOf || {})[key];
+    return fid && tplFolders().some(f => f.id === fid) ? fid : '';
+  }
+  // 设置列表用：收藏单独在最前；其余按文件夹分组，没分类的放最后
+  function getTemplateGroups() {
+    const { favs, rest, hidden } = getTemplateListEntries();
+    const folders = tplFolders().map(f => ({ ...f, items: rest.filter(e => tplFolderOfKey(e.key) === f.id) }));
+    return { favs, folders, loose: rest.filter(e => !tplFolderOfKey(e.key)), hidden };
+  }
+  function setTemplateFolder(key, fid) {
+    const map = { ...(settings.tplFolderOf || {}) };
+    if (fid) map[key] = fid; else delete map[key];
+    settings.tplFolderOf = map;
+  }
+  function forgetTemplateFolder(key) {
+    if (settings.tplFolderOf && settings.tplFolderOf[key]) { const m = { ...settings.tplFolderOf }; delete m[key]; settings.tplFolderOf = m; }
+  }
+  async function createTplFolder(name) {
+    const r = name != null ? { ok: true, value: name } : await bePrompt({ title: '新建文件夹', value: '新文件夹', okText: '新建' });
+    const v = String((r.ok && r.value) || '').trim().slice(0, 20);
+    if (!v) return '';
+    const id = 'f' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+    settings.tplFolders = tplFolders().concat({ id, name: v });
+    return id;
+  }
+  async function renameTplFolder(fid) {
+    const f = tplFolders().find(x => x.id === fid);
+    if (!f) return;
+    const r = await bePrompt({ title: '重命名文件夹', value: f.name, okText: '保存' });
+    const v = String((r.ok && r.value) || '').trim().slice(0, 20);
+    if (!v || v === f.name) return;
+    settings.tplFolders = tplFolders().map(x => x.id === fid ? { ...x, name: v } : x);
+    saveSettings(settings);
+    renderSettings();
+  }
+  async function deleteTplFolder(fid) {
+    const f = tplFolders().find(x => x.id === fid);
+    if (!f) return;
+    if (!(await beConfirm({ text: `删除文件夹「${f.name}」？里面的模板会移到未分类，不会删除。`, okText: '删除' })).ok) return;
+    settings.tplFolders = tplFolders().filter(x => x.id !== fid);
+    const map = { ...(settings.tplFolderOf || {}) };
+    Object.keys(map).forEach(k => { if (map[k] === fid) delete map[k]; });
+    settings.tplFolderOf = map;
+    if (settings.tplFolderClosed && settings.tplFolderClosed[fid]) { const c = { ...settings.tplFolderClosed }; delete c[fid]; settings.tplFolderClosed = c; }
+    if (settings.drawerFolder === fid) settings.drawerFolder = '';
+    saveSettings(settings);
+    renderSettings();
+  }
+  // 「移到文件夹」：贴着按钮弹出的小菜单
+  async function moveTemplateToFolderMenu(key, anchor) {
+    const cur = tplFolderOfKey(key);
+    const items = [{ v: '', label: '未分类', on: !cur }]
+      .concat(tplFolders().map(f => ({ v: f.id, label: f.name, on: cur === f.id })))
+      .concat([{ v: '__new', label: '＋ 新建文件夹', sep: true }]);
+    const v = await beMenu(anchor, items);
+    if (v == null) return;
+    let fid = v;
+    if (v === '__new') { fid = await createTplFolder(); if (!fid) return; }
+    if (fid === cur) return;
+    setTemplateFolder(key, fid);
+    if (fid && settings.tplFolderClosed && settings.tplFolderClosed[fid]) { const c = { ...settings.tplFolderClosed }; delete c[fid]; settings.tplFolderClosed = c; }
+    saveSettings(settings);
+    renderSettings();
+    const f = tplFolders().find(x => x.id === fid);
+    toast(f ? `已移到「${f.name}」` : '已移到未分类', 'success');
+  }
   function templateNameOf(key) {
     const e = getAllTemplateEntries().find(x => x.key === key);
     return e ? e.name : (TEMPLATES.classic.name);
@@ -9862,6 +10215,7 @@ $(() => {
                 <span class="be-tl-extra">
                   <button type="button" class="be-tl-btn" data-preview="${e.key}" title="预览">${fa('magnifying-glass')}</button>
                   <button type="button" class="be-tl-btn" data-hide="${e.key}" title="隐藏">${fa('eye-slash')}</button>
+                  <button type="button" class="be-tl-btn" data-move="${e.key}" title="移到文件夹">${fa('folder-open')}</button>
                   ${e.isDefault ? '' : e.lid ? `<button type="button" class="be-tl-btn" data-lexport="${e.lid}" title="导出">${fa('file-export')}</button>` : `<button type="button" class="be-tl-btn" data-export="${e.tid}" title="导出">${fa('file-export')}</button>`}
                 </span>
               </span>
@@ -9870,8 +10224,26 @@ $(() => {
         </div>
       </div>`;
   }
+  function renderTplFolder(f) {
+    const closed = !!(settings.tplFolderClosed || {})[f.id];
+    return `
+          <div class="be-tl-folder ${closed ? '' : 'open'}" data-fid="${f.id}">
+            <div class="be-tl-fhead" data-fhead="${f.id}">
+              <span class="be-caret"></span>
+              <span class="be-tl-fico">${closed ? '<i class="fa-solid fa-folder"></i>' : '<i class="fa-solid fa-folder-open"></i>'}</span>
+              <span class="be-tl-fname">${escapeHtml(f.name)}</span>
+              <span class="be-tl-fcount">${f.items.length}</span>
+              <span class="be-tl-acts">
+                <button type="button" class="be-tl-btn" data-frename="${f.id}" title="重命名">${fa('pen')}</button>
+                <button type="button" class="be-tl-btn" data-fdelete="${f.id}" title="删除文件夹">${fa('trash-can')}</button>
+              </span>
+            </div>
+            <div class="be-tl-list be-tl-flist" data-group="folder" data-folder="${f.id}">${f.items.length ? f.items.map(renderTemplateRow).join('') : '<div class="be-tl-fempty">拖动模板到这里，或在模板的 ⋯ 里点 <i class="fa-solid fa-folder-open"></i> 移入</div>'}</div>
+          </div>`;
+  }
   function renderTemplateSection() {
-    const { favs, rest, hidden } = getTemplateListEntries();
+    const { favs, folders, loose, hidden } = getTemplateGroups();
+    const rest = loose;
     const open = _tplListOpen;
     return `
       <div class="be-sec" id="be-tpl-sec">
@@ -9889,8 +10261,16 @@ $(() => {
         </div>
         <div class="be-tl-body" ${open ? '' : 'hidden'}>
           <div class="be-tl-list" data-group="fav">${favs.map(renderTemplateRow).join('')}</div>
-          ${favs.length && rest.length ? '<div class="be-tl-sep">·</div>' : ''}
-          <div class="be-tl-list" data-group="rest">${rest.map(renderTemplateRow).join('')}</div>
+          ${favs.length && (rest.length || folders.length) ? '<div class="be-tl-sep">·</div>' : ''}
+          ${folders.map(renderTplFolder).join('')}
+          ${folders.length && rest.length ? '<div class="be-tl-sub">未分类</div>' : ''}
+          <div class="be-tl-list" data-group="rest" data-folder="">${rest.map(renderTemplateRow).join('')}</div>
+          <button type="button" class="be-tl-newfolder" id="be-tl-newfolder"><i class="fa-solid fa-folder-plus"></i> 新建文件夹</button>
+          ${folders.length ? `
+          <div class="be-row be-tl-drawertabs">
+            <label style="flex:1;">书摘弹窗里按文件夹筛选模板</label>
+            <label class="be-toggle"><input type="checkbox" id="be-drawer-ftabs" ${settings.drawerFolderTabs !== false ? 'checked' : ''}><span class="be-slider"></span></label>
+          </div>` : ''}
           ${hidden.length ? `
           <div class="be-tpl-group ${_hiddenTplOpen ? 'open' : ''}" id="be-hidden-tpl-group">
             <div class="be-tpl-group-head" id="be-hidden-tpl-group-head">
@@ -9919,15 +10299,25 @@ $(() => {
     const hiddenKeys = getAllTemplateEntries().filter(e => e.hidden).map(e => e.key);
     settings.templateOrder = shownKeys.concat(hiddenKeys);
     settings.templateOrderManual = true;
+    // 拖进 / 拖出文件夹：按行现在所在的列表记文件夹（收藏列表里的不动）
+    sec.querySelectorAll('.be-tl-list[data-folder]').forEach(list => {
+      const fid = list.getAttribute('data-folder') || '';
+      list.querySelectorAll('.be-tl-row').forEach(r => setTemplateFolder(r.getAttribute('data-k'), fid));
+    });
     saveSettings(settings);
   }
   // 拖动排序：pointer 事件挂在 document 上（拖动中挪行会让手柄暂时离开文档，pointer capture 会丢）。
   // 手柄上阻止 touchstart 默认行为和长按菜单，否则手机上按久一点就变成选中文字。
+  // 模板可以在文件夹和未分类之间拖（带 data-folder 的列表互通），拖到折叠的文件夹标题上就放进那个文件夹
   function bindTemplateDrag(sec) {
-    bindRowDrag(sec, '.be-tl-list', () => commitTemplateOrderFromDom(sec));
+    bindRowDrag(sec, '.be-tl-list', (moved) => {
+      commitTemplateOrderFromDom(sec);
+      if (moved === 'cross') renderSettings();   // 更新各文件夹的数量和空文件夹提示
+    }, { cross: '.be-tl-list[data-folder]', dropHead: '.be-tl-folder:not(.open) > .be-tl-fhead' });
   }
   // 通用行拖动排序（模板列表 / 悬浮栏按钮列表共用）：listSelector 下每个 .be-tl-row 的 .be-tl-handle 可拖
-  function bindRowDrag(sec, listSelector, onCommit) {
+  // opts.cross：这些列表之间可以互相拖；opts.dropHead：拖到这些标题上松手，行放进标题后面的列表
+  function bindRowDrag(sec, listSelector, onCommit, opts = {}) {
     sec.querySelectorAll(listSelector + ' .be-tl-handle').forEach(h => {
       h.addEventListener('touchstart', e => e.preventDefault(), { passive: false });
       h.addEventListener('contextmenu', e => e.preventDefault());
@@ -9935,10 +10325,12 @@ $(() => {
         e.preventDefault();
         e.stopPropagation();
         const row = h.closest('.be-tl-row');
-        const list = row.parentElement;
+        let list = row.parentElement;
+        const startList = list;
+        const canCross = !!(opts.cross && list.matches(opts.cross));
         const scroller = sec.closest('#be-p-body') || sec.parentElement;
         const pid = e.pointerId;
-        let moved = false;
+        let moved = false, head = null;
         row.classList.add('dragging');
         const onMove = ev => {
           if (ev.pointerId !== pid) return;
@@ -9947,9 +10339,24 @@ $(() => {
           const box = scroller.getBoundingClientRect();
           if (y < box.top + 40) scroller.scrollTop -= 12;
           else if (y > box.bottom - 40) scroller.scrollTop += 12;
+          if (canCross) {
+            // 指针在哪个列表的范围里就换到哪个列表；在折叠的文件夹标题上就标记为放进去
+            let h2 = null;
+            if (opts.dropHead) for (const hd of sec.querySelectorAll(opts.dropHead)) {
+              const rc = hd.getBoundingClientRect();
+              if (y >= rc.top && y <= rc.bottom) { h2 = hd; break; }
+            }
+            if (h2 !== head) { head && head.classList.remove('be-drop'); head = h2; head && head.classList.add('be-drop'); }
+            if (!head) for (const l of sec.querySelectorAll(opts.cross)) {
+              if (l === list || !l.offsetParent) continue;
+              const rc = l.getBoundingClientRect();
+              if (y >= rc.top - 4 && y <= rc.bottom + 4) { list = l; break; }
+            }
+          }
+          if (head) return;
           let before = null;
           for (const r of list.children) {
-            if (r === row) continue;
+            if (r === row || !r.classList.contains('be-tl-row')) continue;
             const rc = r.getBoundingClientRect();
             if (y < rc.top + rc.height / 2) { before = r; break; }
           }
@@ -9962,7 +10369,12 @@ $(() => {
           mainDoc.removeEventListener('pointerup', onUp, true);
           mainDoc.removeEventListener('pointercancel', onUp, true);
           row.classList.remove('dragging');
-          if (moved) onCommit();
+          if (head) {
+            head.classList.remove('be-drop');
+            const target = head.parentElement.querySelector(opts.cross);
+            if (target) { target.appendChild(row); moved = true; }
+          }
+          if (moved) onCommit(row.parentElement !== startList ? 'cross' : true);
         };
         mainDoc.addEventListener('pointermove', onMove, { capture: true, passive: false });
         mainDoc.addEventListener('pointerup', onUp, true);
@@ -10050,6 +10462,31 @@ $(() => {
       row.classList.add('expanded');
     });
     on('[data-hide]', b => hideTemplate(b.getAttribute('data-hide')));
+    on('[data-move]', b => moveTemplateToFolderMenu(b.getAttribute('data-move'), b));
+    on('[data-frename]', b => renameTplFolder(b.getAttribute('data-frename')));
+    on('[data-fdelete]', b => deleteTplFolder(b.getAttribute('data-fdelete')));
+    sec.querySelectorAll('[data-fhead]').forEach(hd => hd.addEventListener('click', e => {
+      if (e.target.closest('button')) return;
+      const fid = hd.getAttribute('data-fhead');
+      const c = { ...(settings.tplFolderClosed || {}) };
+      if (c[fid]) delete c[fid]; else c[fid] = true;
+      settings.tplFolderClosed = c;
+      saveSettings(settings);
+      const box = hd.parentElement;
+      box.classList.toggle('open', !c[fid]);
+      const ico = hd.querySelector('.be-tl-fico');
+      if (ico) ico.innerHTML = c[fid] ? '<i class="fa-solid fa-folder"></i>' : '<i class="fa-solid fa-folder-open"></i>';
+    }));
+    sec.querySelector('#be-tl-newfolder')?.addEventListener('click', async () => {
+      const fid = await createTplFolder();
+      if (!fid) return;
+      saveSettings(settings);
+      renderSettings();
+    });
+    sec.querySelector('#be-drawer-ftabs')?.addEventListener('change', e => {
+      settings.drawerFolderTabs = e.target.checked;
+      saveSettings(settings);
+    });
     on('[data-export]', b => { exportCustomTemplate(b.getAttribute('data-export')); collapseTplMore(sec); });
     on('[data-edit]', b => editCustomTemplate(b.getAttribute('data-edit')));
     on('[data-ledit]', b => openLayoutEditor(b.getAttribute('data-ledit')));
@@ -10062,10 +10499,10 @@ $(() => {
       deleteLayoutTemplate(t.id);
       renderSettings();
     });
-    on('[data-del]', b => {
+    on('[data-del]', async b => {
       const tid = b.getAttribute('data-del');
       const name = (settings.customTemplates || []).find(t => t.id === tid)?.name || '';
-      if (mainWin.confirm(`删除模板「${name}」？`)) deleteCustomTemplate(tid);
+      if ((await beConfirm({ text: `删除模板「${name}」？`, okText: '删除' })).ok) deleteCustomTemplate(tid);
     });
     sec.querySelector('#be-hidden-tpl-group-head')?.addEventListener('click', () => {
       _hiddenTplOpen = !_hiddenTplOpen;
@@ -10092,38 +10529,93 @@ $(() => {
       .filter(p => p && typeof p === 'object' && typeof p.css === 'string' && p.css.trim())
       .map((p, i) => ({ name: p.name || (list.length > 1 ? `${baseName} ${i + 1}` : baseName), css: p.css }));
   }
-  function importTemplatesBatch() {
+  // 导入模板文本（文件或粘贴的内容）：排版模板 / CSS 模板 / 模板数组 / 整包都认。返回导入的个数
+  async function importTemplateTexts(entries) {
+    const added = [];
+    let failed = 0, layoutAdded = 0;
+    for (const { name, text } of entries) {
+      try {
+        let lj = null;
+        try { lj = JSON.parse(text); } catch (e) {}
+        if (isLayoutPayload(lj)) { await importLayoutPayload(lj); layoutAdded++; continue; }
+        const got = parseTemplateFile(name, text);
+        if (!got.length) failed++;
+        got.forEach(p => added.push(portableToTemplate(p)));
+      } catch (e) { failed++; }
+    }
+    if (added.length || layoutAdded) {
+      settings.customTemplates = (settings.customTemplates || []).concat(added);
+      saveSettings(settings);
+      injectCustomTemplateStyles();
+      _tplListOpen = true;
+      renderSettings();
+    }
+    const n = added.length + layoutAdded;
+    toast(`导入 ${n} 个模板${layoutAdded ? `（其中排版 ${layoutAdded} 个）` : ''}${failed ? `，${failed} 个${entries.length > 1 ? '文件' : ''}无法识别` : ''}`, n ? 'success' : 'error');
+    return n;
+  }
+  // 启动时一次性修复：v1.6.0 及以前「导入」对话框把整份文件当 CSS 存下的模板
+  //   · 内容是自由排版文件 → 转成排版模板（图片搬进 IndexedDB），删掉这条几 MB 的 CSS 模板
+  //   · 内容是 {name, css} 的 JSON → 换成里面的 CSS
+  // 只看以 { 开头、能整段解析成 JSON 的 CSS，正常的 CSS 模板不会被碰到
+  async function fixMisimportedTemplates() {
+    const list = settings.customTemplates || [];
+    const bad = list.filter(t => t && typeof t.css === 'string' && /^\s*\{/.test(t.css));
+    if (!bad.length) return;
+    let changed = 0, layouts = 0;
+    for (const t of bad) {
+      let j = null;
+      try { j = JSON.parse(t.css); } catch (e) { continue; }
+      if (isLayoutPayload(j)) {
+        try {
+          const lt = await importLayoutPayload(j);
+          const oldKey = `custom-${t.id}`;
+          settings.customTemplates = (settings.customTemplates || []).filter(x => x.id !== t.id);
+          if (settings.template === oldKey) settings.template = `layout-${lt.id}`;
+          ['templateFavorites', 'hiddenTemplates', 'templateOrder'].forEach(k => {
+            if (Array.isArray(settings[k])) settings[k] = settings[k].map(x => x === oldKey ? `layout-${lt.id}` : x);
+          });
+          if (settings.tplFolderOf && settings.tplFolderOf[oldKey]) { settings.tplFolderOf[`layout-${lt.id}`] = settings.tplFolderOf[oldKey]; delete settings.tplFolderOf[oldKey]; }
+          changed++; layouts++;
+        } catch (e) { console.warn('[书摘] 修复误导入的排版失败', e); }
+        continue;
+      }
+      const one = singleCssTemplateOf(j);
+      if (one && one.css.trim()) {
+        t.css = one.css.replace(/\.be-card\.be-custom\b/g, `.be-card.tpl-custom-${t.id}`);
+        changed++;
+      }
+    }
+    if (!changed) return;
+    saveSettings(settings);
+    injectCustomTemplateStyles();
+    if (layouts) toast(`已把 ${layouts} 个误存成 CSS 的自由排版恢复为排版模板`, 'success');
+  }
+  // 选文件不设 accept 过滤：安卓 WebView（如 TauriTavern）会把 accept 换成系统选择器的 MIME 过滤，
+  // 从 QQ / 微信存下来的 .json 常被标成 application/octet-stream，在选择器里是灰的选不了。选进来再按内容判断格式
+  function pickTextFiles(multiple, cb) {
     const input = mainDoc.createElement('input');
     input.type = 'file';
-    input.multiple = true;
-    input.accept = '.json,.css,.txt,application/json,text/css,text/plain';
+    input.multiple = !!multiple;
     input.addEventListener('change', async () => {
       const files = Array.from(input.files || []);
       if (!files.length) return;
-      const added = [];
-      let failed = 0, layoutAdded = 0;
+      const entries = [];
       for (const f of files) {
-        try {
-          const text = await f.text();
-          let lj = null;
-          try { lj = JSON.parse(text); } catch (e) {}
-          if (isLayoutPayload(lj)) { await importLayoutPayload(lj); layoutAdded++; continue; }
-          const got = parseTemplateFile(f.name, text);
-          if (!got.length) failed++;
-          got.forEach(p => added.push(portableToTemplate(p)));
-        } catch (e) { failed++; }
+        try { entries.push({ name: f.name, text: await f.text() }); } catch (e) { entries.push({ name: f.name, text: '' }); }
       }
-      if (added.length || layoutAdded) {
-        settings.customTemplates = (settings.customTemplates || []).concat(added);
-        saveSettings(settings);
-        injectCustomTemplateStyles();
-        _tplListOpen = true;
-        renderSettings();
-      }
-      const n = added.length + layoutAdded;
-      toast(`导入 ${n} 个模板${layoutAdded ? `（其中排版 ${layoutAdded} 个）` : ''}${failed ? `，${failed} 个文件无法识别` : ''}`, n ? 'success' : 'error');
+      cb(entries);
     });
     input.click();
+  }
+  function importTemplatesBatch() {
+    pickTextFiles(true, entries => importTemplateTexts(entries));
+  }
+  // 单个模板的 JSON（{name, css}）：返回 {name, css}；其余 JSON（排版 / 数组 / 整包）返回 null
+  function singleCssTemplateOf(j) {
+    if (!j || typeof j !== 'object' || Array.isArray(j) || isLayoutPayload(j)) return null;
+    if (Array.isArray(j.templates) || Array.isArray(j.customTemplates)) return null;
+    return typeof j.css === 'string' ? { name: j.name || '', css: j.css } : null;
   }
 
   // 导入自定义字体（名称 + 完整 CSS 片段）
@@ -10473,36 +10965,48 @@ $(() => {
       disableClassInspector();
     };
     mask.querySelector('#be-imp-cancel').addEventListener('click', close);
+    // 不是单个 CSS 模板的 JSON（自由排版 / 多个模板 / 整包）：不往 CSS 框里填，直接按批量导入处理
+    // （以前把整份排版 JSON 当 CSS 存下来，排版只能改 CSS，几 MB 的文本还会拖慢甚至卡住页面）
+    const importOther = async (fileName, text) => {
+      if (editing) { toast('这是自由排版或多个模板的文件，请在模板列表用「批量导入」', 'error'); return; }
+      close();
+      await importTemplateTexts([{ name: fileName, text }]);
+    };
     mask.querySelector('#be-imp-file').addEventListener('click', () => {
-      const inp = mainDoc.createElement('input');
-      inp.type = 'file';
-      inp.accept = '.css,.json,text/css,application/json';
-      inp.addEventListener('change', ev => {
-        const f = ev.target.files[0]; if (!f) return;
-        const fr = new FileReader();
-        fr.onload = () => {
-          let css = String(fr.result || '');
-          let name = f.name.replace(/\.(css|json)$/i, '');
-          // 如果是 json 格式 {name, css}
-          try {
-            const j = JSON.parse(css);
-            if (j && typeof j === 'object' && j.css) {
-              name = j.name || name;
-              css = j.css;
-            }
-          } catch (e) {}
-          mask.querySelector('#be-imp-name').value = name;
-          mask.querySelector('#be-imp-css').value = css;
-          scheduleLivePreview();
-        };
-        fr.readAsText(f);
+      pickTextFiles(false, ([f]) => {
+        const text = String(f.text || '');
+        let name = f.name.replace(/\.(css|json|txt)$/i, '');
+        let css = text;
+        let j = null;
+        try { j = JSON.parse(text); } catch (e) {}
+        if (j !== null) {
+          const one = singleCssTemplateOf(j);
+          if (!one) { importOther(f.name, text); return; }
+          name = one.name || name;
+          css = one.css;
+        }
+        mask.querySelector('#be-imp-name').value = name;
+        mask.querySelector('#be-imp-css').value = css;
+        scheduleLivePreview();
       });
-      inp.click();
     });
     mask.querySelector('#be-imp-save').addEventListener('click', () => {
-      const name = mask.querySelector('#be-imp-name').value.trim() || '未命名';
+      let name = mask.querySelector('#be-imp-name').value.trim();
       let css = mask.querySelector('#be-imp-css').value.trim();
       if (!css) { toast('CSS 不能为空', 'error'); return; }
+      // 粘贴的是模板文件的 JSON 内容：取出里面的 CSS；排版 / 多个模板直接导入
+      if (/^[\[{]/.test(css)) {
+        let j = null;
+        try { j = JSON.parse(css); } catch (e) {}
+        if (j !== null) {
+          const one = singleCssTemplateOf(j);
+          if (!one) { importOther(name || '粘贴的模板', css); return; }
+          css = one.css.trim();
+          name = name || one.name;
+          if (!css) { toast('CSS 不能为空', 'error'); return; }
+        }
+      }
+      name = name || '未命名';
       const id = activeId;
       // 把 .be-custom 选择器替换成本模板的实际 id 选择器
       const selector = `.be-card.tpl-custom-${id}`;
@@ -10535,6 +11039,7 @@ $(() => {
     const list = (settings.customTemplates || []).filter(t => t.id !== tid);
     settings.customTemplates = list;
     const key = `custom-${tid}`;
+    forgetTemplateFolder(key);
     settings.templateFavorites = (settings.templateFavorites || []).filter(k => k !== key);
     settings.hiddenTemplates = (settings.hiddenTemplates || []).filter(k => k !== key);
     settings.templateOrder = (settings.templateOrder || []).filter(k => k !== key);
@@ -10800,6 +11305,10 @@ $(() => {
         <div class="be-row">
           <label style="flex:1;">保留原文删除线</label>
           ${toggleHtml('be-keepdel', !!settings.keepDelLine)}
+        </div>
+        <div class="be-row">
+          <label style="flex:1;">保留原文斜体（*……*）</label>
+          ${toggleHtml('be-keepitalic', !!settings.keepItalic)}
         </div>
         <div class="be-row" style="margin-top:4px;"><label style="flex:1;">预览中换图</label></div>
         <div class="be-row">
@@ -11178,10 +11687,10 @@ $(() => {
       });
     });
     body.querySelectorAll('.be-font-custom-row button[data-fdel]').forEach(b => {
-      b.addEventListener('click', e => {
+      b.addEventListener('click', async e => {
         e.stopPropagation();
         const fid = b.getAttribute('data-fdel');
-        if (!mainWin.confirm('删除这个自定义字体？')) return;
+        if (!(await beConfirm({ text: '删除这个自定义字体？', okText: '删除' })).ok) return;
         deleteCustomFont(fid);
       });
     });
@@ -11342,9 +11851,9 @@ $(() => {
       });
       inp.click();
     });
-    body.querySelector('#be-avatar-clear')?.addEventListener('click', () => {
+    body.querySelector('#be-avatar-clear')?.addEventListener('click', async () => {
       if (!settings.customAvatar) return;
-      if (!mainWin.confirm('清除自定义头像？')) return;
+      if (!(await beConfirm({ text: '清除自定义头像？', okText: '清除' })).ok) return;
       clearCustomAvatar();
       const prev = body.querySelector('#be-avatar-preview');
       if (prev) { prev.style.backgroundImage = ''; prev.classList.add('empty'); }
@@ -11458,6 +11967,11 @@ $(() => {
     }));
     body.querySelector('#be-keepdel')?.addEventListener('change', e => {
       settings.keepDelLine = e.target.checked;
+      saveSettings(settings);
+      refreshCard();
+    });
+    body.querySelector('#be-keepitalic')?.addEventListener('change', e => {
+      settings.keepItalic = e.target.checked;
       saveSettings(settings);
       refreshCard();
     });
@@ -11587,8 +12101,8 @@ $(() => {
     body.querySelector('#be-import-all')?.addEventListener('click', importNotes);
     body.querySelector('#be-export-bundle')?.addEventListener('click', exportTemplateBundle);
     body.querySelector('#be-import-bundle')?.addEventListener('click', importTemplateBundle);
-    body.querySelector('#be-clear-all')?.addEventListener('click', () => {
-      if (!mainWin.confirm('确定清空所有笔记？此操作不可恢复。')) return;
+    body.querySelector('#be-clear-all')?.addEventListener('click', async () => {
+      if (!(await beConfirm({ text: '确定清空所有笔记？此操作不可恢复。', okText: '清空' })).ok) return;
       mainWin.localStorage.removeItem(LS_NOTES);
       mainDoc.querySelectorAll('.be-highlight').forEach(span => {
         const p = span.parentNode;
@@ -11988,7 +12502,7 @@ $(() => {
   }
   function importTemplateBundle() {
     const input = mainDoc.createElement('input');
-    input.type = 'file'; input.accept = 'application/json';
+    input.type = 'file';   // 不设 accept：见 pickTextFiles
     input.addEventListener('change', e => {
       const f = e.target.files[0]; if (!f) return;
       const fr = new FileReader();
@@ -12396,7 +12910,7 @@ $(() => {
   }
   function importNotes() {
     const input = mainDoc.createElement('input');
-    input.type = 'file'; input.accept = 'application/json';
+    input.type = 'file';   // 不设 accept：见 pickTextFiles
     input.addEventListener('change', e => {
       const f = e.target.files[0]; if (!f) return;
       const fr = new FileReader();
@@ -13316,6 +13830,7 @@ $(() => {
     const keep = new Set(); settings.layoutTemplates.forEach(x => layImageRefs(x).forEach(r => keep.add(r)));
     layImageRefs(t).forEach(r => { if (!keep.has(r)) imgForget(r); });
     const key = 'layout-' + id;
+    forgetTemplateFolder(key);
     if (settings.template === key) settings.template = 'classic';
     settings.templateFavorites = (settings.templateFavorites || []).filter(k => k !== key);
     settings.hiddenTemplates = (settings.hiddenTemplates || []).filter(k => k !== key);
@@ -15306,6 +15821,69 @@ $(() => {
 
   // ----- 书摘弹窗里更换自由排版的图片 -----
   // 三选一确认框（和 beConfirm 同样的外观）：options = [{v, label, primary}]，点空白处 = 取消（v 为 null）
+  // 输入一行文字（新建 / 重命名文件夹）：返回 {ok, value}
+  function bePrompt({ title = '', value = '', okText = '确定', placeholder = '' } = {}) {
+    return new Promise(resolve => {
+      mainDoc.getElementById('be-confirm-mask')?.remove();
+      const mask = stampGen(mainDoc.createElement('div'));
+      mask.id = 'be-confirm-mask';
+      mask.className = 'be-import-tpl-mask open';
+      mask.innerHTML = `
+        <div class="be-import-tpl-box be-confirm-box">
+          ${title ? `<div class="be-src-title">${escapeHtml(title)}</div>` : ''}
+          <input type="text" class="be-text-in be-prompt-in" maxlength="20" value="${escapeHtml(value)}" placeholder="${escapeHtml(placeholder)}">
+          <div class="be-src-actions" style="margin-top:12px;">
+            <button class="be-btn" data-ok="0">取消</button>
+            <button class="be-btn primary" data-ok="1">${escapeHtml(okText)}</button>
+          </div>
+        </div>`;
+      mainDoc.body.appendChild(mask);
+      detectAndApplyTheme();
+      const inp = mask.querySelector('.be-prompt-in');
+      const done = (ok) => { const v = inp.value; mask.remove(); resolve({ ok, value: ok ? v : '' }); };
+      mask.addEventListener('click', e => {
+        if (e.target === mask) return done(false);
+        const b = e.target.closest('[data-ok]');
+        if (b) done(b.getAttribute('data-ok') === '1');
+      });
+      inp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); done(true); } else if (e.key === 'Escape') done(false); });
+      setTimeout(() => { try { inp.focus(); inp.select(); } catch (e) {} }, 30);
+    });
+  }
+  // 贴着按钮弹出的小菜单：items [{v, label, on?, sep?}]，返回选中的 v，点外面返回 null
+  function beMenu(anchor, items) {
+    return new Promise(resolve => {
+      mainDoc.getElementById('be-menu-pop')?.remove();
+      const pop = stampGen(mainDoc.createElement('div'));
+      pop.id = 'be-menu-pop';
+      pop.innerHTML = items.map((it, i) => `${it.sep ? '<div class="be-menu-sep"></div>' : ''}<button type="button" class="be-menu-item ${it.on ? 'on' : ''}" data-i="${i}">${it.on ? '<i class="fa-solid fa-check"></i>' : '<span class="be-menu-ck"></span>'}<span>${escapeHtml(it.label)}</span></button>`).join('');
+      mainDoc.body.appendChild(pop);
+      detectAndApplyTheme();
+      // 酒馆给 html 挂了 transform，fixed 会偏：用 absolute + 页面滚动量
+      const r = anchor.getBoundingClientRect();
+      const vw = mainWin.innerWidth, vh = mainWin.innerHeight;
+      const w = pop.offsetWidth, h = pop.offsetHeight;
+      let left = Math.max(8, Math.min(r.right - w, vw - w - 8));
+      let top = r.bottom + 4;
+      if (top + h > vh - 8) top = Math.max(8, r.top - h - 4);
+      pop.style.left = left + 'px';
+      pop.style.top = (top + (mainWin.scrollY || 0)) + 'px';
+      let closed = false;
+      const done = (v) => {
+        if (closed) return;
+        closed = true;
+        mainDoc.removeEventListener('pointerdown', outside, true);
+        pop.remove();
+        resolve(v);
+      };
+      const outside = (e) => { if (!pop.contains(e.target)) { e.stopPropagation(); done(null); } };
+      setTimeout(() => mainDoc.addEventListener('pointerdown', outside, true), 0);
+      pop.addEventListener('click', e => {
+        const b = e.target.closest('[data-i]');
+        if (b) done(items[Number(b.getAttribute('data-i'))].v);
+      });
+    });
+  }
   function beChoose({ title = '', text = '', options = [], remember = '' } = {}) {
     return new Promise(resolve => {
       mainDoc.getElementById('be-confirm-mask')?.remove();
@@ -15485,7 +16063,7 @@ $(() => {
   async function apiRenderCardImage(o = {}) {
     const text = String(o.text || '').trim();
     if (!text) throw apiError('INVALID_ARGS', 'text 不能为空');
-    const prev = { thought: currentThoughtText, rich: currentRichText, tpl: settings.template, src: _apiSourceOverride };
+    const prev = { thought: currentThoughtText, rich: currentRichText, tpl: settings.template, src: _apiSourceOverride, ctx: _ctxOverride };
     const holder = mainDoc.createElement('div');
     holder.setAttribute('aria-hidden', 'true');
     const cw = Number(settings.cardWidth) || 440;
@@ -15495,6 +16073,7 @@ $(() => {
       currentRichText = '';
       if (o.template) settings.template = String(o.template);
       if (o.source) _apiSourceOverride = apiSourceFields(o.source);
+      if (o.context) _ctxOverride = apiCtxFields(o.context);
       const built = buildCardMarkup(text, { noId: true });
       holder.innerHTML = built.html;
       mainDoc.body.appendChild(holder);
@@ -15513,9 +16092,161 @@ $(() => {
       // 沙箱 iframe 已经移除，在主窗口 realm 里重包一份，调用方拿去 URL.createObjectURL 才稳
       return new mainWin.Blob([await blob.arrayBuffer()], { type: 'image/png' });
     } finally {
-      currentThoughtText = prev.thought; currentRichText = prev.rich; settings.template = prev.tpl; _apiSourceOverride = prev.src;
+      currentThoughtText = prev.thought; currentRichText = prev.rich; settings.template = prev.tpl; _apiSourceOverride = prev.src; _ctxOverride = prev.ctx;
       try { holder.remove(); } catch (e) {}
     }
+  }
+  function apiCtxFields(c) {
+    if (!c || typeof c !== 'object') return null;
+    const out = {};
+    ['charKey', 'charName', 'charAvatar', 'chatId', 'userName', 'userAvatar'].forEach(k => { if (c[k] != null) out[k] = String(c[k]); });
+    return out;
+  }
+  // 承接器登记表放在主窗口上：书摘热重载后新实例自动接手，调用方不用重新登记
+  function readerStore() {
+    if (!mainWin.__bookExcerptReaders) mainWin.__bookExcerptReaders = {};
+    return mainWin.__bookExcerptReaders;
+  }
+  function makeReader(id, o) {
+    const toEl = n => n && (n.nodeType === 1 ? n : n.parentElement);
+    const r = {
+      id, o, observed: null, mo: null,
+      root() {
+        try { const el = typeof o.root === 'function' ? o.root() : o.root; return el && el.nodeType === 1 ? el : null; }
+        catch (e) { return null; }
+      },
+      ctx() {
+        try {
+          const c = apiCtxFields(o.context());
+          if (!c || !(c.charKey || c.charName)) return null;
+          c.charKey = c.charKey || c.charName;
+          return c;
+        } catch (e) { return null; }
+      },
+      floorOf(node) {
+        const el = toEl(node), root = r.root();
+        if (!el || !root || !root.contains(el)) return null;
+        const f = el.closest(o.message);
+        return f && root.contains(f) ? f : null;
+      },
+      textOf(floor) { return o.text ? floor.querySelector(o.text) : floor; },
+      mesIdOf(floor) {
+        try {
+          const v = o.mesId ? o.mesId(floor) : (floor.getAttribute('mesid') ?? floor.dataset.mesid ?? floor.dataset.floor);
+          return v == null ? '' : String(v);
+        } catch (e) { return ''; }
+      },
+      floors(root) {
+        const m = new Map();
+        root.querySelectorAll(o.message).forEach(f => { const id2 = r.mesIdOf(f), t = r.textOf(f); if (id2 !== '' && t) m.set(id2, t); });
+        return m;
+      }
+    };
+    return r;
+  }
+  function readerOf(node) {
+    if (!_readers.size || !node) return null;
+    const el = node.nodeType === 1 ? node : node.parentElement;
+    if (!el) return null;
+    for (const r of _readers.values()) {
+      const f = r.floorOf(el);
+      if (!f) continue;
+      const t = r.textOf(f);
+      if (t && t.contains(el)) return r;
+    }
+    return null;
+  }
+  function readerForNote(note, key) {
+    for (const r of _readers.values()) {
+      if (!r.o.jump || !readerAlive(r)) continue;
+      const c = r.ctx();
+      if (c && c.charKey === key && (!note.chatId || !c.chatId || note.chatId === c.chatId)) return r;
+    }
+    return null;
+  }
+  async function jumpInReader(r, note) {
+    closePanel();
+    mainDoc.getElementById('be-viewer-mask')?.classList.remove('open');
+    try { await r.o.jump(apiClone(note)); } catch (e) { console.warn('[书摘] 承接器跳转失败', e); }
+    const root = r.root();
+    if (!root) return;
+    restoreReaders();
+    const sel = `.be-highlight[data-be-id="${note.id}"]`;
+    const sp = await beWait(() => (r.root() || root).querySelector(sel), 1500);
+    if (!sp) { toast('已跳到那一楼，但没找到划线（原文可能改过）', 'info'); return; }
+    try { sp.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (e) { sp.scrollIntoView(); }
+    await new Promise(res => setTimeout(res, 400));
+    const spans = (r.root() || root).querySelectorAll(sel);
+    spans.forEach(s => { s.classList.remove('be-jump-flash'); void s.offsetWidth; s.classList.add('be-jump-flash'); });
+    setTimeout(() => spans.forEach(s => s.classList.remove('be-jump-flash')), 900);
+  }
+  // 承接器的内容会被调用方整块重画（划线 span 跟着没了）：盯着它的根元素，变了就补划线
+  let _readerRestoreT = 0, _readerPoll = 0;
+  function scheduleReaderRestore(delay = 200) {
+    clearTimeout(_readerRestoreT);
+    _readerRestoreT = setTimeout(() => { try { restoreReaders(); } catch (e) {} }, delay);
+  }
+  function watchReaders() {
+    _readers.forEach(r => {
+      const root = r.root();
+      if (root === r.observed) return;
+      try { r.mo && r.mo.disconnect(); } catch (e) {}
+      r.observed = root; r.mo = null;
+      if (!root) return;
+      r.mo = new MutationObserver(muts => {
+        // 只关心正文变化；自己包划线引起的变化也会进来，但第二遍发现已经包好就不再动 DOM
+        if (muts.some(m => m.addedNodes.length)) scheduleReaderRestore(200);
+      });
+      r.mo.observe(root, { childList: true, subtree: true });
+      scheduleReaderRestore(50);
+    });
+    if (_readers.size && !_readerPoll) _readerPoll = setInterval(watchReaders, 800);
+    if (!_readers.size && _readerPoll) { clearInterval(_readerPoll); _readerPoll = 0; }
+  }
+  function loadReaderStore() {
+    // 只读不建：没人登记过时主窗口上什么都不加
+    const store = mainWin.__bookExcerptReaders;
+    if (!store) return;
+    Object.keys(store).forEach(id => { if (!_readers.has(id)) _readers.set(id, makeReader(id, store[id])); });
+    watchReaders();
+  }
+  function apiAttachReader(o = {}) {
+    if (!o || !o.root || typeof o.message !== 'string' || typeof o.context !== 'function') {
+      throw apiError('INVALID_ARGS', 'attachReader 需要 { root, message, context }');
+    }
+    const id = String(o.id || ('reader-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)));
+    const old = _readers.get(id);
+    if (old) { try { old.mo && old.mo.disconnect(); } catch (e) {} }
+    const opts = { root: o.root, message: o.message, text: o.text || '', mesId: o.mesId || null, context: o.context, jump: typeof o.jump === 'function' ? o.jump : null };
+    readerStore()[id] = opts;
+    _readers.set(id, makeReader(id, opts));
+    watchReaders();
+    // 句柄只碰主窗口：书摘热重载后旧句柄照样能用
+    const W2 = mainWin;
+    return Object.freeze({
+      id,
+      refresh: () => { const be = W2.BookExcerpt; if (be && be.refreshReader) be.refreshReader(id); },
+      detach: () => { const be = W2.BookExcerpt; if (be && be.detachReader) be.detachReader(id); else if (W2.__bookExcerptReaders) delete W2.__bookExcerptReaders[id]; }
+    });
+  }
+  function apiDetachReader(id) {
+    id = String(id || '');
+    const r = _readers.get(id);
+    if (r) { try { r.mo && r.mo.disconnect(); } catch (e) {} }
+    _readers.delete(id);
+    delete readerStore()[id];
+    if (_activeReader && _activeReader.id === id) _activeReader = null;
+    watchReaders();
+  }
+  function ensureEmbedStyle() {
+    if (mainDoc.getElementById('be-embed-style')) return;
+    const st = mainDoc.createElement('style');
+    st.id = 'be-embed-style';
+    st.textContent = `
+      #be-panel.be-embedded{position:relative;inset:auto;top:auto;right:auto;left:auto;width:100%;max-width:none;height:100%;max-height:none;min-height:0;flex:1 1 auto;margin:0;z-index:auto;border:0;border-radius:0;box-shadow:none;backdrop-filter:none;-webkit-backdrop-filter:none}
+      #be-panel.be-embedded #be-p-close{display:none}
+    `;
+    mainDoc.head.appendChild(st);
   }
   function apiSourceFields(src) {
     const out = {};
@@ -15530,7 +16261,7 @@ $(() => {
       version: VERSION,
       apiVersion: API_VERSION,
       isReady: () => true,
-      getContext: () => { const c = getContext(); return { charKey: c.charKey, charName: c.charName, userName: c.userName, chatId: c.chatId }; },
+      getContext: () => { const c = getStContext(); return { charKey: c.charKey, charName: c.charName, userName: c.userName, chatId: c.chatId }; },
       getNotes: (filter = {}) => {
         const notes = loadNotes();
         const out = [];
@@ -15577,15 +16308,47 @@ $(() => {
         const text = String(o.text || (o.noteId && (findNoteById(o.noteId) || {}).text) || '').trim();
         if (!text) throw apiError('INVALID_ARGS', '需要 text 或 noteId');
         _apiSourceOverride = o.source ? apiSourceFields(o.source) : null;
+        _ctxOverride = o.context ? apiCtxFields(o.context) : null;
         lastText = text;
         openExcerptModal(text, { thoughtText: o.thought ? String(o.thought) : '', editable: !!o.editable });
       },
-      renderCardImage: (o) => apiRenderCardImage(o),
+      // 内部错误（截图库加载失败等）统一带 RENDER_FAILED，调用方按 code 判断
+      renderCardImage: (o) => apiRenderCardImage(o).catch(e => { if (e && e.code) throw e; throw apiError('RENDER_FAILED', (e && e.message) || '生成图片失败'); }),
       openNotebook: async (o = {}) => {
         openPanel('notes');
         if (o.charKey && loadNotes()[o.charKey]) { currentCharKey = o.charKey; panelView = 'char'; renderPanel(); }
       },
       openReview: async () => { reviewState.charKey = ''; reviewState.current = null; openPanel('review'); },
+      // 选字浮动栏里加调用方自己的按钮
+      addSelectionButton: (o = {}) => {
+        if (!o || !o.id || !o.label || typeof o.onClick !== 'function') throw apiError('INVALID_ARGS', 'addSelectionButton 需要 { id, label, onClick }');
+        const where = ['chat', 'reader', 'all'].includes(o.where) ? o.where : 'all';
+        const id = String(o.id);
+        selectionActions()[id] = { id, label: String(o.label), icon: o.icon ? String(o.icon) : '', where, onClick: o.onClick };
+        const W2 = mainWin;
+        return () => { if (W2.__bookExcerptActions) delete W2.__bookExcerptActions[id]; };
+      },
+      removeSelectionButton: (id) => { delete selectionActions()[String(id)]; },
+      // 承接器：把调用方自己的阅读界面登记成书摘能用的「聊天区」
+      attachReader: (o) => apiAttachReader(o),
+      detachReader: (id) => apiDetachReader(id),
+      refreshReader: (id) => { if (!id || _readers.has(String(id))) scheduleReaderRestore(0); },
+      // 笔记本嵌进调用方的容器
+      mountNotebook: async (container, o = {}) => {
+        if (!container || container.nodeType !== 1) throw apiError('INVALID_ARGS', 'mountNotebook 需要一个页面元素');
+        ensureEmbedStyle();
+        _panelHost = container;
+        _panelOnClose = typeof o.onClose === 'function' ? o.onClose : null;
+        if (o.view === 'review') { reviewState.charKey = ''; reviewState.current = null; openPanel('review'); }
+        else if (o.view === 'settings') openPanel('settings');
+        else openPanel('notes');
+        if (o.charKey && loadNotes()[o.charKey]) { currentCharKey = o.charKey; panelView = 'char'; renderPanel(); }
+      },
+      unmountNotebook: async () => {
+        _panelHost = null; _panelOnClose = null;
+        const panel = mainDoc.getElementById('be-panel');
+        if (panel) { panel.classList.remove('open', 'be-embedded'); mainDoc.body.appendChild(panel); }
+      },
       jumpToNote: async (noteId) => {
         const n = findNoteById(noteId);
         if (!n) throw apiError('NOT_FOUND', '没有这条笔记');
@@ -15611,7 +16374,9 @@ $(() => {
   // ---------- 启动 ----------
   injectStyle();
   installPublicApi();
+  try { loadReaderStore(); } catch (e) { console.warn('[书摘] 承接器恢复失败', e); }
   migrateImagesToIdb();
+  fixMisimportedTemplates();
   // v1.6.0：旧「自由排版」（按坐标摆的画布）换成了新的版式模板，旧草稿和开关一并清掉
   try {
     mainWin.localStorage.removeItem(`${SCRIPT_ID}:canvases`);
