@@ -2348,6 +2348,25 @@ $(() => {
       padding: 16px 18px 12px;
       box-sizing: border-box;
     }
+    /* 3D 倾斜翻面卡片 */
+    .be-flip { perspective: 600px; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; cursor: pointer; margin: 4px 0 10px; }
+    .be-flip-card { display: grid; transform-style: preserve-3d; will-change: transform; }
+    .be-flip-face { grid-area: 1 / 1; position: relative; border-radius: 16px; padding: 18px 18px 16px; box-sizing: border-box; backface-visibility: hidden; -webkit-backface-visibility: hidden; overflow: hidden; box-shadow: 0 10px 28px rgba(0,0,0,0.28); }
+    .be-flip-txt { transform: rotateY(180deg); }
+    .be-flip-ava { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; min-height: 180px; text-align: center; }
+    .be-flip-avatar { width: 84px; height: 84px; border-radius: 50%; background-size: cover; background-position: center; display: flex; align-items: center; justify-content: center; font-size: 30px; font-weight: 600; }
+    .be-flip-name { font-size: 17px; font-weight: 600; letter-spacing: 0.04em; }
+    .be-flip-sub { font-size: 12px; }
+    .be-flip-hint { font-size: 11px; opacity: 0.7; margin-top: 4px; }
+    .be-flip-glare { position: absolute; inset: 0; pointer-events: none; border-radius: inherit; opacity: 0; transition: opacity 0.3s ease-out;
+      background: radial-gradient(circle at var(--gx, 50%) var(--gy, 50%), rgba(255,255,255,0.38), rgba(255,255,255,0) 58%); }
+    .be-flip-txt .be-flip-glare { background: radial-gradient(circle at var(--gxm, 50%) var(--gy, 50%), rgba(255,255,255,0.38), rgba(255,255,255,0) 58%); }
+    .be-flip-lit .be-flip-glare { opacity: 1; transition-duration: 0.1s; }
+    .be-flip-face, .be-flip-face * { text-shadow: none !important; }
+    #be-viewer .be-vw-flip { margin-top: 26px; }
+    .be-flip-txt .be-rv-quote, .be-flip-txt .be-vw-quote, .be-flip-txt .be-dr-quote, .be-flip-txt .be-rv-thought { color: inherit; }
+    .be-flip-txt .be-rv-when, .be-flip-txt .be-rv-src, .be-flip-txt .be-dr-src, .be-flip-txt .be-vw-location, .be-flip-txt .be-rv-thought span { color: inherit; opacity: 0.62; }
+    @media (prefers-reduced-motion: reduce) { .be-flip-card { transition: none !important; } }
     #be-viewer .be-vw-quote {
       font-size: 15px; line-height: 1.7;
       padding: 8px 0 12px;
@@ -4374,7 +4393,7 @@ $(() => {
       --be-pop-y: 10px; --be-pop-s: 0.94;
       --be-press-s: 0.95; --be-press-dur: 90ms;
       --be-release-ease: var(--be-spring-curve); --be-release-dur: 600ms;
-      --be-stagger: 45ms;
+      --be-stagger: 45ms; --be-enter-blur: 0px;
       --be-spring: var(--be-spring-curve);
       --be-out: cubic-bezier(0.2, 0.8, 0.2, 1);
       --be-in: var(--be-exit-ease);
@@ -4382,29 +4401,33 @@ $(() => {
     @supports not (animation-timing-function: linear(0, 1)) {
       :root { --be-spring-curve: cubic-bezier(0.16, 1, 0.3, 1); --be-page-curve: cubic-bezier(0.16, 1, 0.3, 1); }
     }
+    /* 柔和淡入：像羽毛从下面飘上来，减速很柔、带一点朦胧（进入时有 3px 模糊），整体更慢 */
     body.be-mot-soft {
-      --be-enter-ease: cubic-bezier(0.05, 0.7, 0.1, 1); --be-enter-dur: 400ms;
-      --be-exit-ease: cubic-bezier(0.3, 0, 0.8, 0.15); --be-exit-dur: 200ms;
-      --be-enter-y: 8px; --be-enter-s: 1;
-      --be-pop-y: 6px; --be-pop-s: 1;
-      --be-press-s: 0.98; --be-press-dur: 100ms;
-      --be-release-ease: cubic-bezier(0.2, 0, 0, 1); --be-release-dur: 250ms;
-      --be-stagger: 30ms;
-      --be-spring: cubic-bezier(0.05, 0.7, 0.1, 1);
+      --be-enter-ease: cubic-bezier(0.33, 1, 0.68, 1); --be-enter-dur: 750ms;
+      --be-exit-ease: cubic-bezier(0.32, 0, 0.67, 0); --be-exit-dur: 300ms;
+      --be-enter-y: 30px; --be-enter-s: 0.98; --be-enter-blur: 3px;
+      --be-pop-y: 14px; --be-pop-s: 0.98;
+      --be-press-s: 0.97; --be-press-dur: 120ms;
+      --be-release-ease: cubic-bezier(0.33, 1, 0.68, 1); --be-release-dur: 500ms;
+      --be-stagger: 80ms;
+      --be-spring: cubic-bezier(0.33, 1, 0.68, 1);
     }
-    @keyframes be-pop-in { from { opacity: 0; scale: var(--be-pop-s); translate: 0 var(--be-pop-y); } to { opacity: 1; scale: 1; translate: 0 0; } }
-    @keyframes be-box-in { from { opacity: 0; scale: var(--be-enter-s); translate: 0 var(--be-enter-y); } to { opacity: 1; scale: 1; translate: 0 0; } }
-    @keyframes be-sheet-up { from { opacity: 0; translate: 0 var(--be-enter-y); } to { opacity: 1; translate: 0 0; } }
+    @keyframes be-pop-in { from { opacity: 0; scale: var(--be-pop-s); translate: 0 var(--be-pop-y); filter: blur(var(--be-enter-blur)); } to { opacity: 1; scale: 1; translate: 0 0; filter: blur(0); } }
+    @keyframes be-box-in { from { opacity: 0; scale: var(--be-enter-s); translate: 0 var(--be-enter-y); filter: blur(var(--be-enter-blur)); } to { opacity: 1; scale: 1; translate: 0 0; filter: blur(0); } }
+    @keyframes be-sheet-up { from { opacity: 0; translate: 0 var(--be-enter-y); filter: blur(var(--be-enter-blur)); } to { opacity: 1; translate: 0 0; filter: blur(0); } }
     @keyframes be-panel-in { from { opacity: 0; translate: 0 var(--be-enter-y); scale: var(--be-enter-s); } to { opacity: 1; translate: 0 0; scale: 1; } }
     @keyframes be-dim-in { from { opacity: 0; } to { opacity: 1; } }
     @keyframes be-item-in { from { opacity: 0; translate: 0 var(--be-pop-y); } to { opacity: 1; translate: 0 0; } }
     /* 打开：浮动条、小菜单、取色器 */
-    #be-float-bar.show, #be-card-hl-bar.show, #be-hl-bar.show, #be-card-hl-pop.show, #be-slot-chooser.show,
-    .be-lay-menu:not([hidden]), #be-cpick { animation: be-pop-in var(--be-enter-dur) var(--be-enter-ease); transform-origin: 50% 0; }
+    /* 浮动条「跟随酒馆主题」时会带上酒馆下拉框的背景模糊：只做缩放位移，不做透明度 */
+    @keyframes be-pop-in-t { from { scale: var(--be-pop-s); translate: 0 var(--be-pop-y); } to { scale: 1; translate: 0 0; } }
+    #be-float-bar.show, #be-card-hl-bar.show, #be-hl-bar.show, #be-card-hl-pop.show { animation: be-pop-in-t var(--be-enter-dur) var(--be-enter-ease); transform-origin: 50% 0; }
+    #be-slot-chooser.show, .be-lay-menu:not([hidden]), #be-cpick { animation: be-pop-in var(--be-enter-dur) var(--be-enter-ease); transform-origin: 50% 0; }
     /* 打开：对话框遮罩淡入，框体弹入 */
     .be-import-tpl-mask.open, #be-thought-mask.open, #be-source-mask.open, .be-lay-ask { animation: be-dim-in 0.2s var(--be-out); }
     .be-import-tpl-mask.open > .be-import-tpl-box, #be-thought-mask.open #be-thought-box, #be-source-mask.open #be-source-box, .be-lay-askbox { animation: be-box-in var(--be-enter-dur) var(--be-enter-ease); }
-    #be-mask.open { animation: be-dim-in 0.2s var(--be-out); }
+    /* 书摘弹窗的遮罩带背景模糊：不做淡入淡出（Chromium 在透明度动画期间会丢掉模糊、结束再补上；
+       从笔记查看器进来时，查看器的暗色遮罩瞬间消失、这层再从透明淡入，中间会先亮一下）。只让弹窗本身弹入。 */
     #be-mask.open #be-modal { animation: be-box-in var(--be-enter-dur) var(--be-enter-ease); }
     /* 书摘面板打开不做动效：面板带背景模糊，对它做透明度动画时 Chromium 会先丢掉模糊、结束再补上；
        让内容淡入则会先出现一大块空的模糊面板（聊天页背后内容多时像闪一下）。所以直接显示。 */
@@ -4413,20 +4436,14 @@ $(() => {
     .be-lay-sheet:not([hidden]), .be-lay-starter-box { animation: be-sheet-up var(--be-enter-dur) var(--be-enter-ease); }
     /* 关闭：淡出缩小再隐藏（需要 Chrome 117+ 的 display 过渡，不支持的浏览器照旧直接消失）；关闭途中不接收点击 */
     @supports (transition-behavior: allow-discrete) {
-      #be-mask, #be-thought-mask, .be-import-tpl-mask,
-      #be-float-bar, #be-card-hl-bar, #be-hl-bar, #be-card-hl-pop, #be-slot-chooser, .be-lay-menu {
+      #be-thought-mask, .be-import-tpl-mask, #be-slot-chooser, .be-lay-menu {
         transition: opacity var(--be-exit-dur) var(--be-exit-ease), scale var(--be-exit-dur) var(--be-exit-ease), display var(--be-exit-dur) allow-discrete;
       }
-      #be-mask:not(.open), #be-thought-mask:not(.open), .be-import-tpl-mask:not(.open),
-      #be-float-bar:not(.show), #be-card-hl-bar:not(.show), #be-hl-bar:not(.show), #be-card-hl-pop:not(.show), #be-slot-chooser:not(.show) {
+      #be-thought-mask:not(.open), .be-import-tpl-mask:not(.open), #be-slot-chooser:not(.show) {
         opacity: 0; pointer-events: none;
       }
-      #be-float-bar:not(.show), #be-card-hl-bar:not(.show), #be-hl-bar:not(.show), #be-card-hl-pop:not(.show), #be-slot-chooser:not(.show) { scale: 0.97; }
-      #be-mask #be-modal { transition: scale var(--be-exit-dur) var(--be-exit-ease); }
-      #be-mask:not(.open) #be-modal { scale: 0.96; }
+      #be-slot-chooser:not(.show) { scale: 0.97; }
       .be-lay-menu[hidden] { display: none; opacity: 0; scale: 0.96; pointer-events: none; }
-      /* 浮动条在选区变化时频繁开关：关得更快 */
-      #be-float-bar, #be-card-hl-bar, #be-hl-bar, #be-card-hl-pop { transition-duration: 0.12s; }
     }
     /* 按压反馈：按下快速缩小，松开按风格回弹（弹簧）或平滑恢复；颜色变化一起过渡（只列具体属性，不用 transition: all） */
     .be-btn, .be-mini-btn, .be-drawer-chip, .be-radio-opt, .be-fbtn, .be-tl-btn, .be-p-tabs button, .be-settings-subtabs button,
@@ -4444,8 +4461,8 @@ $(() => {
     @media (prefers-reduced-motion: reduce) {
       #be-float-bar.show, #be-card-hl-bar.show, #be-hl-bar.show, #be-card-hl-pop.show, #be-slot-chooser.show, .be-lay-menu:not([hidden]), #be-cpick,
       .be-import-tpl-mask.open, .be-import-tpl-mask.open > .be-import-tpl-box, #be-thought-mask.open #be-thought-box, #be-source-mask.open #be-source-box,
-      #be-mask.open, #be-mask.open #be-modal, .be-lay-sheet:not([hidden]), .be-lay-starter-box, .be-lay-askbox { animation: none; }
-      #be-mask, #be-thought-mask, .be-import-tpl-mask, #be-float-bar, #be-card-hl-bar, #be-hl-bar, #be-card-hl-pop, #be-slot-chooser, .be-lay-menu, #be-mask #be-modal { transition: none; }
+      #be-mask.open #be-modal, .be-lay-sheet:not([hidden]), .be-lay-starter-box, .be-lay-askbox { animation: none; }
+      #be-thought-mask, .be-import-tpl-mask, #be-slot-chooser, .be-lay-menu { transition: none; }
       .be-btn:active, .be-mini-btn:active, .be-drawer-chip:active, .be-radio-opt:active, .be-fbtn:active, .be-tl-btn:active, .be-lay-cell:active { scale: 1; }
     }
     body #toast-container { z-index: 2147483647 !important; }
@@ -4772,7 +4789,7 @@ $(() => {
   // 完整样式约 135KB，一次性注入会让浏览器对整个酒馆页面重算样式（手机上能占启动时的一大块时间）。
   // 启动时只留划线、选词浮动栏、菜单入口等聊天页面用得到的规则；书摘界面（面板 / 弹窗 / 卡片 / 编辑器……）的规则
   // 在第一次打开任何书摘界面前补上（detectAndApplyTheme 是各界面打开时的第一步），或启动后浏览器空闲时补上。
-  const STYLE_UI_SEL = /^(?:body(?:\.[\w-]+)*\s+)?(?:#be-(?:panel|mask|modal|card|drawer|typo-sheet|lay|cpick|source|thought-mask|thought-box|viewer|daily-review|confirm|imgpop|tpl-preview|export|p-|settings|slot-chooser|drawer-|nb|review|hm|actions|inspect-tip|css-float)|\.be-(?:card|lay|cp-|import-tpl|tpl|tpv|font|color|palette|btn|mini-btn|radio|slider|toggle|row|sec|subh|hint|p-|note|hm-|dr-|src|confirm|export|drawer|tl-|settings|vw-|rv-|cpick|swap|body-anim|slide|combo|avatar|watermark|quote|thought-main|head|meta|name|date|source|bd|ls-|pt-|vs-|empty|search|chip|grid|mask-pop|fav|imgpop|ask|preview|layout|mirror|dir-|stat|cal|filter|seg|tab|prow|tbtn|pchip|starter|sw|dot|cdot|oic|mlabel|fmt|fsep|ins|shead|shint|stk|opts|menu|mhead|mback|crop|busy|rh|grip|rot|float(?!-bar)|ph|vt|vcol|vsh|div|space|img|shd|tok|slottag|prev-row|lp|doc|clear|wm|merge-sheet|merge-box|merge-list|merge-item|merge-target|merge-hint|merge-remember|merge-check|mask-chip|text-in|typo|css-|about|char-|fb-|nb-|sub-))/;
+  const STYLE_UI_SEL = /^(?:body(?:\.[\w-]+)*\s+)?(?:#be-(?:panel|mask|modal|card|drawer|typo-sheet|lay|cpick|source|thought-mask|thought-box|viewer|daily-review|confirm|imgpop|tpl-preview|export|p-|settings|slot-chooser|drawer-|nb|review|hm|actions|inspect-tip|css-float)|\.be-(?:card|lay|cp-|import-tpl|tpl|tpv|font|color|palette|btn|mini-btn|radio|slider|toggle|row|sec|subh|hint|p-|note|hm-|dr-|src|confirm|export|drawer|tl-|settings|vw-|rv-|cpick|swap|body-anim|slide|combo|avatar|watermark|quote|thought-main|head|meta|name|date|source|bd|ls-|pt-|vs-|empty|search|chip|grid|mask-pop|fav|imgpop|ask|preview|layout|mirror|dir-|stat|cal|filter|seg|tab|prow|tbtn|pchip|starter|sw|dot|cdot|oic|mlabel|fmt|fsep|ins|shead|shint|stk|opts|menu|mhead|mback|crop|busy|rh|grip|rot|float(?!-bar)|ph|vt|vcol|vsh|div|space|img|shd|tok|slottag|prev-row|lp|doc|clear|wm|merge-sheet|merge-box|merge-list|merge-item|merge-target|merge-hint|merge-remember|merge-check|mask-chip|text-in|typo|css-|about|char-|fb-|nb-|sub-|flip))/;
   function splitCssTop(css) {
     const out = []; let i = 0; const n = css.length;
     while (i < n) {
@@ -7012,6 +7029,95 @@ $(() => {
   }
 
   // ----- 划线查看抽屉（点击划线弹出）-----
+
+  // ---------- 3D 倾斜翻面卡片（随机回顾 / 每日回顾 / 笔记查看器） ----------
+  // 一面是头像（跟随「头像类型」），一面是书摘；轻点翻面。手指按住或鼠标移过时按指针位置倾斜（最大 12°），
+  // 高光跟着指针；松开 / 移出时高光淡出，卡片用弹簧曲线回到平面。只动 transform 和 opacity。
+  // 卡片上 touch-action:none：在卡片上滑动只倾斜，不滚页面、不选字、不弹长按菜单。
+  function flipAvatarUrl(charKey) {
+    const ctx = getContext();
+    if (settings.avatarType === 'custom') return settings.customAvatar ? imgUrlSync(settings.customAvatar, () => {
+      const u = imgUrlSync(settings.customAvatar);
+      if (u) mainDoc.querySelectorAll('.be-flip-avatar[data-custom]').forEach(x => { x.style.backgroundImage = `url('${u}')`; x.textContent = ''; });
+    }) : '';
+    if (settings.avatarType === 'char') { const ch = loadNotes()[charKey]; return (ch && ch.avatar) || ctx.charAvatar || ''; }
+    return ctx.userAvatar || '';
+  }
+  function flipNameOf(charKey) {
+    if (settings.avatarType === 'user' || !settings.avatarType) { const ctx = getContext(); return ctx.userName || ''; }
+    const ch = loadNotes()[charKey]; return (ch && ch.name) || '';
+  }
+  // face：一开始显示哪一面（'avatar' / 'text'）
+  function flipCardHtml({ charKey, sub, textHtml, face = 'avatar', cls = '' }) {
+    const c = resolveColors();
+    const url = flipAvatarUrl(charKey);
+    const name = flipNameOf(charKey);
+    const faceCss = `background:${c.bg};color:${c.fg};`;
+    return `<div class="be-flip ${cls}" data-face="${face}">
+      <div class="be-flip-card" style="transform:rotateY(${face === 'text' ? 180 : 0}deg)">
+        <div class="be-flip-face be-flip-ava" style="${faceCss}">
+          <span class="be-flip-avatar"${settings.avatarType === 'custom' ? ' data-custom="1"' : ''} style="${url ? `background-image:url('${escapeHtml(url)}');` : ''}background-color:${c.avatarBg || 'rgba(128,128,128,0.25)'};">${url ? '' : escapeHtml(Array.from(name || '书')[0] || '书')}</span>
+          <div class="be-flip-name">${escapeHtml(name)}</div>
+          ${sub ? `<div class="be-flip-sub" style="color:${c.sub}">${escapeHtml(sub)}</div>` : ''}
+          <div class="be-flip-hint" style="color:${c.sub}">轻点翻面</div>
+          <i class="be-flip-glare"></i>
+        </div>
+        <div class="be-flip-face be-flip-txt" style="${faceCss}">${textHtml}<i class="be-flip-glare"></i></div>
+      </div>
+    </div>`;
+  }
+  function bindFlipCards(root) {
+    if (!root) return;
+    let reduce = false; try { reduce = mainWin.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) {}
+    root.querySelectorAll('.be-flip').forEach(el => {
+      if (el._beFlip) return;
+      el._beFlip = true;
+      const card = el.querySelector('.be-flip-card');
+      let base = el.getAttribute('data-face') === 'text' ? 180 : 0;
+      let down = null;
+      const MAX = 12;
+      const set = (rx, ry, how) => {
+        card.style.transition = how;
+        card.style.transform = `rotateX(${rx.toFixed(2)}deg) rotateY(${(base + ry).toFixed(2)}deg)`;
+      };
+      const tilt = (e) => {
+        if (reduce) return;
+        const r = el.getBoundingClientRect();
+        const px = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)), py = Math.max(0, Math.min(1, (e.clientY - r.top) / r.height));
+        set(-(py - 0.5) * 2 * MAX, (px - 0.5) * 2 * MAX, 'transform 100ms ease-out');
+        el.style.setProperty('--gx', (px * 100).toFixed(1) + '%');
+        el.style.setProperty('--gxm', ((1 - px) * 100).toFixed(1) + '%');
+        el.style.setProperty('--gy', (py * 100).toFixed(1) + '%');
+        el.classList.add('be-flip-lit');
+      };
+      const settle = () => {
+        el.classList.remove('be-flip-lit');
+        set(0, 0, reduce ? 'none' : 'transform 700ms var(--be-spring-curve)');
+      };
+      el.addEventListener('pointerdown', e => {
+        down = { x: e.clientX, y: e.clientY, t: Date.now(), id: e.pointerId };
+        try { el.setPointerCapture(e.pointerId); } catch (er) {}
+        tilt(e);
+      });
+      el.addEventListener('pointermove', e => {
+        if (down || e.pointerType === 'mouse') tilt(e);
+      });
+      const up = (e) => {
+        const d = down; down = null;
+        if (d && e.type === 'pointerup' && Math.hypot(e.clientX - d.x, e.clientY - d.y) < 8 && Date.now() - d.t < 400) {
+          base = base ? 0 : 180;
+          el.setAttribute('data-face', base ? 'text' : 'avatar');
+        }
+        settle();
+      };
+      el.addEventListener('pointerup', up);
+      el.addEventListener('pointercancel', up);
+      el.addEventListener('pointerleave', e => { if (!down) settle(); });
+      el.addEventListener('contextmenu', e => e.preventDefault());
+      el.addEventListener('click', e => e.stopPropagation());
+    });
+  }
+
   function openHighlightViewer(noteId) {
     let mask = mainDoc.getElementById('be-viewer-mask');
     if (mask && isStaleGen(mask)) { try { mask.remove(); } catch (e) {} mask = null; }   // 旧脚本实例残留：重建
@@ -7044,8 +7150,7 @@ $(() => {
       : '';
     viewer.innerHTML = `
       <button class="be-vw-close" id="be-vw-close">×</button>
-      <div class="be-vw-quote">${escapeHtml(note.text || '')}</div>
-      ${_locationHtml}
+      ${flipCardHtml({ charKey: note.charKey, sub: formatDateTime(note.ts), face: 'text', cls: 'be-vw-flip', textHtml: `<div class="be-vw-quote">${escapeHtml(note.text || '')}</div>${_locationHtml}` })}
       <div class="be-vw-actions">
         <button data-act="copy">复制</button>
         <button data-act="thought">写想法</button>
@@ -7067,6 +7172,7 @@ $(() => {
       </div>
     `;
     viewer.querySelector('#be-vw-close').addEventListener('click', () => mask.classList.remove('open'));
+    bindFlipCards(viewer);
     viewer.querySelectorAll('.be-vw-actions button').forEach(b => {
       b.addEventListener('click', () => {
         const act = b.getAttribute('data-act');
@@ -11892,15 +11998,14 @@ $(() => {
           </select>
         </div>
         ${note ? `
-        <div class="be-rv-card">
+        ${flipCardHtml({ charKey: cur.charKey, sub: `${days > 0 ? `${days} 天前` : '今天'} · ${formatDateTime(note.ts)}`, face: 'avatar', cls: 'be-rv-flip', textHtml: `
           <div class="be-rv-when">${days > 0 ? `${days} 天前` : '今天'} · ${formatDateTime(note.ts)}</div>
           <div class="be-rv-quote">${escapeHtml(note.text || '')}</div>
           ${ths.length ? `<div class="be-rv-thoughts">${ths.map(t => `<div class="be-rv-thought">${escapeHtml(t.text || '')}<span>${formatDateTime(t.ts)}</span></div>`).join('')}</div>` : ''}
           <div class="be-rv-src">
             ${ch && ch.avatar ? `<span class="be-rv-ava" style="background-image:url('${escapeHtml(ch.avatar)}')"></span>` : ''}
             <span>${escapeHtml((ch && ch.name) || '')}${noteLocationText(note) ? ' · ' + escapeHtml(noteLocationText(note)) : ''}</span>
-          </div>
-        </div>
+          </div>` })}
         <div class="be-rv-actions">
           <button class="be-btn primary" id="be-rv-next"><i class="fa-solid fa-shuffle"></i> 换一条</button>
           ${canJumpToNote(note) ? '<button class="be-btn" id="be-rv-jump">跳回原文</button>' : ''}
@@ -11915,6 +12020,7 @@ $(() => {
     panel.querySelector('#be-back').addEventListener('click', () => { panelView = 'notes'; renderPanel(); });
     panel.querySelector('#be-p-close').addEventListener('click', closePanel);
     panel.querySelector('#be-rv-char').addEventListener('change', e => { reviewState.charKey = e.target.value; reviewState.current = null; renderPanel(); });
+    bindFlipCards(panel);
     panel.querySelector('#be-rv-next')?.addEventListener('click', () => {
       const nx = pickReviewNote(reviewState.charKey, note && note.id);
       if (nx) { reviewState.current = nx; markReviewed(nx.charKey, nx.note.id); }
@@ -11950,8 +12056,9 @@ $(() => {
     el.innerHTML = `
       <div class="be-dr-card">
         <div class="be-dr-head"><i class="fa-solid fa-shuffle"></i> 今日回顾</div>
-        <div class="be-dr-quote">${escapeHtml(txt.slice(0, 200))}${txt.length > 200 ? '…' : ''}</div>
-        <div class="be-dr-src">${escapeHtml((notes[picked.charKey] && notes[picked.charKey].name) || '')} · ${formatDateTime(picked.note.ts)}</div>
+        ${flipCardHtml({ charKey: picked.charKey, sub: formatDateTime(picked.note.ts), face: 'avatar', cls: 'be-dr-flip', textHtml: `
+          <div class="be-dr-quote">${escapeHtml(txt.slice(0, 200))}${txt.length > 200 ? '…' : ''}</div>
+          <div class="be-dr-src">${escapeHtml((notes[picked.charKey] && notes[picked.charKey].name) || '')} · ${formatDateTime(picked.note.ts)}</div>` })}
         <div class="be-dr-actions">
           <button class="be-btn be-dr-x">关闭</button>
           <button class="be-btn primary be-dr-go">去回顾</button>
@@ -11962,6 +12069,7 @@ $(() => {
     const close = () => { el.classList.remove('show'); setTimeout(() => { try { el.remove(); } catch (e) {} }, 220); };
     el.addEventListener('click', e => { if (e.target === el) close(); });
     el.querySelector('.be-dr-x').addEventListener('click', close);
+    bindFlipCards(el);
     el.querySelector('.be-dr-go').addEventListener('click', () => {
       el.remove();
       reviewState.charKey = '';
