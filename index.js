@@ -78,6 +78,8 @@ $(() => {
     layoutTemplates: [],           // 自由排版的版式模板（整页富文本 + 浮动贴纸）：[{id, name, v:2, page, doc, floats}]，模板 key 为 'layout-<id>'
     hiddenTemplates: [],           // 被隐藏的模板 key（默认 'classic' / 导入 'custom-<id>' 都行）
     hiddenColorPresets: [],        // 被用户隐藏的内置配色 id 列表（COLOR_PRESETS 的 id）
+    colorOrder: [],                // 配色的自定义顺序（内置 id / 'saved-<id>'），没排过的按默认顺序接在后面
+    fontOrder: [],                 // 字体的自定义顺序（FONTS 的 key / 'custom-<id>'）
     templateOrder: [],             // 模板排序（默认+导入统一，存 key），只有 templateOrderManual 为 true 才生效
     templateOrderManual: false,    // 用户在模板列表里拖动过才为 true；否则固定 默认模板在前、导入模板在后
     templateFavorites: [],         // 收藏的模板 key 列表（跟 settings.template 同格式：'classic' / 'custom-<id>'），选模板时排在最前
@@ -3894,6 +3896,8 @@ $(() => {
       transition: background 0.15s;
     }
 
+    .be-organizing [data-drag] { touch-action: none; cursor: grab; user-select: none; -webkit-user-select: none; }
+    .be-organizing [data-drag].be-dragging { position: relative; z-index: 5; cursor: grabbing; pointer-events: none; scale: 1.08; filter: drop-shadow(0 6px 14px rgba(0,0,0,0.35)); transition: none; }
     .be-font-grid {
       display: grid; grid-template-columns: repeat(3, 1fr);
       gap: 8px;
@@ -7909,18 +7913,10 @@ $(() => {
       <div class="be-sec">
         <h4>字体</h4>
         <div class="be-drawer-row" id="be-drawer-font">
-          ${Object.entries(FONTS).map(([k, v]) => {
-            const rawCss = k === 'follow_theme'
-              ? (() => { try { const _el = mainDoc.querySelector('.mes_text') || mainDoc.body; return mainWin.getComputedStyle(_el).fontFamily || 'inherit'; } catch(e){ return 'inherit'; } })()
-              : v.css;
-            const safeCss = (rawCss || '').replace(/"/g, "'");
-            return `<div class="be-drawer-chip ${settings.font===k?'active':''}" data-k="${k}"
-                 style="${safeCss?`font-family:${safeCss};`:''}">${v.name}</div>`;
-          }).join('')}
-          ${(settings.customFonts||[]).map(f => {
-            const fid = `custom-${f.id}`;
-            return `<div class="be-drawer-chip ${settings.font===fid?'active':''}" data-k="${fid}"
-                 style="font-family:${escapeHtml(f.fontFamily||'inherit')};">${escapeHtml(f.name||'未命名')}</div>`;
+          ${fontEntries().map(e => {
+            const safeCss = fontCssOf(e);
+            return `<div class="be-drawer-chip ${settings.font === e.k ? 'active' : ''}" data-k="${escapeHtml(e.k)}"
+                 style="${safeCss ? `font-family:${escapeHtml(safeCss)};` : ''}">${escapeHtml(e.name)}</div>`;
           }).join('')}
         </div>
       </div>
@@ -7928,13 +7924,9 @@ $(() => {
         <h4>颜色</h4>
         <div class="be-drawer-row" id="be-drawer-color">
           <div class="be-drawer-chip be-color-chip rainbow ${settings.colorPreset==='custom'?'active':''}" data-k="custom" title="自定义">●</div>
-          ${COLOR_PRESETS.filter(p => !(settings.hiddenColorPresets || []).includes(p.id)).map(p => `
-            <div class="be-drawer-chip be-color-chip ${settings.colorPreset===p.id?'active':''}" data-k="${p.id}"
-                 style="background:${p.bg};color:${p.fg};">A</div>
-          `).join('')}
-          ${(settings.customColors||[]).map(c => `
-            <div class="be-drawer-chip be-color-chip ${settings.colorPreset===('saved-'+c.id)?'active':''}" data-k="saved-${c.id}"
-                 style="background:${c.bg};color:${c.fg};" title="${escapeHtml(c.name||'自定义配色')}">A</div>
+          ${colorEntries().map(e => `
+            <div class="be-drawer-chip be-color-chip ${settings.colorPreset === e.k ? 'active' : ''}" data-k="${escapeHtml(e.k)}"
+                 style="background:${e.bg};color:${e.fg};" title="${escapeHtml(e.name)}">A</div>
           `).join('')}
         </div>
       </div>
@@ -9525,6 +9517,84 @@ $(() => {
   }
   let _hiddenColorOpen = false;
   let _colorOrganize = false;
+  let _fontOrganize = false;
+  // ---- 配色 / 字体的自定义顺序（设置里「整理」时拖动；书摘弹窗底部栏、自由排版编辑器按同样的顺序） ----
+  function orderKeys(keys, saved) {
+    const set = new Set(keys);
+    const out = (Array.isArray(saved) ? saved : []).filter(k => set.has(k));
+    keys.forEach(k => { if (!out.includes(k)) out.push(k); });
+    return out;
+  }
+  // 显示中的配色（不含被隐藏的内置配色），按自定义顺序：{ k, name, bg, fg, preset, id, c }
+  function colorEntries() {
+    const list = COLOR_PRESETS.filter(p => !(settings.hiddenColorPresets || []).includes(p.id)).map(p => ({ k: p.id, name: p.name, bg: p.bg, fg: p.fg, preset: true, id: p.id }))
+      .concat((settings.customColors || []).map(c => ({ k: 'saved-' + c.id, name: c.name || '自定义配色', bg: c.bg, fg: c.fg, c, id: c.id })));
+    const by = new Map(list.map(x => [x.k, x]));
+    return orderKeys(list.map(x => x.k), settings.colorOrder).map(k => by.get(k));
+  }
+  // 全部字体（内置 + 导入），按自定义顺序：{ k, name, css, custom }
+  function fontEntries() {
+    const list = Object.entries(FONTS).map(([k, v]) => ({ k, name: v.name, css: v.css }))
+      .concat((settings.customFonts || []).map(f => ({ k: 'custom-' + f.id, name: f.name || '未命名', css: f.fontFamily || 'inherit', custom: true })));
+    const by = new Map(list.map(x => [x.k, x]));
+    return orderKeys(list.map(x => x.k), settings.fontOrder).map(k => by.get(k));
+  }
+  function fontCssOf(e) {
+    const raw = e.k === 'follow_theme'
+      ? (() => { try { const _el = mainDoc.querySelector('.mes_text') || mainDoc.body; return mainWin.getComputedStyle(_el).fontFamily || 'inherit'; } catch (er) { return 'inherit'; } })()
+      : e.css;
+    return String(raw || '').replace(/"/g, "'");
+  }
+  // 网格里按住拖动调整顺序（只在「整理」时启用）：拖动时实时换位，松手后 onDone 读 DOM 顺序保存
+  function bindGridDrag(grid, onDone) {
+    if (!grid || grid._beGridDrag) return;
+    grid._beGridDrag = true;
+    grid.addEventListener('pointerdown', e => {
+      const item = e.target.closest('[data-drag]');
+      if (!item || !grid.contains(item) || e.target.closest('.be-color-del') || e.button > 0) return;
+      e.preventDefault();
+      let sx = e.clientX, sy = e.clientY, dragging = false;
+      const layoutPos = () => { const t = item.style.transform; item.style.transform = ''; const r = item.getBoundingClientRect(); item.style.transform = t; return r; };
+      let base = layoutPos();
+      const move = ev => {
+        const dx = ev.clientX - sx, dy = ev.clientY - sy;
+        if (!dragging) {
+          if (Math.hypot(dx, dy) < 6) return;
+          dragging = true;
+          item.classList.add('be-dragging');
+        }
+        item.style.transform = `translate(${dx}px, ${dy}px)`;
+        const under = mainDoc.elementFromPoint(ev.clientX, ev.clientY);
+        const tgt = under && under.closest && under.closest('[data-drag]');
+        if (tgt && tgt !== item && grid.contains(tgt)) {
+          const r = tgt.getBoundingClientRect();
+          const after = ev.clientX > r.left + r.width / 2;
+          if (after) tgt.after(item); else tgt.before(item);
+          // 换位后元素的排版位置变了：调整起点，让它仍然停在手指下
+          const nb = layoutPos();
+          sx += nb.left - base.left; sy += nb.top - base.top; base = nb;
+          item.style.transform = `translate(${ev.clientX - sx}px, ${ev.clientY - sy}px)`;
+        }
+      };
+      const up = () => {
+        mainDoc.removeEventListener('pointermove', move, true);
+        mainDoc.removeEventListener('pointerup', up, true);
+        mainDoc.removeEventListener('pointercancel', up, true);
+        item.style.transform = '';
+        item.classList.remove('be-dragging');
+        if (dragging) {
+          // 拖完不要触发点击（选中配色 / 字体）
+          const stop = ce => { ce.stopPropagation(); ce.preventDefault(); };
+          item.addEventListener('click', stop, { capture: true, once: true });
+          setTimeout(() => item.removeEventListener('click', stop, { capture: true }), 50);
+          onDone();
+        }
+      };
+      mainDoc.addEventListener('pointermove', move, true);
+      mainDoc.addEventListener('pointerup', up, true);
+      mainDoc.addEventListener('pointercancel', up, true);
+    });
+  }
   let _customColorOpen = false;
   function renderHiddenColorGroup() {
     const hidden = (settings.hiddenColorPresets || []).map(id => COLOR_PRESETS.find(p => p.id === id)).filter(Boolean);
@@ -10527,24 +10597,17 @@ $(() => {
             <button type="button" class="be-mini-btn ${_colorOrganize ? 'active' : ''}" id="be-color-organize">${_colorOrganize ? '完成' : '整理'}</button>
           </span>
         </div>
-        <div class="be-color-grid">
-          ${COLOR_PRESETS.filter(p => !(settings.hiddenColorPresets||[]).includes(p.id)).map(p => `
-            <div class="be-color-dot-wrap">
-              <div class="be-color-dot ${settings.colorPreset===p.id?'active':''}" data-k="${p.id}"
-                   title="${escapeHtml(p.name)}" style="background:${p.bg};color:${p.fg};">A</div>
-              ${_colorOrganize ? `<span class="be-color-del" data-chide="${p.id}" title="隐藏这个默认配色">×</span>` : ''}
-            </div>
-          `).join('')}
-          ${(settings.customColors || []).map(c => `
-            <div class="be-color-dot-wrap">
-              <div class="be-color-dot ${settings.colorPreset === ('saved-' + c.id)?'active':''}" data-k="saved-${c.id}"
-                   title="${escapeHtml(c.name || '自定义配色')}" style="background:${c.bg};color:${c.fg};">A</div>
-              ${_colorOrganize ? `<span class="be-color-del" data-cdel="${c.id}" title="删除这份自定义配色">×</span>` : ''}
+        <div class="be-color-grid ${_colorOrganize ? 'be-organizing' : ''}" id="be-color-grid">
+          ${colorEntries().map(e => `
+            <div class="be-color-dot-wrap"${_colorOrganize ? ` data-drag="${escapeHtml(e.k)}"` : ''}>
+              <div class="be-color-dot ${settings.colorPreset === e.k ? 'active' : ''}" data-k="${escapeHtml(e.k)}"
+                   title="${escapeHtml(e.name)}" style="background:${e.bg};color:${e.fg};">A</div>
+              ${_colorOrganize ? (e.preset ? `<span class="be-color-del" data-chide="${e.id}" title="隐藏这个默认配色">×</span>` : `<span class="be-color-del" data-cdel="${e.id}" title="删除这份自定义配色">×</span>`) : ''}
             </div>
           `).join('')}
           <div class="be-color-dot rainbow ${isCustomColor?'active':''}" data-k="custom" title="自定义"></div>
         </div>
-        ${_colorOrganize ? hint('点 × 隐藏默认配色或删除自定义配色。') : ''}
+        ${_colorOrganize ? hint('按住拖动调整顺序；点 × 隐藏默认配色或删除自定义配色。书摘弹窗底部的颜色栏按这个顺序显示。') : ''}
         ${renderHiddenColorGroup()}
         <div class="be-tpl-group ${(_customColorOpen || isCustomColor) ? 'open' : ''}" id="be-custom-color-group">
           <div class="be-tpl-group-head" id="be-custom-color-head"><span class="be-caret"></span><span>自定义配色</span></div>
@@ -10570,18 +10633,21 @@ $(() => {
       </div>
 
       <div class="be-sec">
-        <h4>字体</h4>
-        <div class="be-font-grid">
-          ${Object.entries(FONTS).map(([k, v]) => {
-            const rawCss = k === 'follow_theme'
-              ? (() => { try { const _el = mainDoc.querySelector('.mes_text') || mainDoc.body; return mainWin.getComputedStyle(_el).fontFamily || 'inherit'; } catch(e){ return 'inherit'; } })()
-              : v.css;
-            const safeCss = (rawCss || '').replace(/"/g, "'");
-            return `<div class="be-font-card ${settings.font===k?'active':''}" data-k="${k}"
-                 style="${safeCss ? `font-family:${safeCss};` : ''}">${escapeHtml(v.name)}</div>`;
-          }).join('')}
-          <div class="be-font-card be-tpl-import" id="be-font-import">+ 导入字体</div>
+        <div class="be-sec-head">
+          <h4>字体</h4>
+          <span class="be-sec-head-btns">
+            <button type="button" class="be-mini-btn ${_fontOrganize ? 'active' : ''}" id="be-font-organize">${_fontOrganize ? '完成' : '整理'}</button>
+          </span>
         </div>
+        <div class="be-font-grid ${_fontOrganize ? 'be-organizing' : ''}" id="be-font-grid">
+          ${fontEntries().map(e => {
+            const safeCss = fontCssOf(e);
+            return `<div class="be-font-card ${settings.font === e.k ? 'active' : ''}" data-k="${escapeHtml(e.k)}"${_fontOrganize ? ` data-drag="${escapeHtml(e.k)}"` : ''}
+                 style="${safeCss ? `font-family:${escapeHtml(safeCss)};` : ''}">${escapeHtml(e.name)}</div>`;
+          }).join('')}
+          ${_fontOrganize ? '' : '<div class="be-font-card be-tpl-import" id="be-font-import">+ 导入字体</div>'}
+        </div>
+        ${_fontOrganize ? hint('按住拖动调整顺序。书摘弹窗底部的字体栏、自由排版的字体栏按这个顺序显示。') : ''}
         ${renderCustomFontGroup()}
       </div>
 
@@ -10976,12 +11042,26 @@ $(() => {
       _colorOrganize = !_colorOrganize;
       renderSettings();
     });
+    body.querySelector('#be-font-organize')?.addEventListener('click', () => {
+      _fontOrganize = !_fontOrganize;
+      renderSettings();
+    });
+    if (_colorOrganize) bindGridDrag(body.querySelector('#be-color-grid'), () => {
+      const keys = Array.from(body.querySelectorAll('#be-color-grid [data-drag]')).map(x => x.getAttribute('data-drag'));
+      settings.colorOrder = keys.concat((settings.colorOrder || []).filter(k => !keys.includes(k)));
+      saveSettings(settings);
+    });
+    if (_fontOrganize) bindGridDrag(body.querySelector('#be-font-grid'), () => {
+      settings.fontOrder = Array.from(body.querySelectorAll('#be-font-grid [data-drag]')).map(x => x.getAttribute('data-drag'));
+      saveSettings(settings);
+    });
     body.querySelector('#be-custom-color-head')?.addEventListener('click', () => {
       _customColorOpen = !body.querySelector('#be-custom-color-group')?.classList.contains('open');
       body.querySelector('#be-custom-color-group')?.classList.toggle('open', _customColorOpen);
     });
     body.querySelectorAll('.be-color-dot').forEach(el => {
       el.addEventListener('click', () => {
+        if (_colorOrganize && el.getAttribute('data-k') !== 'custom') return;   // 整理时只拖动排序、隐藏 / 删除
         settings.colorPreset = el.getAttribute('data-k');
         saveSettings(settings);
         renderSettings();
@@ -11033,6 +11113,7 @@ $(() => {
     body.querySelectorAll('.be-font-card').forEach(el => {
       if (el.id === 'be-font-import') return;
       el.addEventListener('click', () => {
+        if (_fontOrganize) return;   // 整理时只拖动排序，不切换字体
         settings.font = el.getAttribute('data-k');
         saveSettings(settings);
         loadFontStylesheets();
@@ -12635,12 +12716,11 @@ $(() => {
   }
   // 「跟随配色」在编辑器里预览用：内置配色 + 自定义配色
   function layPresetList() {
-    const out = COLOR_PRESETS.filter(p => !(settings.hiddenColorPresets || []).includes(p.id)).map(p => ({ k: p.id, name: p.name, bg: p.bg, fg: p.fg }));
-    (settings.customColors || []).forEach(c => {
-      const r = resolveCustomColor(c.bg, c.fgEnabled, c.fg);
-      out.push({ k: 'saved-' + c.id, name: c.name || '自定义配色', bg: r.bg, fg: r.fg });
+    return colorEntries().map(e => {
+      if (e.preset) return { k: e.k, name: e.name, bg: e.bg, fg: e.fg };
+      const r = resolveCustomColor(e.c.bg, e.c.fgEnabled, e.c.fg);
+      return { k: e.k, name: e.name, bg: r.bg, fg: r.fg };
     });
-    return out;
   }
   function layPreset(k) { return k ? (layPresetList().find(p => p.k === k) || null) : null; }
 
@@ -14159,7 +14239,7 @@ $(() => {
     const keepScroll = Array.from(sh.querySelectorAll('.be-lay-row')).map(r => r.scrollLeft);
     sh.hidden = false;
     const chip = (attr, v, label, on, style = '') => `<button type="button" class="be-lay-cell ${on ? 'on' : ''}" ${attr}="${escapeHtml(String(v))}" ${style ? `style="${style}"` : ''}>${label}</button>`;
-    const fontRow = (attr, cur) => `<div class="be-lay-row">${chip(attr, '', '跟随卡片', !cur)}${Object.entries(FONTS).filter(([k]) => k !== 'follow_theme').map(([k, v]) => chip(attr, k, escapeHtml(v.name), cur === k, `font-family:${String(v.css).replace(/"/g, "'")}`)).join('')}${(settings.customFonts || []).map(x => chip(attr, 'custom-' + x.id, escapeHtml(x.name || '未命名'), cur === 'custom-' + x.id, `font-family:${escapeHtml(String(x.fontFamily || 'inherit').replace(/"/g, "'"))}`)).join('')}</div>`;
+    const fontRow = (attr, cur) => `<div class="be-lay-row">${chip(attr, '', '跟随卡片', !cur)}${fontEntries().filter(e => e.k !== 'follow_theme').map(e => chip(attr, e.k, escapeHtml(e.name), cur === e.k, `font-family:${escapeHtml(String(e.css || 'inherit').replace(/"/g, "'"))}`)).join('')}</div>`;
     if (lay.sheet === 'insert') {
       const item = (k, ic, name, auto) => `<button type="button" class="be-lay-ins ${auto ? 'auto' : ''}" data-ins="${k}"><b>${ic}</b>${name}</button>`;
       sh.innerHTML = `<div class="be-lay-shead">元素</div>
