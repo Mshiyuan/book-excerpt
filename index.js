@@ -3412,21 +3412,30 @@ $(() => {
     }
 
     /* 设置面板二级分组 tab：比上面的主 tab 弱一级，字更小、更紧凑，一眼看出是下一层级 */
-    .be-sub-mini-wrap { position: sticky; top: 0; height: 0; z-index: 6; display: flex; justify-content: center; pointer-events: none; }
-    .be-sub-mini {
-      margin-top: 6px; height: max-content; display: flex; gap: 2px; padding: 3px 6px; border-radius: 999px;
-      background: var(--be-panel-bg); border: 1px solid var(--be-panel-border); box-shadow: 0 6px 18px rgba(0,0,0,0.28);
-      opacity: 0; translate: 0 -10px; scale: 0.85; pointer-events: none;
-      transition: opacity var(--be-exit-dur) var(--be-exit-ease), translate var(--be-exit-dur) var(--be-exit-ease), scale var(--be-exit-dur) var(--be-exit-ease);
+    .be-sub-sticky { position: sticky; top: 0; z-index: 6; }
+    .be-sub-sticky.collapsed { pointer-events: none; }   /* 收起后透明区域不挡住下面内容的点击，只有那条线可点 */
+    .be-sub-sticky .be-settings-subtabs {
+      background: var(--be-panel-bg); transform-origin: 50% 0;
+      transition: scale var(--be-enter-dur) var(--be-enter-ease), opacity 0.22s var(--be-out);
     }
-    .be-sub-mini-wrap.show .be-sub-mini {
-      opacity: 1; translate: 0 0; scale: 1; pointer-events: auto;
-      transition: opacity 0.2s var(--be-out), translate var(--be-enter-dur) var(--be-enter-ease), scale var(--be-enter-dur) var(--be-enter-ease);
+    .be-sub-sticky.collapsed .be-settings-subtabs {
+      scale: 1 0.06; opacity: 0; pointer-events: none;
+      transition: scale var(--be-exit-dur) var(--be-exit-ease), opacity var(--be-exit-dur) var(--be-exit-ease);
     }
-    .be-sub-mini button { width: 36px; height: 24px; border: 0; padding: 0; background: transparent; display: flex; align-items: center; justify-content: center; cursor: pointer; }
-    .be-sub-mini button i { display: block; width: 18px; height: 4px; border-radius: 2px; background: var(--be-panel-sub); opacity: 0.5; transition: scale var(--be-enter-dur) var(--be-enter-ease), background-color 0.2s, opacity 0.2s; }
-    .be-sub-mini button.active i { background: var(--be-accent); opacity: 1; scale: 1.4 1; }
-    @media (prefers-reduced-motion: reduce) { .be-sub-mini, .be-sub-mini-wrap.show .be-sub-mini, .be-sub-mini button i { transition: none; } }
+    /* 收起后的那条线：三段，当前分区用主题色；上下留出点击区域 */
+    .be-sub-line {
+      position: absolute; left: 16px; right: 16px; top: 0; height: 18px; padding: 0; border: 0; background: transparent;
+      display: flex; gap: 4px; align-items: flex-start; cursor: pointer;
+      opacity: 0; scale: 0.6 1; pointer-events: none; transform-origin: 50% 0;
+      transition: opacity var(--be-exit-dur) var(--be-exit-ease), scale var(--be-exit-dur) var(--be-exit-ease);
+    }
+    .be-sub-line i { flex: 1; height: 3px; border-radius: 2px; background: var(--be-panel-sub); opacity: 0.35; }
+    .be-sub-line i.active { background: var(--be-accent); opacity: 1; }
+    .be-sub-sticky.collapsed .be-sub-line {
+      opacity: 1; scale: 1 1; pointer-events: auto;
+      transition: opacity 0.18s var(--be-out) 0.06s, scale var(--be-enter-dur) var(--be-enter-ease);
+    }
+    @media (prefers-reduced-motion: reduce) { .be-sub-sticky .be-settings-subtabs, .be-sub-line { transition: none !important; } }
     .be-settings-subtabs {
       display: flex; gap: 4px;
       margin: 2px 0 18px;
@@ -4397,7 +4406,11 @@ $(() => {
     .be-import-tpl-mask.open > .be-import-tpl-box, #be-thought-mask.open #be-thought-box, #be-source-mask.open #be-source-box, .be-lay-askbox { animation: be-box-in var(--be-enter-dur) var(--be-enter-ease); }
     #be-mask.open { animation: be-dim-in 0.2s var(--be-out); }
     #be-mask.open #be-modal { animation: be-box-in var(--be-enter-dur) var(--be-enter-ease); }
-    #be-panel.open { animation: be-panel-in var(--be-enter-dur) var(--be-enter-ease); }
+    /* 面板本身带背景模糊：不对面板做位移 / 缩放 / 透明度动画（否则每一帧都要对整个酒馆页面重算一次模糊，手机上掉帧、闪），
+       打开时只让里面的内容依次淡入 */
+    #be-panel.be-opening > * { animation: be-item-in var(--be-enter-dur) var(--be-enter-ease) both; }
+    #be-panel.be-opening > :nth-child(2) { animation-delay: var(--be-stagger); }
+    #be-panel.be-opening > :nth-child(n+3) { animation-delay: calc(var(--be-stagger) * 2); }
     /* 底部面板 */
     #be-drawer, #be-typo-sheet { transition: transform 0.42s var(--be-enter-ease); }
     .be-lay-sheet:not([hidden]), .be-lay-starter-box { animation: be-sheet-up var(--be-enter-dur) var(--be-enter-ease); }
@@ -4405,15 +4418,15 @@ $(() => {
     .be-stg > * { animation: be-item-in var(--be-enter-dur) var(--be-enter-ease) both; animation-delay: calc(var(--be-i, 0) * var(--be-stagger)); }
     /* 关闭：淡出缩小再隐藏（需要 Chrome 117+ 的 display 过渡，不支持的浏览器照旧直接消失）；关闭途中不接收点击 */
     @supports (transition-behavior: allow-discrete) {
-      #be-mask, #be-panel, #be-thought-mask, .be-import-tpl-mask,
+      #be-mask, #be-thought-mask, .be-import-tpl-mask,
       #be-float-bar, #be-card-hl-bar, #be-hl-bar, #be-card-hl-pop, #be-slot-chooser, .be-lay-menu {
         transition: opacity var(--be-exit-dur) var(--be-exit-ease), scale var(--be-exit-dur) var(--be-exit-ease), display var(--be-exit-dur) allow-discrete;
       }
-      #be-mask:not(.open), #be-panel:not(.open), #be-thought-mask:not(.open), .be-import-tpl-mask:not(.open),
+      #be-mask:not(.open), #be-thought-mask:not(.open), .be-import-tpl-mask:not(.open),
       #be-float-bar:not(.show), #be-card-hl-bar:not(.show), #be-hl-bar:not(.show), #be-card-hl-pop:not(.show), #be-slot-chooser:not(.show) {
         opacity: 0; pointer-events: none;
       }
-      #be-panel:not(.open), #be-float-bar:not(.show), #be-card-hl-bar:not(.show), #be-hl-bar:not(.show), #be-card-hl-pop:not(.show), #be-slot-chooser:not(.show) { scale: 0.97; }
+      #be-float-bar:not(.show), #be-card-hl-bar:not(.show), #be-hl-bar:not(.show), #be-card-hl-pop:not(.show), #be-slot-chooser:not(.show) { scale: 0.97; }
       #be-mask #be-modal { transition: scale var(--be-exit-dur) var(--be-exit-ease); }
       #be-mask:not(.open) #be-modal { scale: 0.96; }
       .be-lay-menu[hidden] { display: none; opacity: 0; scale: 0.96; pointer-events: none; }
@@ -4421,12 +4434,12 @@ $(() => {
       #be-float-bar, #be-card-hl-bar, #be-hl-bar, #be-card-hl-pop { transition-duration: 0.12s; }
     }
     /* 按压反馈：按下快速缩小，松开按风格回弹（弹簧）或平滑恢复；颜色变化一起过渡（只列具体属性，不用 transition: all） */
-    .be-btn, .be-mini-btn, .be-drawer-chip, .be-radio-opt, .be-fbtn, .be-tl-btn, .be-p-tabs button, .be-settings-subtabs button, .be-sub-mini button,
+    .be-btn, .be-mini-btn, .be-drawer-chip, .be-radio-opt, .be-fbtn, .be-tl-btn, .be-p-tabs button, .be-settings-subtabs button,
     .be-tpl-card, .be-font-card, .be-palette-card,
     .be-lay-cell, .be-lay-ins, .be-lay-bar button, .be-lay-opts button, .be-lay-pchip, .be-lay-starter-item, .be-lay-tbtn, .be-lay-seg button, .be-lay-stkgrid button {
       transition: scale var(--be-release-dur) var(--be-release-ease), background-color 0.16s var(--be-out), color 0.16s var(--be-out), border-color 0.16s var(--be-out), opacity 0.16s var(--be-out);
     }
-    .be-btn:active, .be-mini-btn:active, .be-drawer-chip:active, .be-radio-opt:active, .be-fbtn:active, .be-tl-btn:active, .be-p-tabs button:active, .be-settings-subtabs button:active, .be-sub-mini button:active,
+    .be-btn:active, .be-mini-btn:active, .be-drawer-chip:active, .be-radio-opt:active, .be-fbtn:active, .be-tl-btn:active, .be-p-tabs button:active, .be-settings-subtabs button:active,
     .be-tpl-card:active, .be-font-card:active, .be-palette-card:active,
     .be-lay-cell:active, .be-lay-ins:active, .be-lay-bar button:active, .be-lay-opts button:active, .be-lay-pchip:active, .be-lay-starter-item:active, .be-lay-tbtn:active, .be-lay-seg button:active, .be-lay-stkgrid button:active {
       scale: var(--be-press-s);
@@ -4436,8 +4449,8 @@ $(() => {
     @media (prefers-reduced-motion: reduce) {
       #be-float-bar.show, #be-card-hl-bar.show, #be-hl-bar.show, #be-card-hl-pop.show, #be-slot-chooser.show, .be-lay-menu:not([hidden]), #be-cpick,
       .be-import-tpl-mask.open, .be-import-tpl-mask.open > .be-import-tpl-box, #be-thought-mask.open #be-thought-box, #be-source-mask.open #be-source-box,
-      #be-mask.open, #be-mask.open #be-modal, #be-panel.open, .be-lay-sheet:not([hidden]), .be-lay-starter-box, .be-lay-askbox, .be-stg > * { animation: none; }
-      #be-mask, #be-panel, #be-thought-mask, .be-import-tpl-mask, #be-float-bar, #be-card-hl-bar, #be-hl-bar, #be-card-hl-pop, #be-slot-chooser, .be-lay-menu, #be-mask #be-modal { transition: none; }
+      #be-mask.open, #be-mask.open #be-modal, #be-panel.be-opening > *, .be-lay-sheet:not([hidden]), .be-lay-starter-box, .be-lay-askbox, .be-stg > * { animation: none; }
+      #be-mask, #be-thought-mask, .be-import-tpl-mask, #be-float-bar, #be-card-hl-bar, #be-hl-bar, #be-card-hl-pop, #be-slot-chooser, .be-lay-menu, #be-mask #be-modal { transition: none; }
       .be-btn:active, .be-mini-btn:active, .be-drawer-chip:active, .be-radio-opt:active, .be-fbtn:active, .be-tl-btn:active, .be-lay-cell:active { scale: 1; }
     }
     body #toast-container { z-index: 2147483647 !important; }
@@ -4764,7 +4777,7 @@ $(() => {
   // 完整样式约 135KB，一次性注入会让浏览器对整个酒馆页面重算样式（手机上能占启动时的一大块时间）。
   // 启动时只留划线、选词浮动栏、菜单入口等聊天页面用得到的规则；书摘界面（面板 / 弹窗 / 卡片 / 编辑器……）的规则
   // 在第一次打开任何书摘界面前补上（detectAndApplyTheme 是各界面打开时的第一步），或启动后浏览器空闲时补上。
-  const STYLE_UI_SEL = /^(?:body(?:\.[\w-]+)*\s+)?(?:#be-(?:panel|mask|modal|card|drawer|typo-sheet|lay|cpick|source|thought-mask|thought-box|viewer|daily-review|confirm|imgpop|tpl-preview|export|p-|settings|slot-chooser|drawer-|nb|review|hm|actions|inspect-tip|css-float)|\.be-(?:card|lay|cp-|import-tpl|tpl|tpv|font|color|palette|btn|mini-btn|radio|slider|toggle|row|sec|subh|hint|p-|note|hm-|dr-|src|confirm|export|drawer|tl-|settings|vw-|rv-|cpick|swap|body-anim|slide|combo|avatar|watermark|quote|thought-main|head|meta|name|date|source|bd|ls-|pt-|vs-|empty|search|chip|grid|mask-pop|fav|imgpop|ask|preview|layout|mirror|dir-|stat|cal|filter|seg|tab|prow|tbtn|pchip|starter|sw|dot|cdot|oic|mlabel|fmt|fsep|ins|shead|shint|stk|opts|menu|mhead|mback|crop|busy|rh|grip|rot|float(?!-bar)|ph|vt|vcol|vsh|div|space|img|shd|tok|slottag|prev-row|lp|doc|clear|wm|merge-sheet|merge-box|merge-list|merge-item|merge-target|merge-hint|merge-remember|merge-check|mask-chip|text-in|typo|css-|about|char-|fb-|nb-|sub-mini))/;
+  const STYLE_UI_SEL = /^(?:body(?:\.[\w-]+)*\s+)?(?:#be-(?:panel|mask|modal|card|drawer|typo-sheet|lay|cpick|source|thought-mask|thought-box|viewer|daily-review|confirm|imgpop|tpl-preview|export|p-|settings|slot-chooser|drawer-|nb|review|hm|actions|inspect-tip|css-float)|\.be-(?:card|lay|cp-|import-tpl|tpl|tpv|font|color|palette|btn|mini-btn|radio|slider|toggle|row|sec|subh|hint|p-|note|hm-|dr-|src|confirm|export|drawer|tl-|settings|vw-|rv-|cpick|swap|body-anim|slide|combo|avatar|watermark|quote|thought-main|head|meta|name|date|source|bd|ls-|pt-|vs-|empty|search|chip|grid|mask-pop|fav|imgpop|ask|preview|layout|mirror|dir-|stat|cal|filter|seg|tab|prow|tbtn|pchip|starter|sw|dot|cdot|oic|mlabel|fmt|fsep|ins|shead|shint|stk|opts|menu|mhead|mback|crop|busy|rh|grip|rot|float(?!-bar)|ph|vt|vcol|vsh|div|space|img|shd|tok|slottag|prev-row|lp|doc|clear|wm|merge-sheet|merge-box|merge-list|merge-item|merge-target|merge-hint|merge-remember|merge-check|mask-chip|text-in|typo|css-|about|char-|fb-|nb-|sub-))/;
   function splitCssTop(css) {
     const out = []; let i = 0; const n = css.length;
     while (i < n) {
@@ -9155,10 +9168,14 @@ $(() => {
     }
     detectAndApplyTheme();
     const wasOpen = panel.classList.contains('open');
-    panel.classList.add('open');
+    // 先在隐藏状态下把内容建好，再显示（只排一次版）
     renderPanel();
-    // 打开面板时列表依次进入（已经开着时重画不再播）
-    if (!wasOpen) staggerIn(mainDoc.getElementById('be-notes-list') || mainDoc.getElementById('be-settings-content'));
+    if (!wasOpen) {
+      panel.classList.add('be-opening');
+      clearTimeout(panel._beOpenT);
+      panel._beOpenT = setTimeout(() => panel.classList.remove('be-opening'), 1000);
+    }
+    panel.classList.add('open');
   }
   function closePanel() {
     mainDoc.getElementById('be-panel')?.classList.remove('open');
@@ -9204,6 +9221,8 @@ $(() => {
       playPanelSwitchAnim(container, dir);
       return;
     }
+    // 上一次切换还没结束：先终止它并做完收尾（否则它的收尾会在这次动画中途清掉透视 / 旋转中心，出现说不清的发涩动作）
+    if (mainWin.__beSwapCancel) { try { mainWin.__beSwapCancel(); } catch (e) {} }
     const host = container.parentElement;
     const scroller = container.classList.contains('be-p-body') ? null : container.closest('.be-p-body');
     const oldScroll = scroller ? scroller.scrollTop : container.scrollTop;
@@ -9256,13 +9275,24 @@ $(() => {
       aNew = anim(container, [{ transform: `translateX(${d * 100}%)` }, { transform: 'translateX(0)' }], { duration: 500, easing: ease });
       aOld = anim(old, [{ transform: 'translateX(0)', opacity: 1 }, { opacity: 0, offset: 0.55 }, { transform: `translateX(${-d * 100}%)`, opacity: 0 }], { duration: 500, easing: ease, fill: 'forwards' });
     }
+    let finished = false;
     const done = () => {
+      if (finished) return;
+      finished = true;
+      if (mainWin.__beSwapCancel === cancel) mainWin.__beSwapCancel = null;
       try { old.remove(); } catch (e) {}
       container.classList.remove('be-swap-new');
       container.style.transformOrigin = '';
       host.style.perspective = '';
     };
+    const cancel = () => { try { aNew.cancel(); } catch (e) {} try { aOld.cancel(); } catch (e) {} done(); };
+    mainWin.__beSwapCancel = cancel;
     aNew.onfinish = done; aNew.oncancel = done;
+    // 新内容很重时，渲染那一帧会很慢：动画先停在起点，等起点画出来后的下一帧再开始计时，不会一开始就跳过一截
+    aNew.pause(); aOld.pause();
+    void container.offsetHeight;
+    const raf = mainWin.requestAnimationFrame || (f => setTimeout(f, 16));
+    raf(() => raf(() => { if (!finished) { aNew.play(); aOld.play(); } }));
   }
   // 入场动画：fade 淡入 / slide 滑动（dir<0 从左边进，否则从右边进）
   function playPanelSwitchAnim(el, dir) {
@@ -10286,14 +10316,15 @@ $(() => {
     if (!panelBody) return;
     let content = panelBody.querySelector('#be-settings-content');
     if (!content) {
-      // 分区标签滚出视野后，顶部吸附一个由三条横线组成的小条，可点击切换；滚回顶部时恢复文字标签
-      const groupNames = { card: '书摘卡片', highlight: '划线', general: '通用' };
+      // 分区标签吸在顶部；往下滑时按弹簧收成一条细线（三段，当前分区用主题色），点这条线弹开恢复；回到顶部时自动展开
       panelBody.innerHTML = `
-        <div class="be-sub-mini-wrap"><div class="be-sub-mini">${Object.entries(groupNames).map(([g, n]) => `<button type="button" data-g="${g}" class="${settingsGroup === g ? 'active' : ''}" title="${n}" aria-label="${n}"><i></i></button>`).join('')}</div></div>
-        <div class="be-settings-subtabs">
-          <button type="button" data-g="card" class="${settingsGroup==='card'?'active':''}">书摘卡片</button>
-          <button type="button" data-g="highlight" class="${settingsGroup==='highlight'?'active':''}">划线</button>
-          <button type="button" data-g="general" class="${settingsGroup==='general'?'active':''}">通用</button>
+        <div class="be-sub-sticky">
+          <div class="be-settings-subtabs">
+            <button type="button" data-g="card" class="${settingsGroup==='card'?'active':''}">书摘卡片</button>
+            <button type="button" data-g="highlight" class="${settingsGroup==='highlight'?'active':''}">划线</button>
+            <button type="button" data-g="general" class="${settingsGroup==='general'?'active':''}">通用</button>
+          </div>
+          <button type="button" class="be-sub-line" aria-label="展开分区标签">${['card', 'highlight', 'general'].map(g => `<i data-g="${g}" class="${settingsGroup === g ? 'active' : ''}"></i>`).join('')}</button>
         </div>
         <div id="be-settings-content"></div>
       `;
@@ -10305,30 +10336,34 @@ $(() => {
           const dir = order.indexOf(g) < order.indexOf(settingsGroup) ? -1 : 1;
           settingsGroup = g;
           panelBody.querySelectorAll('.be-settings-subtabs button').forEach(b => b.classList.toggle('active', b === el));
-          panelBody.querySelectorAll('.be-sub-mini button').forEach(b => b.classList.toggle('active', b.getAttribute('data-g') === g));
+          panelBody.querySelectorAll('.be-sub-line i').forEach(b => b.classList.toggle('active', b.getAttribute('data-g') === g));
+          panelBody.querySelector('.be-sub-sticky')?.classList.remove('collapsed');
           // 跟"笔记本/设置"顶部主 Tab 切换用同一套手法：内容瞬间换掉（没有旧内容残留/重叠这回事），
           // 只在新内容上补一个入场淡入，跟主 Tab 切换的手感保持一致——那个切换用户没意见，直接照搬。
           const sc = mainDoc.getElementById('be-settings-content');
           panelSwap(sc, () => renderSettingsGroupContent(sc), dir);
         });
       });
-      panelBody.querySelectorAll('.be-sub-mini button').forEach(b => b.addEventListener('click', () => {
-        const g = b.getAttribute('data-g');
-        // 点当前分区：回到顶部（文字标签重新出现）；点别的分区：切换（切换后也会回到顶部）
-        if (g === settingsGroup) { try { panelBody.scrollTo({ top: 0, behavior: 'smooth' }); } catch (e) { panelBody.scrollTop = 0; } return; }
-        panelBody.querySelector(`.be-settings-subtabs [data-g="${g}"]`)?.click();
-      }));
-      if (!panelBody._beMiniBound) {
-        panelBody._beMiniBound = true;
+      // 点那条线：标签弹开（停在当前滚动位置）；之后再往下滑一段才重新收起
+      panelBody.querySelector('.be-sub-line')?.addEventListener('click', () => {
+        const st = panelBody.querySelector('.be-sub-sticky');
+        if (!st) return;
+        st.classList.remove('collapsed');
+        panelBody._beSubAnchor = panelBody.scrollTop;
+      });
+      if (!panelBody._beSubBound) {
+        panelBody._beSubBound = true;
         let raf = 0;
         panelBody.addEventListener('scroll', () => {
           if (raf) return;
           raf = mainWin.requestAnimationFrame(() => {
             raf = 0;
-            const tabs = panelBody.querySelector('.be-settings-subtabs');
-            const wrap = panelBody.querySelector('.be-sub-mini-wrap');
-            if (!tabs || !wrap) return;
-            wrap.classList.toggle('show', panelBody.scrollTop > tabs.offsetTop + tabs.offsetHeight - 4);
+            const st = panelBody.querySelector('.be-sub-sticky');
+            if (!st) return;
+            const y = panelBody.scrollTop;
+            if (y <= 4) { st.classList.remove('collapsed'); panelBody._beSubAnchor = 0; return; }
+            const anchor = panelBody._beSubAnchor || 0;
+            if (!st.classList.contains('collapsed') && y > Math.max(st.offsetHeight, anchor + 24)) st.classList.add('collapsed');
           });
         }, { passive: true });
       }
@@ -11490,17 +11525,12 @@ $(() => {
 
     const list = mainDoc.getElementById('be-char-notes');
     if (!list) return;
+    const tok = (list._beFillTok = (list._beFillTok || 0) + 1);   // 换筛选时让上一轮还没补完的分批停下
     if (!items.length) {
       list.innerHTML = `<div class="be-empty">没有符合条件的笔记</div>`;
       return;
     }
-    list.innerHTML = order.map(gk => {
-      const arr = groups[gk];
-      const first = arr[0];
-      const groupTitle = first.bookName || first.chapterName || '';
-      return `
-        ${groupTitle ? `<div class="be-group-title">${escapeHtml(groupTitle)}</div>` : ''}
-        ${arr.map(it => {
+    const noteCardOf = (it) => {
           const ths = it.thoughts || [];
           const hasThought = ths.length > 0 || !!it.thoughtOnly;
           // 想法：FA fa-comment (\\f075)；划线：字母 A
@@ -11524,24 +11554,46 @@ $(() => {
               </div>
             </div>
           `;
-        }).join('')}
-      `;
-    }).join('');
-    list.querySelectorAll('.be-note-jump').forEach(b => {
-      b.addEventListener('click', e => {
-        e.stopPropagation();
-        const it = allItems.find(x => x.id === b.getAttribute('data-jump'));
-        if (it) jumpToNote(it, currentCharKey);
-      });
+    };
+    // 先渲染前 30 条，其余分批补上（一个角色几百条笔记时，一次全建会让打开面板卡一下）
+    const units = [];
+    order.forEach(gk => {
+      const arr = groups[gk];
+      const first = arr[0];
+      const groupTitle = first.bookName || first.chapterName || '';
+      if (groupTitle) units.push(`<div class="be-group-title">${escapeHtml(groupTitle)}</div>`);
+      arr.forEach(it => units.push(noteCardOf(it)));
     });
-    list.querySelectorAll('.be-note-card').forEach(el => {
-      el.addEventListener('click', () => {
+    const FIRST = 30, STEP = 60;
+    list.innerHTML = units.slice(0, FIRST).join('');
+    let done = FIRST;
+    const more = () => {
+      if (list._beFillTok !== tok || !list.isConnected || done >= units.length) return;
+      list.insertAdjacentHTML('beforeend', units.slice(done, done + STEP).join(''));
+      done += STEP;
+      if (done < units.length) setTimeout(more, 30);
+    };
+    if (done < units.length) setTimeout(more, 250);
+    // 点击用事件委托（卡片是分批加进来的）
+    if (!list._beBound) {
+      list._beBound = true;
+      list.addEventListener('click', e => {
+        const items = ((loadNotes()[currentCharKey] || {}).items || []);
+        const jb = e.target.closest('.be-note-jump');
+        if (jb) {
+          e.stopPropagation();
+          const it = items.find(x => x.id === jb.getAttribute('data-jump'));
+          if (it) jumpToNote(it, currentCharKey);
+          return;
+        }
+        const el = e.target.closest('.be-note-card');
+        if (!el) return;
         const id = el.getAttribute('data-id');
         if (charMergeMode) {
           if (isInMergeBasket(id)) {
             removeFromMergeBasket('note:' + id);
           } else {
-            const it = allItems.find(x => x.id === id);
+            const it = items.find(x => x.id === id);
             if (it) addToMergeBasket({ text: it.text, source: 'note', noteId: id, charKey: currentCharKey, chatId: it.chatId || '' });
           }
           fillCharNotes();
@@ -11549,7 +11601,7 @@ $(() => {
         }
         openHighlightViewer(id);
       });
-    });
+    }
   }
 
   // 划线色系（5 色系 × 每色系 5 色），顺序与微信阅读不同
