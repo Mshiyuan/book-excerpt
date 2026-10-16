@@ -1873,6 +1873,41 @@ $(() => {
     _ctxOverride = ctx;
     try { return fn(); } finally { _ctxOverride = prev; }
   }
+  // 一条已保存的笔记「自己的」角色 / 存档 / user：从笔记本、随机回顾做书摘时用，和酒馆现在打开的是谁无关。
+  // user 的来源依次是：划线时记下的人设 → 笔记就在酒馆当前打开的聊天里时用当前人设 → 酒馆里和这个角色绑定的人设 → 当前人设
+  function noteCtxOf(note, charKey) {
+    if (!note) return null;
+    const key = charKey || note.charKey || '';
+    if (!key) return null;
+    const ch = loadNotes()[key] || {};
+    const out = { charKey: key, charName: ch.name || (key === 'unknown' ? '' : key), charAvatar: ch.avatar || '', chatId: note.chatId || '' };
+    if (note.userName) {
+      out.userName = note.userName;
+      if (note.userAvatar) out.userAvatar = note.userAvatar;
+      return out;
+    }
+    const st = getStContext();
+    if (st.charKey === key && (!note.chatId || st.chatId === note.chatId)) return out;
+    const bound = personaBoundTo(key);
+    if (bound) { out.userName = bound.name; out.userAvatar = bound.avatar; }
+    return out;
+  }
+  // 酒馆人设面板里「连接到角色」绑定了这个角色的人设
+  function personaBoundTo(charKey) {
+    try {
+      const pu = mainWin.SillyTavern.getContext().powerUserSettings || {};
+      const desc = pu.persona_descriptions || {};
+      const id = Object.keys(desc).find(k => (desc[k] && desc[k].connections || []).some(c => c && c.type === 'character' && c.id === charKey));
+      if (!id) return null;
+      const name = (pu.personas || {})[id] || '';
+      return name ? { name, avatar: `/thumbnail?type=persona&file=${encodeURIComponent(id)}` } : null;
+    } catch (e) { return null; }
+  }
+  // 从已保存的笔记打开书摘卡片：这张卡用笔记自己的角色 / user / 出处（关卡片时清空，见 closeModal）
+  function useNoteCtx(note, charKey) {
+    const c = noteCtxOf(note, charKey);
+    if (c) _ctxOverride = c;
+  }
   // 当前角色/聊天：有本次操作指定的角色（见 _ctxOverride）就用它，否则用酒馆当前打开的
   function getContext() {
     const ov = _ctxOverride;
@@ -6782,6 +6817,9 @@ $(() => {
       thoughtOnly,
       msgId,
       ...(swipeId !== undefined ? { swipeId } : {}),
+      // 划线时用的人设（user）：以后从笔记本 / 随机回顾做书摘时用它，不受当时酒馆选的是谁影响
+      ...(ctx.userName ? { userName: ctx.userName } : {}),
+      ...(ctx.userAvatar ? { userAvatar: ctx.userAvatar } : {}),
       style: useStyle,
       color: useColor,
       stripStyle: settings.stripStyle
@@ -7069,6 +7107,7 @@ $(() => {
       mainDoc.getElementById('be-viewer-mask')?.classList.remove('open');
       lastText = original;
       if (opCtx) _ctxOverride = opCtx;
+      else useNoteCtx(note);
       openExcerptModal(original, { thoughtText: val });
     });
     reNew('#be-thought-save', () => {
@@ -7244,6 +7283,7 @@ $(() => {
           lastText = fresh.text;
           const rc = readerOpCtx();
           if (rc) _ctxOverride = rc;
+          else useNoteCtx(fresh);
           openExcerptModal(fresh.text);
         } else if (act === 'merge') {
           // 不关闭工具条：允许连续点几条划线快速加入同一个篮子
@@ -7308,10 +7348,10 @@ $(() => {
     const ch = loadNotes()[charKey]; return (ch && ch.name) || '';
   }
   // face：一开始显示哪一面（'avatar' / 'text'）
-  function flipCardHtml({ charKey, sub, textHtml, face = 'avatar', cls = '' }) {
+  // note：这张卡对应的笔记，头像 / 名字按这条笔记自己的角色和 user（见 noteCtxOf）
+  function flipCardHtml({ charKey, note, sub, textHtml, face = 'avatar', cls = '' }) {
     const c = resolveColors();
-    const url = flipAvatarUrl(charKey);
-    const name = flipNameOf(charKey);
+    const { url, name } = withCtx(noteCtxOf(note, charKey), () => ({ url: flipAvatarUrl(charKey), name: flipNameOf(charKey) }));
     const faceCss = `background:${c.bg};color:${c.fg};`;
     return `<div class="be-flip ${cls}" data-face="${face}">
       <div class="be-flip-card" style="transform:rotateY(${face === 'text' ? 180 : 0}deg)">
@@ -7484,6 +7524,7 @@ $(() => {
         } else if (act === 'excerpt') {
           lastText = note.text;
           mask.classList.remove('open');
+          useNoteCtx(note);
           openExcerptModal(note.text);
         } else if (act === 'del') {
           if (!(await beConfirm({ text: '删除这条划线和它的所有想法？', okText: '删除' })).ok) return;
@@ -7511,6 +7552,7 @@ $(() => {
         if (!t) return;
         mask.classList.remove('open');
         lastText = note.text;
+        useNoteCtx(note);
         openExcerptModal(note.text, { thoughtText: t.text || '' });
       });
     });
@@ -12780,7 +12822,7 @@ $(() => {
           </select>
         </div>
         ${note ? `
-        ${flipCardHtml({ charKey: cur.charKey, sub: `${days > 0 ? `${days} 天前` : '今天'} · ${formatDateTime(note.ts)}`, face: 'avatar', cls: 'be-rv-flip', textHtml: `
+        ${flipCardHtml({ charKey: cur.charKey, note, sub: `${days > 0 ? `${days} 天前` : '今天'} · ${formatDateTime(note.ts)}`, face: 'avatar', cls: 'be-rv-flip', textHtml: `
           <div class="be-rv-when">${days > 0 ? `${days} 天前` : '今天'} · ${formatDateTime(note.ts)}</div>
           <div class="be-rv-quote">${escapeHtml(note.text || '')}</div>
           ${ths.length ? `<div class="be-rv-thoughts">${ths.map(t => `<div class="be-rv-thought">${escapeHtml(t.text || '')}<span>${formatDateTime(t.ts)}</span></div>`).join('')}</div>` : ''}
@@ -12816,6 +12858,7 @@ $(() => {
     panel.querySelector('#be-rv-card')?.addEventListener('click', () => {
       closePanel();
       lastText = note.text;
+      useNoteCtx(note, cur.charKey);
       openExcerptModal(note.text, ths.length ? { thoughtText: ths[ths.length - 1].text || '' } : {});
     });
     panel.querySelectorAll('#be-rv-daily .be-radio-opt').forEach(b => b.addEventListener('click', () => {
@@ -12846,7 +12889,7 @@ $(() => {
     el.innerHTML = `
       <div class="be-dr-card">
         <div class="be-dr-head"><i class="fa-solid fa-shuffle"></i> ${every ? '回顾' : '今日回顾'}</div>
-        ${flipCardHtml({ charKey: picked.charKey, sub: formatDateTime(picked.note.ts), face: 'avatar', cls: 'be-dr-flip', textHtml: `
+        ${flipCardHtml({ charKey: picked.charKey, note: picked.note, sub: formatDateTime(picked.note.ts), face: 'avatar', cls: 'be-dr-flip', textHtml: `
           <div class="be-dr-quote">${escapeHtml(txt.slice(0, 200))}${txt.length > 200 ? '…' : ''}</div>
           <div class="be-dr-src">${escapeHtml((notes[picked.charKey] && notes[picked.charKey].name) || '')} · ${formatDateTime(picked.note.ts)}</div>` })}
         <div class="be-dr-actions">
