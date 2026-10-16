@@ -134,7 +134,7 @@ stop();   // 不想再听了就调用它
 ```js
 const reader = be.attachReader({
   id: 'my-reader',                    // 起个名字。同名再登记一次会覆盖旧的（你的脚本重载时直接再登记就行）
-  root: () => document.querySelector('#my-reader .page'),   // 阅读区域。可以是元素，也可以是返回元素的函数（区域会整块重画时用函数）
+  root: () => host.document.querySelector('#my-reader .page'),   // 阅读区域，要在酒馆页面（host.document）上找，酒馆助手脚本里的 document 是脚本自己的小框。可以是元素，也可以是返回元素的函数（区域会整块重画时用函数）
   message: '.floor',                  // 一楼对应的元素
   text: '.floor-text',                // 可选：一楼里正文所在的元素，不填就是整楼。只有这里面的字能划线
   mesId: el => el.dataset.floor,      // 可选：这一楼是第几楼（从 0 开始，和酒馆一致）。不填就读 mesid / data-mesid / data-floor
@@ -279,4 +279,5 @@ try {
 - 划线时，那一楼必须正在屏幕上，文字要和屏幕上显示的一致。如果 AI 回复里有格式标签，用显示出来的字，不要用源码。
 - 出图要花零点几秒到几秒，不要在循环里一口气调用很多次。
 - 打开窗口的按钮（`openCard`、`openNotebook`、`openReview`、`openThoughtEditor`、`jumpToNote`）请只在用户点了你的按钮之后再用，不要自己突然弹出来。
-- 用了承接器或浮动栏按钮的，你的脚本卸载时请 `detach()` / `remove()`；书摘比你晚启动时，在 `book-excerpt:ready` 里再登记一次。
+- 用了承接器或浮动栏按钮的，你的脚本卸载时请 `detach()` / `remove()`，并去掉你加的 `book-excerpt:ready` 监听（否则书摘重新加载时会把已关掉的脚本的按钮登记回来）；书摘比你晚启动时，在 `book-excerpt:ready` 里再登记一次。
+- 承接器的阅读区域、嵌入笔记本的容器，都要从酒馆页面 `host.document` 里找，不要用 `document`（酒馆助手脚本里它是脚本自己的小框）。

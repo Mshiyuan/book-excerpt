@@ -84,7 +84,7 @@ All are rejections with `.code`.
 2. Call UI-opening methods (`openCard`, `openNotebook`, `openReview`, `openThoughtEditor`, `jumpToNote`) only in response to a user action.
 3. Treat returned objects as read-only copies. Mutate only through API methods.
 4. Gate on `apiVersion`, not `version`.
-5. Readers: render text as plain DOM in the host document (not iframe / Shadow DOM; frameworks that re-diff the text may drop or clash with injected `<span>`s). Detach readers and remove buttons when your script unloads; register again on `book-excerpt:ready` if BookExcerpt starts after you. If your reader has its own selection toolbar, hide it while attached or move its actions into `addSelectionButton`.
+5. Readers: elements passed to BookExcerpt (`root`, `mountNotebook` container) MUST come from `HOST.document` — in a Tavern Helper script `document` is the script iframe. Render text as plain DOM in the host document (not iframe / Shadow DOM; frameworks that re-diff the text may drop or clash with injected `<span>`s). Detach readers, remove buttons and remove your `book-excerpt:ready` listener when your script unloads (otherwise a BookExcerpt reload re-registers a dead script); register again on `book-excerpt:ready` if BookExcerpt starts after you. If your reader has its own selection toolbar, hide it while attached or move its actions into `addSelectionButton`.
 6. Disclaimer: output produced through this API (images, notes, the calling extension's own behavior) is the responsibility of the calling extension's author, not BookExcerpt's author.
 
 ## Minimal template
