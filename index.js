@@ -7659,12 +7659,12 @@ $(() => {
     try { if (mainWin.matchMedia('(prefers-reduced-motion: reduce)').matches) return false; } catch (e) {}
     return typeof mainDoc.body.animate === 'function';
   }
-  // 弹簧阻尼：高度用接近临界阻尼的弹簧（--be-page-curve，和翻页同一条，几乎不过冲）520ms 展开——
-  // 820ms 那条会冲过头再缩回，下面的按钮被推下去又拉回来，看起来有阻力；组里每行从下方 8px 淡入，间隔 20ms（最多错开 5 行）。
+  // 弹簧阻尼：高度用弹簧曲线展开（820ms，到位时只多冲一点点），组里每行从下方 14px 淡入、依次间隔 45ms；
   // 收起用退出曲线 220ms。折叠面板的外框必须跟着变高，所以这里动 height，其余只动 transform / opacity
   function springSourceGroup(g, b, open) {
     clearTimeout(b._beT);
     (b._beAnims || []).forEach(a => { try { a.cancel(); } catch (e) {} });
+    if (b._beBoxReset) b._beBoxReset();
     const cssVar = (k, fb) => { try { return mainWin.getComputedStyle(mainDoc.body).getPropertyValue(k).trim() || fb; } catch (e) { return fb; } };
     const anim = (el, frames, o) => {
       try { return el.animate(frames, o); }
@@ -7681,15 +7681,34 @@ $(() => {
     };
     b.style.transition = 'none';
     if (open) {
+      const box = g.closest('#be-source-box');
+      const boxBefore = box ? box.offsetHeight : 0;
+      const maxH = box ? parseFloat(mainWin.getComputedStyle(box).maxHeight) : NaN;
+      // 同时在收起的组马上会让出高度
+      const closing = box ? Array.from(box.querySelectorAll('.be-src-group.be-closing > .be-src-gbody')).reduce((s2, x) => s2 + x.offsetHeight, 0) : 0;
       g.classList.remove('be-closing');
       g.classList.add('open');
       b.style.maxHeight = 'none';
       const h = b.scrollHeight;
-      const spring = cssVar('--be-page-curve', 'cubic-bezier(0.16, 1, 0.3, 1)');
-      const a = anim(b, [{ height: '0px' }, { height: h + 'px' }], { duration: 520, easing: spring });
-      const kids = Array.from(b.children).map((k, i) => anim(k, [{ opacity: 0, transform: 'translateY(8px)' }, { opacity: 1, transform: 'none' }], { duration: 420, delay: Math.min(i, 5) * 20, easing: spring, fill: 'backwards' }));
-      b._beAnims = [a, ...kids];
-      a.onfinish = () => { if (b._beAnims && b._beAnims[0] === a) cleanup(); };
+      const spring = cssVar('--be-spring-curve', 'cubic-bezier(0.16, 1, 0.3, 1)');
+      const kids = () => Array.from(b.children).map((k, i) => anim(k, [{ opacity: 0, transform: 'translateY(14px)' }, { opacity: 1, transform: 'none' }], { duration: 820, delay: Math.min(i, 8) * 45, easing: spring, fill: 'backwards' }));
+      let a;
+      if (box && isFinite(maxH) && boxBefore - closing + h > maxH + 1) {
+        // 展开后会超出编辑框的最大高度（屏幕高度 - 32px，内容多的「出处信息」在手机上常这样）：
+        // 如果照常动这一组的高度，框在半路就顶满、从高速一下子停住，之后动画还在跑屏幕上却不动——这就是阻塞感。
+        // 改为组内容直接排到最终位置，让编辑框本身用同一条弹簧从当前高度长到最大高度（像拉开帘子），
+        // 框的边缘平滑减速停下；结束时里面的排版本来就是最终状态，不会跳
+        // 动画期间放开 max-height：弹簧冲过头的那一点（几个像素，在屏幕边距以内）不被截掉，才是完整的回弹
+        const prevOverflow = box.style.overflowY, prevMax = box.style.maxHeight;
+        box.style.overflowY = 'hidden';
+        box.style.maxHeight = 'none';
+        a = anim(box, [{ height: boxBefore + 'px' }, { height: maxH + 'px' }], { duration: 820, easing: spring });
+        b._beBoxReset = () => { box.style.overflowY = prevOverflow; box.style.maxHeight = prevMax; b._beBoxReset = null; };
+      } else {
+        a = anim(b, [{ height: '0px' }, { height: h + 'px' }], { duration: 820, easing: spring });
+      }
+      b._beAnims = [a, ...kids()];
+      a.onfinish = () => { if (b._beAnims && b._beAnims[0] === a) { if (b._beBoxReset) b._beBoxReset(); cleanup(); } };
     } else {
       const h = b.offsetHeight;
       g.classList.remove('open');
@@ -7724,8 +7743,13 @@ $(() => {
     mask.querySelectorAll('.be-src-ghead').forEach(h => h.addEventListener('click', () => {
       const g = h.closest('.be-src-group');
       const willOpen = !g.classList.contains('open');
-      markTypoDragging(srcGroupSpring() ? 600 : 350);
-      mask.querySelectorAll('.be-src-group').forEach(x => animSourceGroup(x, willOpen && x === g));
+      // 柔和淡入沿用原来的做法。弹簧模式不切换背景模糊：模糊在书摘弹窗的遮罩上、模糊的是遮罩后面的聊天，
+      // 编辑出处框在遮罩上面，它变高不会让遮罩后面的内容变化；而切换一次模糊要把整屏重新光栅化，
+      // 开始和结束各一次，正是展开时那两下卡顿的来源
+      if (!srcGroupSpring()) markTypoDragging(350);
+      // 先收起别的组，再展开这一组（展开时要把正在收起的组让出的高度算进剩余空间）
+      mask.querySelectorAll('.be-src-group').forEach(x => { if (x !== g) animSourceGroup(x, false); });
+      animSourceGroup(g, willOpen);
       settings.srcGroupOpen = willOpen ? g.getAttribute('data-g') : '';
       saveSettings(settings);
     }));
@@ -8070,7 +8094,7 @@ $(() => {
     mask.querySelector('#be-src-mask-chips')._beRender?.();
     mask.querySelectorAll('.be-src-group').forEach(g => {
       const b = g.querySelector('.be-src-gbody');
-      if (b) { clearTimeout(b._beT); (b._beAnims || []).forEach(a => { try { a.cancel(); } catch (e) {} }); b._beAnims = null; b.style.maxHeight = ''; b.style.height = ''; b.style.transition = ''; }
+      if (b) { clearTimeout(b._beT); (b._beAnims || []).forEach(a => { try { a.cancel(); } catch (e) {} }); b._beAnims = null; if (b._beBoxReset) b._beBoxReset(); b.style.maxHeight = ''; b.style.height = ''; b.style.transition = ''; }
       g.classList.remove('be-closing');
       g.classList.toggle('open', !!settings.srcGroupOpen && g.getAttribute('data-g') === settings.srcGroupOpen);
     });
