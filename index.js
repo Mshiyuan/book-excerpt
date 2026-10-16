@@ -7659,7 +7659,8 @@ $(() => {
     try { if (mainWin.matchMedia('(prefers-reduced-motion: reduce)').matches) return false; } catch (e) {}
     return typeof mainDoc.body.animate === 'function';
   }
-  // 弹簧阻尼：高度用弹簧曲线展开（820ms，到位时只多冲一点点），组里每行从下方 14px 淡入、依次间隔 45ms；
+  // 弹簧阻尼：高度用接近临界阻尼的弹簧（--be-page-curve，和翻页同一条，几乎不过冲）520ms 展开——
+  // 820ms 那条会冲过头再缩回，下面的按钮被推下去又拉回来，看起来有阻力；组里每行从下方 8px 淡入，间隔 20ms（最多错开 5 行）。
   // 收起用退出曲线 220ms。折叠面板的外框必须跟着变高，所以这里动 height，其余只动 transform / opacity
   function springSourceGroup(g, b, open) {
     clearTimeout(b._beT);
@@ -7684,9 +7685,9 @@ $(() => {
       g.classList.add('open');
       b.style.maxHeight = 'none';
       const h = b.scrollHeight;
-      const spring = cssVar('--be-spring-curve', 'cubic-bezier(0.16, 1, 0.3, 1)');
-      const a = anim(b, [{ height: '0px' }, { height: h + 'px' }], { duration: 820, easing: spring });
-      const kids = Array.from(b.children).map((k, i) => anim(k, [{ opacity: 0, transform: 'translateY(14px)' }, { opacity: 1, transform: 'none' }], { duration: 820, delay: Math.min(i, 8) * 45, easing: spring, fill: 'backwards' }));
+      const spring = cssVar('--be-page-curve', 'cubic-bezier(0.16, 1, 0.3, 1)');
+      const a = anim(b, [{ height: '0px' }, { height: h + 'px' }], { duration: 520, easing: spring });
+      const kids = Array.from(b.children).map((k, i) => anim(k, [{ opacity: 0, transform: 'translateY(8px)' }, { opacity: 1, transform: 'none' }], { duration: 420, delay: Math.min(i, 5) * 20, easing: spring, fill: 'backwards' }));
       b._beAnims = [a, ...kids];
       a.onfinish = () => { if (b._beAnims && b._beAnims[0] === a) cleanup(); };
     } else {
@@ -7723,7 +7724,7 @@ $(() => {
     mask.querySelectorAll('.be-src-ghead').forEach(h => h.addEventListener('click', () => {
       const g = h.closest('.be-src-group');
       const willOpen = !g.classList.contains('open');
-      markTypoDragging(srcGroupSpring() ? 900 : 350);
+      markTypoDragging(srcGroupSpring() ? 600 : 350);
       mask.querySelectorAll('.be-src-group').forEach(x => animSourceGroup(x, willOpen && x === g));
       settings.srcGroupOpen = willOpen ? g.getAttribute('data-g') : '';
       saveSettings(settings);
@@ -9324,24 +9325,34 @@ $(() => {
     // Chromium 内核在进程间传 URL 的上限是 2MB，超过会变成空地址：长按时手机震一下（识别到长按），
     // 但拿不到图片地址，不弹保存菜单。只有超过上限的图才改用很短的 blob 地址，2MB 以内的照旧用 data URL
     let blobUrl = '';
-    if (dataUrl.length > 2 * 1024 * 1024 - 64) {
-      try {
-        const comma = dataUrl.indexOf(',');
-        const mime = (dataUrl.slice(5, comma).split(';')[0]) || 'image/png';
-        const bin = mainWin.atob(dataUrl.slice(comma + 1));
-        const u8 = new Uint8Array(bin.length);
-        for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
-        blobUrl = mainWin.URL.createObjectURL(new mainWin.Blob([u8], { type: mime }));   // 必须用主窗口的 URL / Blob
-      } catch (e) { blobUrl = ''; }
-    }
-    pop.querySelector('img').src = blobUrl || dataUrl;
-    mainDoc.body.appendChild(pop);
+    const img = pop.querySelector('img');
     const close = () => {
       try { pop.remove(); } catch (e) {}
       if (blobUrl) { try { mainWin.URL.revokeObjectURL(blobUrl); } catch (e) {} blobUrl = ''; }
     };
     pop.addEventListener('click', (e) => { if (e.target === pop) close(); });
     pop.querySelector('#be-imgpop-close').addEventListener('click', close);
+    if (dataUrl.length <= 2 * 1024 * 1024 - 64) {
+      // 2MB 以内：和以前完全一样（data URL 设上去时已经解码好，弹窗出来就有图）
+      img.src = dataUrl;
+      mainDoc.body.appendChild(pop);
+      return;
+    }
+    // 超过 2MB：转成 blob 地址（fetch 异步转换，不占主线程），等图片解码好再显示弹窗，
+    // 否则 blob 图片是异步加载的，弹窗会先空一下再出图（看起来闪一下）
+    (async () => {
+      try {
+        const blob = await (await mainWin.fetch(dataUrl)).blob();
+        blobUrl = mainWin.URL.createObjectURL(new mainWin.Blob([blob], { type: blob.type || 'image/png' }));   // 必须用主窗口的 URL / Blob
+      } catch (e) { blobUrl = ''; }
+      img.src = blobUrl || dataUrl;
+      if (blobUrl) {
+        try { await Promise.race([img.decode(), new Promise(r => setTimeout(r, 3000))]); } catch (e) {}
+      }
+      const prev = mainDoc.getElementById('be-imgpop');   // 等待期间又点了一次保存：只留最新的
+      if (prev && prev !== pop) { try { prev.remove(); } catch (e) {} }
+      mainDoc.body.appendChild(pop);
+    })();
   }
 
   // 头像处理：放弃 background-image，改用 <img>
