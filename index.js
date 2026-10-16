@@ -4,7 +4,7 @@ $(() => {
 
   const SCRIPT_ID = 'book-excerpt';
   const SCRIPT_NAME = '书摘';
-  const VERSION = '1.6.0';
+  const VERSION = '1.6.1';
   const LS_SETTINGS = `${SCRIPT_ID}:settings`;
   const LS_NOTES = `${SCRIPT_ID}:notes`;
   // 本次脚本实例的代号。酒馆助手可能在不刷新页面的情况下重建脚本 iframe（热更新/切聊天等），
@@ -71,6 +71,7 @@ $(() => {
     saveMode: 'download',          // 保存图片方式：download 下载文件 / popup 弹图长按保存（部分内嵌浏览器不支持下载时用）
     keepDelLine: false,            // 书摘卡片是否保留原文的删除线（del/s 划掉效果）
     keepItalic: false,             // 书摘卡片是否保留原文的斜体（酒馆把 *……* 渲染成的 em / i）
+    srcGroupOpen: '',              // 编辑出处上次展开的分组（info / wm / mask / other），'' 为全部收起
     mergeEnabled: true,            // 划线合并：点划线可加入合并篮子 + 悬浮篮子入口（v1.4.0 起默认开，老用户已保存的选择不受影响）
     mergeDefaultTarget: '',        // 合并完成后默认动作：'' 每次询问 / 'note' 直接存为笔记 / 'card' 直接生成书摘
     mergeDeleteOriginal: '',       // 合并后原划线怎么处理：'' 每次询问 / 'delete' 删除原划线 / 'keep' 保留原划线
@@ -2642,7 +2643,8 @@ $(() => {
     #be-source-box .be-src-caret { width: 0; height: 0; border-left: 5px solid currentColor; border-top: 4px solid transparent; border-bottom: 4px solid transparent; opacity: 0.6; transition: transform 0.2s; flex: 0 0 auto; }
     #be-source-box .be-src-group.open .be-src-caret { transform: rotate(90deg); }
     #be-source-box .be-src-gbody { max-height: 0; overflow: hidden; box-sizing: border-box; padding: 0 2px; transition: max-height 0.25s ease, padding 0.25s ease; }
-    #be-source-box .be-src-group.open .be-src-gbody { max-height: none; padding: 2px 2px 6px; }
+    #be-source-box .be-src-group.open .be-src-gbody,
+    #be-source-box .be-src-group.be-closing .be-src-gbody { max-height: none; padding: 2px 2px 6px; }
     /* 出处组合 */
     #be-source-box .be-src-presets { margin-bottom: 12px; }
     #be-source-box .be-src-preset-h { font-size: 13px; font-weight: 700; margin-bottom: 7px; letter-spacing: 0.05em; }
@@ -3643,7 +3645,6 @@ $(() => {
     .be-tl-sep { text-align: center; opacity: 0.45; margin: 2px 0; line-height: 1; }
     /* 模板文件夹：标题行和模板行同样的长条，内容缩进一点 */
     .be-tl-body > .be-tl-folder, .be-tl-body > .be-tl-list + .be-tl-list { margin-top: 6px; }
-    .be-tl-folder + .be-tl-folder { margin-top: 6px; }
     .be-tl-fhead {
       display: flex; align-items: center; gap: 8px;
       padding: 4px 4px 4px 12px; min-height: 38px; box-sizing: border-box; border-radius: 12px; cursor: pointer;
@@ -3653,6 +3654,11 @@ $(() => {
     }
     .be-tl-fhead:hover { background: var(--be-panel-row-bg-hover); }
     .be-tl-fhead.be-drop { border-color: var(--be-accent); }
+    .be-tl-fhead { padding-left: 0; }
+    .be-tl-fhead .be-tl-fhandle { margin-right: -4px; }
+    .be-tl-folders { display: flex; flex-direction: column; gap: 6px; }
+    .be-tl-folder.dragging { position: relative; z-index: 2; box-shadow: 0 6px 18px rgba(0,0,0,0.35); border-radius: 12px; }
+    .be-tl-folder.dragging > .be-tl-flist { display: none; }
     .be-tl-fhead .be-caret {
       display: inline-block; width: 0; height: 0;
       border-top: 4px solid transparent; border-bottom: 4px solid transparent;
@@ -7605,10 +7611,58 @@ $(() => {
   }
   // 分组折叠：一次只展开一组，标题右边显示这组的摘要
   // 展开/收起时用 JS 量出实际高度做 max-height 过渡（组里还有会再展开的折叠区，写死高度会被裁切或动画不匀），结束后放开
+  // 弹簧阻尼风格、且浏览器支持 Web Animations、用户没要求减少动效时，分组用弹簧展开
+  function srcGroupSpring() {
+    if (settings.motionStyle === 'soft') return false;
+    try { if (mainWin.matchMedia('(prefers-reduced-motion: reduce)').matches) return false; } catch (e) {}
+    return typeof mainDoc.body.animate === 'function';
+  }
+  // 弹簧阻尼：高度用弹簧曲线展开（820ms，到位时只多冲一点点），组里每行从下方 14px 淡入、依次间隔 45ms；
+  // 收起用退出曲线 220ms。折叠面板的外框必须跟着变高，所以这里动 height，其余只动 transform / opacity
+  function springSourceGroup(g, b, open) {
+    clearTimeout(b._beT);
+    (b._beAnims || []).forEach(a => { try { a.cancel(); } catch (e) {} });
+    const cssVar = (k, fb) => { try { return mainWin.getComputedStyle(mainDoc.body).getPropertyValue(k).trim() || fb; } catch (e) { return fb; } };
+    const anim = (el, frames, o) => {
+      try { return el.animate(frames, o); }
+      catch (e) { return el.animate(frames, { ...o, easing: 'cubic-bezier(0.16, 1, 0.3, 1)' }); }
+    };
+    // 收尾时先关掉 CSS 过渡再去掉临时样式（否则内边距会再走一遍 0.25s 的过渡，收起后残留一截）
+    const cleanup = () => {
+      b._beAnims = null;
+      b.style.transition = 'none';
+      g.classList.remove('be-closing');
+      b.style.height = ''; b.style.maxHeight = '';
+      void b.offsetHeight;
+      b.style.transition = '';
+    };
+    b.style.transition = 'none';
+    if (open) {
+      g.classList.remove('be-closing');
+      g.classList.add('open');
+      b.style.maxHeight = 'none';
+      const h = b.scrollHeight;
+      const spring = cssVar('--be-spring-curve', 'cubic-bezier(0.16, 1, 0.3, 1)');
+      const a = anim(b, [{ height: '0px' }, { height: h + 'px' }], { duration: 820, easing: spring });
+      const kids = Array.from(b.children).map((k, i) => anim(k, [{ opacity: 0, transform: 'translateY(14px)' }, { opacity: 1, transform: 'none' }], { duration: 820, delay: Math.min(i, 8) * 45, easing: spring, fill: 'backwards' }));
+      b._beAnims = [a, ...kids];
+      a.onfinish = () => { if (b._beAnims && b._beAnims[0] === a) cleanup(); };
+    } else {
+      const h = b.offsetHeight;
+      g.classList.remove('open');
+      g.classList.add('be-closing');   // 收起动画期间内容仍然占位，结束后才真正收起
+      const exit = cssVar('--be-exit-ease', 'cubic-bezier(0.4, 0, 1, 1)');
+      const a = anim(b, [{ height: h + 'px' }, { height: '0px' }], { duration: 220, easing: exit });
+      const fade = anim(b, [{ opacity: 1 }, { opacity: 0 }], { duration: 160, easing: exit, fill: 'forwards' });
+      b._beAnims = [a, fade];
+      a.onfinish = () => { if (b._beAnims && b._beAnims[0] === a) { try { fade.cancel(); } catch (e) {} cleanup(); } };
+    }
+  }
   function animSourceGroup(g, open) {
     if (open === g.classList.contains('open')) return;
     const b = g.querySelector('.be-src-gbody');
     if (!b) { g.classList.toggle('open', open); return; }
+    if (srcGroupSpring()) { springSourceGroup(g, b, open); return; }
     clearTimeout(b._beT);
     if (open) {
       b.style.maxHeight = '0px';
@@ -7627,8 +7681,10 @@ $(() => {
     mask.querySelectorAll('.be-src-ghead').forEach(h => h.addEventListener('click', () => {
       const g = h.closest('.be-src-group');
       const willOpen = !g.classList.contains('open');
-      markTypoDragging(350);
+      markTypoDragging(srcGroupSpring() ? 900 : 350);
       mask.querySelectorAll('.be-src-group').forEach(x => animSourceGroup(x, willOpen && x === g));
+      settings.srcGroupOpen = willOpen ? g.getAttribute('data-g') : '';
+      saveSettings(settings);
     }));
   }
   function updateSourceSummaries(mask) {
@@ -7756,7 +7812,7 @@ $(() => {
       mask.innerHTML = `
         <div id="be-source-box">
           <div class="be-src-title">编辑出处</div>
-          <div class="be-src-group open" data-g="info">
+          <div class="be-src-group" data-g="info">
             <button type="button" class="be-src-ghead"><span class="be-src-caret"></span><span class="be-src-gname">出处信息</span><span class="be-src-gsum"></span></button>
             <div class="be-src-gbody">
               <div class="be-src-presets" id="be-src-presets"></div>
@@ -7971,8 +8027,9 @@ $(() => {
     mask.querySelector('#be-src-mask-chips')._beRender?.();
     mask.querySelectorAll('.be-src-group').forEach(g => {
       const b = g.querySelector('.be-src-gbody');
-      if (b) { clearTimeout(b._beT); b.style.maxHeight = ''; }
-      g.classList.toggle('open', g.getAttribute('data-g') === 'info');
+      if (b) { clearTimeout(b._beT); (b._beAnims || []).forEach(a => { try { a.cancel(); } catch (e) {} }); b._beAnims = null; b.style.maxHeight = ''; b.style.height = ''; b.style.transition = ''; }
+      g.classList.remove('be-closing');
+      g.classList.toggle('open', !!settings.srcGroupOpen && g.getAttribute('data-g') === settings.srcGroupOpen);
     });
     renderSourcePresets(mask);
     syncSourceStars(mask);
@@ -9222,9 +9279,25 @@ $(() => {
       <img alt="书摘图片">
       <button class="be-btn" id="be-imgpop-close">关闭</button>
     `;
-    pop.querySelector('img').src = dataUrl;
+    // Chromium 内核在进程间传 URL 的上限是 2MB，超过会变成空地址：长按时手机震一下（识别到长按），
+    // 但拿不到图片地址，不弹保存菜单。只有超过上限的图才改用很短的 blob 地址，2MB 以内的照旧用 data URL
+    let blobUrl = '';
+    if (dataUrl.length > 2 * 1024 * 1024 - 64) {
+      try {
+        const comma = dataUrl.indexOf(',');
+        const mime = (dataUrl.slice(5, comma).split(';')[0]) || 'image/png';
+        const bin = mainWin.atob(dataUrl.slice(comma + 1));
+        const u8 = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+        blobUrl = mainWin.URL.createObjectURL(new mainWin.Blob([u8], { type: mime }));   // 必须用主窗口的 URL / Blob
+      } catch (e) { blobUrl = ''; }
+    }
+    pop.querySelector('img').src = blobUrl || dataUrl;
     mainDoc.body.appendChild(pop);
-    const close = () => { try { pop.remove(); } catch (e) {} };
+    const close = () => {
+      try { pop.remove(); } catch (e) {}
+      if (blobUrl) { try { mainWin.URL.revokeObjectURL(blobUrl); } catch (e) {} blobUrl = ''; }
+    };
     pop.addEventListener('click', (e) => { if (e.target === pop) close(); });
     pop.querySelector('#be-imgpop-close').addEventListener('click', close);
   }
@@ -10229,6 +10302,7 @@ $(() => {
     return `
           <div class="be-tl-folder ${closed ? '' : 'open'}" data-fid="${f.id}">
             <div class="be-tl-fhead" data-fhead="${f.id}">
+              <span class="be-tl-handle be-tl-fhandle" title="拖动排序">${fa('bars')}</span>
               <span class="be-caret"></span>
               <span class="be-tl-fico">${closed ? '<i class="fa-solid fa-folder"></i>' : '<i class="fa-solid fa-folder-open"></i>'}</span>
               <span class="be-tl-fname">${escapeHtml(f.name)}</span>
@@ -10262,7 +10336,7 @@ $(() => {
         <div class="be-tl-body" ${open ? '' : 'hidden'}>
           <div class="be-tl-list" data-group="fav">${favs.map(renderTemplateRow).join('')}</div>
           ${favs.length && (rest.length || folders.length) ? '<div class="be-tl-sep">·</div>' : ''}
-          ${folders.map(renderTplFolder).join('')}
+          ${folders.length ? `<div class="be-tl-folders">${folders.map(renderTplFolder).join('')}</div>` : ''}
           ${folders.length && rest.length ? '<div class="be-tl-sub">未分类</div>' : ''}
           <div class="be-tl-list" data-group="rest" data-folder="">${rest.map(renderTemplateRow).join('')}</div>
           <button type="button" class="be-tl-newfolder" id="be-tl-newfolder"><i class="fa-solid fa-folder-plus"></i> 新建文件夹</button>
@@ -10314,17 +10388,27 @@ $(() => {
       commitTemplateOrderFromDom(sec);
       if (moved === 'cross') renderSettings();   // 更新各文件夹的数量和空文件夹提示
     }, { cross: '.be-tl-list[data-folder]', dropHead: '.be-tl-folder:not(.open) > .be-tl-fhead' });
+    // 文件夹之间拖动排序（顺序也用在书摘弹窗的文件夹筛选上）；拖动时文件夹临时收起，见 CSS
+    bindRowDrag(sec, '.be-tl-folders', () => {
+      const order = Array.from(sec.querySelectorAll('.be-tl-folders > .be-tl-folder')).map(x => x.getAttribute('data-fid'));
+      const byId = new Map(tplFolders().map(f => [f.id, f]));
+      settings.tplFolders = order.map(id => byId.get(id)).filter(Boolean).concat(tplFolders().filter(f => !order.includes(f.id)));
+      saveSettings(settings);
+    }, { row: 'be-tl-folder', handle: '.be-tl-fhandle' });
   }
   // 通用行拖动排序（模板列表 / 悬浮栏按钮列表共用）：listSelector 下每个 .be-tl-row 的 .be-tl-handle 可拖
   // opts.cross：这些列表之间可以互相拖；opts.dropHead：拖到这些标题上松手，行放进标题后面的列表
+  // opts.row / opts.handle：可拖的行的 class 和手柄选择器（默认模板行 be-tl-row / .be-tl-handle）
   function bindRowDrag(sec, listSelector, onCommit, opts = {}) {
-    sec.querySelectorAll(listSelector + ' .be-tl-handle').forEach(h => {
+    const rowCls = opts.row || 'be-tl-row';
+    sec.querySelectorAll(listSelector + ' ' + (opts.handle || '.be-tl-handle')).forEach(h => {
+      if (!opts.handle && h.classList.contains('be-tl-fhandle')) return;   // 文件夹标题的手柄另外绑
       h.addEventListener('touchstart', e => e.preventDefault(), { passive: false });
       h.addEventListener('contextmenu', e => e.preventDefault());
       h.addEventListener('pointerdown', e => {
         e.preventDefault();
         e.stopPropagation();
-        const row = h.closest('.be-tl-row');
+        const row = h.closest('.' + rowCls);
         let list = row.parentElement;
         const startList = list;
         const canCross = !!(opts.cross && list.matches(opts.cross));
@@ -10356,7 +10440,7 @@ $(() => {
           if (head) return;
           let before = null;
           for (const r of list.children) {
-            if (r === row || !r.classList.contains('be-tl-row')) continue;
+            if (r === row || !r.classList.contains(rowCls)) continue;
             const rc = r.getBoundingClientRect();
             if (y < rc.top + rc.height / 2) { before = r; break; }
           }
@@ -10466,7 +10550,7 @@ $(() => {
     on('[data-frename]', b => renameTplFolder(b.getAttribute('data-frename')));
     on('[data-fdelete]', b => deleteTplFolder(b.getAttribute('data-fdelete')));
     sec.querySelectorAll('[data-fhead]').forEach(hd => hd.addEventListener('click', e => {
-      if (e.target.closest('button')) return;
+      if (e.target.closest('button, .be-tl-handle')) return;
       const fid = hd.getAttribute('data-fhead');
       const c = { ...(settings.tplFolderClosed || {}) };
       if (c[fid]) delete c[fid]; else c[fid] = true;
