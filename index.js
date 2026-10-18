@@ -4,7 +4,7 @@ $(() => {
 
   const SCRIPT_ID = 'book-excerpt';
   const SCRIPT_NAME = '书摘';
-  const VERSION = '1.6.1';
+  const VERSION = '1.6.2';
   const LS_SETTINGS = `${SCRIPT_ID}:settings`;
   const LS_NOTES = `${SCRIPT_ID}:notes`;
   // 本次脚本实例的代号。酒馆助手可能在不刷新页面的情况下重建脚本 iframe（热更新/切聊天等），
@@ -306,7 +306,10 @@ $(() => {
   }
   // 写失败不能再静默吞掉：之前图片塞在 settings 里撑爆 5MB 后，之后所有设置改动都悄悄存不进去
   let _settingsSaveWarned = false;
+  const _imgTemp = new Map();          // 临时图片：key → {type, data}，见 imgCommitTemp
+  const _imgCommitting = new Set();
   function saveSettings(s) {
+    try { imgCommitTemp(s); } catch (e) {}
     try {
       mainWin.localStorage.setItem(LS_SETTINGS, JSON.stringify(s));
       _settingsSaveWarned = false;
@@ -399,7 +402,7 @@ $(() => {
     await mirrorWriteStamp(m.synced).catch(() => {});
   }
   function mirrorWriteStamp(synced) {
-    const hist = (mirrorMeta().history || []).map(h => ({ n: h.n, savedAt: h.savedAt, count: h.count }));
+    const hist = (mirrorMeta().history || []).map(h => ({ n: h.n, savedAt: h.savedAt, count: h.count, imgs: h.imgs || [] }));
     return mirrorUpload(MIRROR_STAMP, new TextEncoder().encode(JSON.stringify({ app: 'book-excerpt', notes: synced.notes || 0, settings: synced.settings || 0, history: hist })));
   }
   function countNotesIn(notesPayload) {
@@ -450,23 +453,38 @@ $(() => {
     const ext = ({ 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif', 'image/avif': 'avif' })[type] || 'png';
     return MIRROR_IMG_PREFIX + String(key).replace(/[^a-zA-Z0-9_\-.]/g, '_') + '.' + ext;
   }
+  // 正在上传的图片：上传完成前要删它时，等上传完再删（否则上传完才登记，删除那一刻查不到，文件就留在了数据目录）
+  const _mirrorImgUp = new Map();
   function mirrorImage(key, rec) {
     if (_mirrorSuspended || !mirrorOn() || !rec || !rec.data) return;
     const name = mirrorImgName(key, rec.type);
-    mirrorUpload(name, new Uint8Array(rec.data)).then(() => {
+    const p = mirrorUpload(name, new Uint8Array(rec.data)).then(() => {
       const m = mirrorMeta(); m.images[key] = name; saveMirrorMeta(m);
       scheduleMirror('settings');   // 图片清单记在设置备份里
-    }).catch(mirrorFailed);
+    }).catch(mirrorFailed).finally(() => { if (_mirrorImgUp.get(key) === p) _mirrorImgUp.delete(key); });
+    _mirrorImgUp.set(key, p);
+  }
+  // 删除数据目录里的一个文件；删掉了或本来就没有返回 true
+  async function mirrorDeleteFile(name) {
+    const headers = mirrorHeaders();
+    if (!headers || !mirrorOn()) return false;
+    try {
+      const res = await mainWin.fetch('/api/files/delete', { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ path: `user/files/${name}` }) });
+      return res.ok || res.status === 404;
+    } catch (e) { return false; }
   }
   function mirrorImageDelete(key) {
+    const up = _mirrorImgUp.get(key);
+    if (up) { up.finally(() => mirrorImageDelete(key)); return; }
     const m = mirrorMeta();
     const name = m.images[key];
     if (!name) return;
     if ((m.history || []).some(h => (h.imgs || []).includes(key))) return;   // 历史备份里还用着这张图
-    delete m.images[key]; saveMirrorMeta(m);
-    const headers = mirrorHeaders();
-    if (!headers || !mirrorOn()) return;
-    mainWin.fetch('/api/files/delete', { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ path: `user/files/${name}` }) }).catch(() => {});
+    // 删成功才去掉记录；没删成（不在线、关了同步）就留着记录，之后的图片清理会再删
+    mirrorDeleteFile(name).then(ok => {
+      if (!ok) return;
+      const m2 = mirrorMeta(); delete m2.images[key]; saveMirrorMeta(m2);
+    });
   }
   function settingsImageRefs(st) {
     const keys = [];
@@ -475,6 +493,51 @@ $(() => {
     ((st && st.customTemplates) || []).forEach(t => Object.values((t && t.slotImages) || {}).forEach(add));
     ((st && st.layoutTemplates) || []).forEach(t => layImageRefs(t).forEach(add));
     return [...new Set(keys)];
+  }
+  // 图片对账清理：浏览器（IndexedDB）和数据目录里，没被「本浏览器设置 / 数据目录里的设置 / 历史备份 /
+  // 「仅本次」换的图」引用的图片删掉。酒馆没有列目录的接口，数据目录里只能清理书摘自己有记录（mirrorMeta().images）的文件。
+  // 自动（启动后空闲时，每天最多一次）不提示；手动按钮提示清理结果。返回删掉的张数，-1 表示这次没做。
+  async function imgReconcile() {
+    if (lay.draft) return -1;   // 自由排版编辑器开着，等关了再清
+    const keep = new Set(settingsImageRefs(settings));
+    layOnceImgRefs().forEach(r => { const k = imgRefKey(r); if (k) keep.add(k); });
+    _imgTemp.forEach((v, k) => keep.add(k));
+    const m = mirrorMeta();
+    (m.history || []).forEach(h => (h.imgs || []).forEach(k => keep.add(k)));
+    // 数据目录里的设置和历史备份可能来自别的浏览器：读得到才清理数据目录；读不到只清本浏览器
+    let dirOk = false;
+    if (mirrorOn() && mirrorHeaders()) {
+      try {
+        const [st, stamp] = await Promise.all([mirrorFetch(MIRROR_FILES.settings), mirrorFetch(MIRROR_STAMP)]);
+        if (st && st.app === 'book-excerpt' && st.data) settingsImageRefs(st.data).forEach(k => keep.add(k));
+        const hist = (stamp && Array.isArray(stamp.history)) ? stamp.history : [];
+        const local = new Map((m.history || []).map(h => [h.savedAt, h]));
+        // 旧版时间戳文件里的历史备份没有图片清单、本浏览器也没记录：不知道它要哪些图，数据目录这次不清
+        dirOk = hist.every(h => Array.isArray(h.imgs) || (local.get(h.savedAt) && Array.isArray(local.get(h.savedAt).imgs)));
+        hist.forEach(h => (h.imgs || []).forEach(k => keep.add(k)));
+      } catch (e) { dirOk = false; }
+    }
+    const gone = new Set();
+    let keys = [];
+    try { keys = await imgTx('readonly', s => s.getAllKeys()); } catch (e) { keys = []; }
+    for (const key of keys || []) {
+      if (keep.has(key) || _imgCommitting.has(key)) continue;
+      try { await imgTx('readwrite', s => s.delete(key)); } catch (e) { continue; }
+      const url = _imgUrlCache.get(key);
+      if (url) { try { mainWin.URL.revokeObjectURL(url); } catch (e) {} }
+      _imgUrlCache.delete(key);
+      gone.add(key);
+    }
+    if (dirOk) {
+      for (const [key, name] of Object.entries(m.images || {})) {
+        if (keep.has(key) || _mirrorImgUp.has(key)) continue;
+        if (await mirrorDeleteFile(name)) {
+          const m2 = mirrorMeta(); delete m2.images[key]; saveMirrorMeta(m2);
+          gone.add(key);
+        }
+      }
+    }
+    return gone.size;
   }
   // reason：'manual' 手动「立即备份」（距上一份历史 1 小时以上才另存）；'risky' 首次同步 / 保留本地 / 刚打开同步（总是另存）
   async function mirrorBackupNow(reason = 'manual') {
@@ -1100,10 +1163,10 @@ $(() => {
   })();
 
   // ---------- 工具 ----------
-  function toast(msg, type = 'info') {
+  function toast(msg, type = 'info', timeOut = 2200) {
     try {
       const t = mainWin.toastr;
-      if (t && t[type]) t[type](msg, '', { timeOut: 2200, positionClass: 'toast-top-center' });
+      if (t && t[type]) t[type](msg, '', { timeOut, extendedTimeOut: timeOut > 2200 ? timeOut : 1000, positionClass: 'toast-top-center' });
     } catch (e) {}
   }
   // 横向滚动行（模板/字体/配色 chip 行）：手机靠手指横滑没问题，但 PC 上鼠标滚轮只会纵向滚、
@@ -1423,8 +1486,40 @@ $(() => {
   // 存 {type, data:ArrayBuffer} 而不是 Blob：脚本形态跑在助手 iframe 里，跨 realm 的 Blob 容易出怪问题，
   // 取出来时统一用 mainWin.Blob + mainWin.URL 在主文档 realm 里重建（见 [[project_blob_download_realm_bug]]）
   const imgPut = (key, rec) => imgTx('readwrite', s => s.put(rec, key)).then(r => { try { mirrorImage(key, rec); } catch (e) {} return r; });
-  const imgGet = (key) => imgTx('readonly', s => s.get(key));
-  const imgDel = (key) => imgTx('readwrite', s => s.delete(key)).catch(() => {}).then(() => { try { mirrorImageDelete(key); } catch (e) {} });
+  const imgGet = (key) => _imgTemp.has(key) ? Promise.resolve(_imgTemp.get(key)) : imgTx('readonly', s => s.get(key));
+  const imgDel = (key) => {
+    if (_imgTemp.delete(key)) return Promise.resolve();   // 还没写进浏览器的临时图片，丢掉即可
+    return imgTx('readwrite', s => s.delete(key)).catch(() => {}).then(() => { try { mirrorImageDelete(key); } catch (e) {} });
+  };
+  // 新上传 / 新生成的图片先只放内存，等设置真正用上它（saveSettings 时）才写进 IndexedDB 并同步到数据目录。
+  // 自由排版里试过又换掉的滤镜、裁剪、阴影，「仅本次」换的图，没保存的草稿，关掉编辑器或页面就没了，
+  // 不会再一张张堆在浏览器和数据目录里（用户反馈：同一张图稍微改一点就多存一张）。
+  function imgPutTemp(key, rec) { _imgTemp.set(key, rec); return Promise.resolve(); }
+  function imgCommitTemp(s) {
+    if (!_imgTemp.size) return;
+    for (const key of settingsImageRefs(s || settings)) {
+      if (!_imgTemp.has(key) || _imgCommitting.has(key)) continue;
+      _imgCommitting.add(key);
+      imgPut(key, _imgTemp.get(key)).then(() => {
+        _imgCommitting.delete(key);
+        if (_imgTemp.has(key)) _imgTemp.delete(key);
+        else imgDel(key);   // 写入期间被删掉了
+      }, e => { _imgCommitting.delete(key); console.warn('[书摘] 图片写入失败', key, e); });
+    }
+  }
+  // 丢掉没被设置引用的临时图片（关闭自由排版编辑器时）；keep：仍要保留的引用（如「仅本次」换的图）
+  function imgPruneTemp(keep) {
+    if (!_imgTemp.size) return;
+    const used = new Set(settingsImageRefs(settings));
+    (keep || []).forEach(r => { const k = imgRefKey(r); if (k) used.add(k); });
+    for (const key of [..._imgTemp.keys()]) {
+      if (used.has(key) || _imgCommitting.has(key)) continue;
+      _imgTemp.delete(key);
+      const url = _imgUrlCache.get(key);
+      if (url) { try { mainWin.URL.revokeObjectURL(url); } catch (e) {} }
+      _imgUrlCache.delete(key);
+    }
+  }
   const _imgUrlCache = new Map();
   const _imgLoading = new Map();
   function imgRefKey(ref) {
@@ -1516,7 +1611,7 @@ $(() => {
       }
       const data = await blob.arrayBuffer();
       const key = `${kind}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
-      await imgPut(key, { type: blob.type || (hasAlpha ? 'image/png' : 'image/jpeg'), data });
+      await imgPutTemp(key, { type: blob.type || (hasAlpha ? 'image/png' : 'image/jpeg'), data });
       _imgUrlCache.set(key, mainWin.URL.createObjectURL(new mainWin.Blob([data], { type: blob.type || 'image/png' })));
       return 'idb:' + key;
     } finally {
@@ -9789,6 +9884,26 @@ $(() => {
   }
   // 点「书摘笔记」：按设置先显示笔记本主页 / 当前角色 / 设置。
   // 选了「当前角色」但没开聊天、或这个角色还没有划线和想法时，回落到笔记本主页。
+  // 打开失败时（例如某条数据格式异常）不再毫无反应：提示报错和出错位置，方便截图反馈，并尽量改为打开设置页
+  function openPanelSafe() {
+    try { openPanelHome(); return; }
+    catch (e) {
+      console.error('[书摘] 书摘笔记打开失败', e);
+      let fallback = false;
+      try { openPanel('settings'); fallback = true; } catch (e2) { console.error('[书摘] 设置页打开失败', e2); }
+      toast(`书摘笔记打开失败：${errBrief(e)}${fallback ? '。已改为打开设置页' : ''}`, 'error', 20000);
+    }
+  }
+  // 报错信息 + 出错位置（调用栈里前 3 层函数名），手机上看不到控制台时用
+  function errBrief(e) {
+    const msg = (e && (e.name ? e.name + ': ' : '') + (e.message || '')) || String(e);
+    const names = [];
+    String((e && e.stack) || '').split('\n').forEach(line => {
+      const m = line.match(/^\s*at (?:async )?([\w$.]+) \(/) || line.match(/^([\w$.]+)@/);
+      if (m && names.length < 3 && !/^(Array|Promise|Object|Function|HTML\w*)\./.test(m[1])) names.push(m[1]);
+    });
+    return names.length ? `${msg}（位置：${names.join(' ← ')}）` : msg;
+  }
   function openPanelHome() {
     const home = settings.panelHome || 'notes';
     if (home === 'settings') return openPanel('settings');
@@ -11702,6 +11817,11 @@ $(() => {
         </div>
         <div class="be-row be-hint"><span id="be-dir-status">${(() => { const m = mirrorMeta(); return m.lastErr ? '上次同步失败：' + escapeHtml(m.lastErr) : (m.lastOk ? '上次同步：' + formatDateTime(m.lastOk) : '还没有同步过'); })()}</span></div>` : ''}
         ${hint('数据仍保存在浏览器中，同时备份到酒馆 data/用户名/user/files/（笔记、设置、上传的图片），用于清除缓存或更换浏览器后恢复。')}
+        <div class="be-subh">图片</div>
+        <div class="be-row" style="gap:6px;">
+          <button class="be-btn" id="be-img-gc">清理未使用的图片</button>
+        </div>
+        ${hint('删除浏览器和酒馆数据目录中未被模板、头像或历史备份使用的图片。打开书摘时每天自动清理一次。')}
         <div class="be-subh">模板 · 字体 · 配色</div>
         <div class="be-row" style="gap:6px;">
           <button class="be-btn" id="be-export-bundle">打包导出</button>
@@ -12227,6 +12347,16 @@ $(() => {
       saveSettings(settings);
       if (settings.dataDirSync) mirrorBackupNow('risky').then(() => renderSettings()).catch(e2 => { mirrorFailed(e2); renderSettings(); });
       else renderSettings();
+    });
+    body.querySelector('#be-img-gc')?.addEventListener('click', async (e) => {
+      e.target.disabled = true;
+      try {
+        const n = await imgReconcile();
+        if (n < 0) toast('请先关闭自由排版编辑器', 'info');
+        else toast(n ? `已清理 ${n} 张未使用的图片` : '没有需要清理的图片', 'success');
+        if (n >= 0) { const m = mirrorMeta(); m.imgGcAt = Date.now(); saveMirrorMeta(m); }
+      } catch (err) { toast('清理失败：' + fmtErr(err), 'error'); }
+      e.target.disabled = false;
     });
     body.querySelector('#be-dir-backup')?.addEventListener('click', async (e) => {
       e.target.disabled = true;
@@ -13787,7 +13917,7 @@ $(() => {
     const ar = +(canvas.width / canvas.height).toFixed(4);
     const data = await blob.arrayBuffer();
     const key = `slot-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
-    await imgPut(key, { type, data });
+    await imgPutTemp(key, { type, data });
     _imgUrlCache.set(key, mainWin.URL.createObjectURL(new mainWin.Blob([data], { type })));
     return { ref: 'idb:' + key, ar };
   }
@@ -15932,6 +16062,7 @@ $(() => {
     }
     lay.draft = null; lay.sel = null; lay.tok = null; lay.slotEl = null; lay.sheet = ''; lay.preview = ''; lay.undo = []; lay.redo = []; lay.range = null; lay.caret = null;
     _layBakeCache.clear();
+    imgPruneTemp(layOnceImgRefs());
     mask && mask.querySelector('.be-lay-starter')?.remove();
     if (_cp) closeColorPicker(true);
     layWatchViewport(false);
@@ -15968,11 +16099,12 @@ $(() => {
       for (const a of todo) {
         const r = await layProcessImage(a, layBakeTarget(tpl, a).dispW).catch(() => null);
         if (!r || !r.baked) { a.bakeW = layBakeTarget(tpl, a).tw; a.stampDay = layToday(); continue; }
-        const old = a.src;
+        const old = a.src, oldShd = a.shd;
         a.src = r.src; a.ar = r.ar; a.baked = true; a.bakeW = r.tw || 0; a.stampDay = layToday();
         if (r.shd) { a.shd = r.shd; a.shdBox = r.shdBox; }
         changed = true;
         if (old && old !== a.src && old !== a.orig) layForgetImageIfUnused(old);
+        if (oldShd && oldShd !== a.shd) layForgetImageIfUnused(oldShd);
       }
     } finally { _layRebaking.delete(tpl.id); }
     if (changed) {
@@ -16076,9 +16208,13 @@ $(() => {
       });
     });
   }
-  function layClearOnceImgs() {
+  function layOnceImgRefs() {
     const refs = [];
     Object.values(_layOnceImgs).forEach(g => Object.values(g).forEach(m => Object.values(m).forEach(v => { if (v.orig) refs.push(v.orig); if (v.src) refs.push(v.src); if (v.shd) refs.push(v.shd); })));
+    return refs;
+  }
+  function layClearOnceImgs() {
+    const refs = layOnceImgRefs();
     Object.keys(_layOnceImgs).forEach(k => delete _layOnceImgs[k]);
     if (!refs.length) return;
     const keep = new Set(); (settings.layoutTemplates || []).forEach(t => layImageRefs(t).forEach(r => keep.add(r)));
@@ -16113,12 +16249,15 @@ $(() => {
     const pad = layNum((tpl.page || {}).pad, 28, 0, 80);
     toast('正在处理图片…', 'info');
     if (mode === 'save') {
+      const olds = [];
       for (const x of group) {
+        olds.push(x.orig, x.src, x.shd);
         x.orig = ref; x.src = ref; delete x.shd; delete x.shdBox;
         const r = await layProcessImage(x, (cw - pad * 2) * ((x.lay || 'full') === 'full' ? 1 : layNum(x.wp, 42, 10, 100) / 100));
         if (r) { x.src = r.src; x.ar = r.ar; x.baked = !!r.baked; x.bakeW = r.tw || 0; if (r.shd) { x.shd = r.shd; x.shdBox = r.shdBox; } }
       }
       saveSettings(settings);
+      [...new Set(olds)].forEach(r => layForgetImageIfUnused(r));
       // 之前「仅本次导出」换过的图会盖在模板图片上面，保存到模板后要去掉，预览才显示新图
       const ov = _layOnceImgs[tpl.id];
       if (ov) delete ov[a.grp ? 'g:' + a.grp : a.id];
@@ -16147,7 +16286,7 @@ $(() => {
         div.className = 'list-group-item flex-container flexGap5 interactable';
         div.tabIndex = 0;
         div.innerHTML = `<div class="fa-fw fa-solid fa-bookmark extensionsMenuExtensionButton"></div><span>书摘笔记</span>`;
-        div.addEventListener('click', () => openPanelHome());
+        div.addEventListener('click', () => openPanelSafe());
         menu.appendChild(div);
       }
       return true;
@@ -16583,7 +16722,11 @@ $(() => {
     setTimeout(() => { try { maybeDailyReview(); } catch (e) {} }, 2500);
     // 数据目录检查放到酒馆启动加载之后、浏览器空闲时再做，不和酒馆抢网络和主线程
     setTimeout(() => {
-      const go = () => mirrorStartupCheck().catch(e => console.warn('[书摘] 数据目录检查失败', e));
+      const go = () => mirrorStartupCheck().catch(e => console.warn('[书摘] 数据目录检查失败', e)).then(() => {
+        const m = mirrorMeta();
+        if (Date.now() - (m.imgGcAt || 0) < 20 * 3600 * 1000) return;
+        return imgReconcile().then(n => { if (n >= 0) { const m2 = mirrorMeta(); m2.imgGcAt = Date.now(); saveMirrorMeta(m2); } });
+      }).catch(e => console.warn('[书摘] 图片清理失败', e));
       if (mainWin.requestIdleCallback) mainWin.requestIdleCallback(go, { timeout: 6000 }); else go();
     }, 8000);
   }, 800);
